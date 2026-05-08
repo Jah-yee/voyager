@@ -22,8 +22,9 @@ comments, pull request reviews, status checks, and audit trails. Their names
 must therefore be readable as public product surface, not just internal utility
 labels.
 
-The account handles use a short `iw-` prefix for GitHub ergonomics while keeping
-the canonical aerospace display names from VOY-1802 and VOY-1804.
+The account handles use an organization-owned `iterwheel-` prefix for GitHub
+ergonomics while keeping the canonical aerospace display names from VOY-1802
+and VOY-1804.
 
 ---
 
@@ -52,39 +53,126 @@ the canonical aerospace display names from VOY-1802 and VOY-1804.
 
    | GitHub handle | Display name | Primary responsibility |
    |---------------|--------------|------------------------|
-   | `iw-blueprint` | Blueprint | Issue intake: validate issue templates, completeness, labels, priority hints, and missing context. |
-   | `iw-stack` | Stack | PR intake: validate pull request title, body, linked issue, declared scope, and repository-specific conventions. |
-   | `iw-staticfire` | Static Fire | CI and test aggregation: read checks, lint, typecheck, test, and workflow results; summarize failures in human-readable form. |
-   | `iw-clearance` | Clearance | Review readiness: aggregate approvals, requested changes, unresolved review threads, and bot verdicts. |
-   | `iw-countdown` | Countdown | Final merge gate: publish a GO or HOLD verdict after checking CI, review state, branch protection, conflicts, and release constraints. |
+   | `iterwheel-blueprint` | Blueprint | Issue intake: validate issue title format, issue templates, completeness, Blueprint labels, priority hints, missing context, and ready-state rocket reactions. |
+   | `iterwheel-stack` | Stack | Work classification: infer and maintain type, area, size, risk, and routing labels from issue/PR metadata and changed files. |
+   | `iterwheel-staticfire` | Static Fire | CI and test aggregation: read checks, lint, typecheck, test, and workflow results; summarize failures in human-readable form. |
+   | `iterwheel-clearance` | Clearance | Review readiness: aggregate approvals, requested changes, unresolved review threads, and bot verdicts. |
+   | `iterwheel-countdown` | Countdown | Final merge gate: publish a GO or HOLD verdict after checking PR title/body conventions, CI, review state, branch protection, conflicts, and release constraints. |
 
-2. **Keep handle rules stable**
+2. **Use the Blueprint label standard**
 
-   - Use `iw-` as the GitHub account prefix.
+   Blueprint owns exactly three issue-state labels. Keep these names stable
+   across every repository where `iterwheel-blueprint` is installed:
+
+   | Label | Meaning |
+   |-------|---------|
+   | `blueprint-needed` | The issue has not yet entered or completed an initial Blueprint pass. This is an entry/backlog marker, not a failed-check state. |
+   | `blueprint-ready` | The issue has passed Blueprint issue title and intake checks and can move into agent work. |
+   | `blueprint-requests-revision` | Blueprint is asking the author to revise the issue before work starts. This is the human-response filter for failed Blueprint checks. |
+
+   These labels are mutually exclusive as state labels. An issue should have at
+   most one of them at a time.
+
+   When an issue is ready, Blueprint keeps `blueprint-ready` and removes
+   `blueprint-needed` and `blueprint-requests-revision`. When an issue fails a
+   Blueprint check, Blueprint keeps `blueprint-requests-revision` and removes
+   `blueprint-needed` and `blueprint-ready`.
+
+   Do not revive the older `needs-blueprint` label name.
+
+3. **Use the Stack label standard**
+
+   Stack owns classification labels only. It must not use its labels as
+   pass/fail gates, and it must not create labels outside this allow-list.
+
+   Each classified issue or pull request should have exactly one label from
+   each axis:
+
+   | Axis | Labels |
+   |------|--------|
+   | Type | `stack-type-task`, `stack-type-bug`, `stack-type-feature`, `stack-type-docs`, `stack-type-refactor`, `stack-type-chore`, `stack-type-ci`, `stack-type-test`, `stack-type-spike` |
+   | Area | `stack-area-github`, `stack-area-automation`, `stack-area-docs`, `stack-area-ci`, `stack-area-tests`, `stack-area-frontend`, `stack-area-backend`, `stack-area-infra`, `stack-area-unknown` |
+   | Size | `stack-size-xs`, `stack-size-s`, `stack-size-m`, `stack-size-l`, `stack-size-xl` |
+   | Risk | `stack-risk-low`, `stack-risk-medium`, `stack-risk-high` |
+   | Review | `stack-needs-review` |
+
+   Stack v1 may classify from issue/PR title, body, and pull request diff
+   counts. When Stack has enough confidence, it should apply one label per
+   classification axis, remove `stack-needs-review`, upsert a Stack
+   classification comment, remove its own `eyes` reaction, and add a `rocket`
+   reaction.
+
+   When Stack cannot classify confidently, it should apply only
+   `stack-needs-review`, remove existing `stack-type-*`, `stack-area-*`,
+   `stack-size-*`, and `stack-risk-*` labels, upsert a Stack comment with the
+   review reasons and suggested labels, remove its own `rocket` reaction, and
+   add an `eyes` reaction. This is still a request for human classification, not
+   a pass/fail gate.
+
+4. **Keep handle rules stable**
+
+   - Use `iterwheel-` as the GitHub account prefix.
    - Use lowercase ASCII handles.
-   - Prefer exactly one hyphen after `iw`.
+   - Prefer exactly one hyphen after `iterwheel`.
    - Do not add extra internal hyphens unless readability requires it.
    - Preserve canonical display names with normal spacing, such as `Static Fire`.
 
-3. **Treat `iw-staticfire` as the handle exception**
+5. **Treat `iterwheel-staticfire` as the handle exception**
 
    The canonical display name remains `Static Fire`, but the GitHub handle is
-   `iw-staticfire` rather than `iw-static-fire` to keep the public handle shorter
-   and visually cleaner.
+   `iterwheel-staticfire` rather than `iterwheel-static-fire` to keep the public
+   handle shorter and visually cleaner.
 
-4. **Limit initial authority**
+6. **Limit initial authority**
 
    The first-batch accounts may read repository state, post comments, publish
    check/status conclusions, and participate in review workflows. They must not
    receive broad organization administration, repository administration,
    billing, secret-management, or direct production-deploy authority by default.
 
-5. **Treat Countdown as advisory until hardened**
+   Stack classification may use an LLM when deterministic rules are
+   insufficient, but it must write only approved labels from a repo allow-list.
+   It should not invent labels or turn classification into a pass/fail gate.
 
-   `iw-countdown` is the desired final merge gate, but its first operating mode
-   is advisory: it may publish `GO` or `HOLD` conclusions, while actual merge
-   authority remains with humans, GitHub branch protection, or a later approved
-   automation design.
+7. **Treat Countdown as advisory until hardened**
+
+   `iterwheel-countdown` is the desired final merge gate, but its first
+   operating mode is advisory: it may publish `GO` or `HOLD` conclusions, while
+   actual merge authority remains with humans, GitHub branch protection, or a
+   later approved automation design.
+
+
+## Examples
+
+### Incomplete Blueprint issue
+
+An issue with a missing acceptance criteria section should keep
+`blueprint-requests-revision`. It should not keep `blueprint-needed` or
+`blueprint-ready`, and it should not receive the Blueprint ready-state rocket
+reaction.
+
+### Ready Blueprint issue
+
+An issue with a valid Blueprint title and complete intake fields should keep
+`blueprint-ready`. Blueprint should remove `blueprint-needed` and
+`blueprint-requests-revision`, upsert its intake comment, and add the
+ready-state rocket reaction.
+
+### Classified Stack issue
+
+An issue titled `[Feature]: Add GitHub webhook label classifier` should receive
+one label per Stack axis, for example `stack-type-feature`,
+`stack-area-github`, `stack-size-s`, and `stack-risk-medium`. A later Stack pass
+may replace labels inside the same axis, but should not add a second type, area,
+size, or risk label. Stack should also upsert a classification comment and add a
+`rocket` reaction.
+
+### Ambiguous Stack issue
+
+An issue with a title like `Thing` and a placeholder body like `todo` should get
+only `stack-needs-review`. Stack should remove stale classification-axis labels,
+upsert a comment explaining why it needs review, and avoid adding a `rocket`
+reaction.
 
 ---
 
@@ -93,3 +181,9 @@ the canonical aerospace display names from VOY-1802 and VOY-1804.
 | Date       | Change                                                                                                                       | By               |
 |------------|------------------------------------------------------------------------------------------------------------------------------|------------------|
 | 2026-05-09 | Initial version - recorded first-batch public GitHub bot handles, display names, responsibilities, and permission boundaries | Frank Xu + Codex |
+| 2026-05-09 | Replaced short `iw-` handles with organization-owned `iterwheel-` handles after GitHub App name collision                    | Frank Xu + Codex |
+| 2026-05-09 | Clarified Blueprint as issue intake/title validation, Stack as classification, and Countdown as PR gate                      | Frank Xu + Codex |
+| 2026-05-09 | Standardized Blueprint issue labels as `blueprint-needed`, `blueprint-ready`, and `blueprint-requests-revision`              | Frank Xu + Codex |
+| 2026-05-09 | Tightened Blueprint labels to be mutually exclusive state labels                                                             | Frank Xu + Codex |
+| 2026-05-09 | Added Stack v1 classification label axes and allow-list                                                                      | Frank Xu + Codex |
+| 2026-05-09 | Added Stack low-confidence review flow, status comment, and success `rocket` reaction                                        | Frank Xu + Codex |

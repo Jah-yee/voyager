@@ -35,11 +35,11 @@ Each stage maps to a single bot — single responsibility, clean handoff.
 
 | # | Bot | GitHub Responsibility | Rocket-Stage Metaphor |
 |---|-----|-----------------------|----------------------|
-| 1 | **Blueprint** 📐 | Issue Template validation | Mission blueprint: every launch starts from a design |
-| 2 | **Stack** 🛰️ | PR title/body validation | Vehicle stacking: align and assemble each stage |
+| 1 | **Blueprint** 📐 | Issue intake and title validation | Mission blueprint: every launch starts from a design |
+| 2 | **Stack** 🛰️ | Issue / PR classification labels | Vehicle stacking: align and assemble each stage |
 | 3 | **Static Fire** 🔥 | CI / test aggregation | Static fire test: prove engines run on the ground |
 | 4 | **Clearance** ✅ | Review status aggregation | Go/No-Go poll: each station confirms readiness |
-| 5 | **Countdown** ⏱️ | Merge gate | T-minus countdown: the final merge gatekeeper |
+| 5 | **Countdown** ⏱️ | PR convention checks and merge gate | T-minus countdown: the final merge gatekeeper |
 | 6 | **Liftoff** 🚀 | Release / Deploy | Launch: the moment we leave the ground |
 
 ---
@@ -65,7 +65,9 @@ Reserved expansion slots:
 ## Design Notes
 
 - **Single responsibility** — one bot does one thing; cross-stage logic must split into separate bots
-- **Observable** — every bot's pass/fail must leave a clear status check on the PR
+- **Observable** — every bot's action must leave a clear GitHub-visible trace:
+  labels, comments, reactions, checks, reviews, or releases as appropriate to
+  that bot's responsibility
 - **Retryable** — failures can be re-run; no external side effects until Liftoff
 - **Narrative-consistent** — all bot names come from real aerospace terms; no invented words
 
@@ -73,7 +75,8 @@ Reserved expansion slots:
 
 ## Change History
 
-| Date | Change | By |
-|------|--------|----|
-| 2026-05-09 | Initial version — extracted from `Iterwheel-Founding-Document.md` v1.1 (Bot Roster / End-to-End Pipeline / Future Bots sections) | Claude Code |
-| 2026-05-09 | Translated to English (project standard: English-only docs) | Claude Code |
+| Date       | Change                                                                                                                           | By               |
+|------------|----------------------------------------------------------------------------------------------------------------------------------|------------------|
+| 2026-05-09 | Initial version — extracted from `Iterwheel-Founding-Document.md` v1.1 (Bot Roster / End-to-End Pipeline / Future Bots sections) | Claude Code      |
+| 2026-05-09 | Translated to English (project standard: English-only docs)                                                                      | Claude Code      |
+| 2026-05-09 | Updated Blueprint, Stack, and Countdown responsibility boundaries to match the live GitHub App roster                            | Frank Xu + Codex |

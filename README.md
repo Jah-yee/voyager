@@ -59,11 +59,11 @@ Blueprint → Stack → Static Fire → Clearance → Countdown → Liftoff
 
 | # | Bot | Stage | GitHub Job |
 |---|-----|-------|------------|
-| 1 | **Blueprint** 📐 | Mission blueprint | Issue template validation |
-| 2 | **Stack** 🛰️ | Vehicle stacking | PR title / body / scope checks |
+| 1 | **Blueprint** 📐 | Mission blueprint | Issue intake and title validation |
+| 2 | **Stack** 🛰️ | Vehicle stacking | Issue / PR classification labels |
 | 3 | **Static Fire** 🔥 | Ground test | CI / test aggregation |
 | 4 | **Clearance** ✅ | Go / No-Go poll | Review status aggregation |
-| 5 | **Countdown** ⏱️ | T-minus | Final merge gate |
+| 5 | **Countdown** ⏱️ | T-minus | PR convention checks and final merge gate |
 | 6 | **Liftoff** 🚀 | Launch | Release / deploy |
 
 Reserved future slots: **Manifest**, **Caliper**, **Tanking**, **Apogee**, **Telemetry**.
@@ -85,6 +85,8 @@ Read them in order on a first visit:
 | [VOY-1804](rules/VOY-1804-ADR-Naming-Convention-Iterwheel-Voyager-Aerospace-Bots.md) | ADR | Naming convention decision (and rejected alternatives) |
 | [VOY-1805](rules/VOY-1805-SOP-GitHub-Bot-Accounts-and-Responsibilities.md) | SOP | GitHub bot account roster + responsibilities |
 | [VOY-1806](rules/VOY-1806-SOP-GitHub-App-Permission-Matrix.md) | SOP | GitHub App permission matrix |
+| [VOY-1807](rules/VOY-1807-REF-GitHub-App-Registry.md) | REF | GitHub App registry + webhook state |
+| [VOY-1808](rules/VOY-1808-ADR-Cross-Account-Installation-for-Iterwheel-GitHub-Apps.md) | ADR | Cross-account installation strategy |
 
 The index at [`rules/VOY-0000`](rules/VOY-0000-REF-Document-Index.md) is auto-regenerated
 by `af index`.
@@ -122,9 +124,10 @@ Full guide: [`rules/VOY-1803`](rules/VOY-1803-REF-Visual-and-Voice-Identity.md).
 
 ## Status
 
-🛠️ **Pre-launch.** This repo currently holds the founding charter only. Bot
-accounts (`iw-blueprint`, `iw-stack`, `iw-staticfire`, `iw-clearance`,
-`iw-countdown`) and CI wiring land in subsequent missions.
+🛠️ **Pre-launch.** This repo currently holds the founding charter plus the first
+GitHub App operating rules. The public bot identities are
+`iterwheel-blueprint`, `iterwheel-stack`, `iterwheel-staticfire`,
+`iterwheel-clearance`, and `iterwheel-countdown`.
 
 ---
 
