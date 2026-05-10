@@ -209,6 +209,7 @@ def _build_client(state: ClientState, responses: list[httpx.Response]) -> Any:
 @when("a JWT is generated for the app")
 def generate_jwt(state: ClientState) -> None:
     import jwt as pyjwt
+
     from voyager.core.github_app import GitHubAppClient  # lazy
 
     client = GitHubAppClient(state.apps)
@@ -275,7 +276,8 @@ def runtime_error_raised(state: ClientState, fragment: str) -> None:
 
 @given("GitHub returns a valid installation token response")
 def mock_valid_token(state: ClientState) -> None:
-    state._mock_responses = [_token_response()]  # type: ignore[attr-defined]
+    existing = getattr(state, "_mock_responses", [])
+    state._mock_responses = [*existing, _token_response()]  # type: ignore[attr-defined]
 
 
 @given("GitHub returns a fresh installation token response after an expiring one")
@@ -290,7 +292,6 @@ def prefetch_token(state: ClientState) -> None:
     responses: list[httpx.Response] = getattr(state, "_mock_responses", [_token_response()])
     state.client = _build_client(state, responses)
     asyncio.get_event_loop().run_until_complete(state.client.installation_token("test-bot"))
-    state.captured_requests.clear()  # reset so subsequent assertions count only new calls
 
 
 @given("an installation token with near-expiry has been fetched")
@@ -300,7 +301,6 @@ def prefetch_expiring_token(state: ClientState) -> None:
     responses = getattr(state, "_mock_responses", [_expiring_token_response(), _token_response()])
     state.client = _build_client(state, responses)
     asyncio.get_event_loop().run_until_complete(state.client.installation_token("test-bot"))
-    state.captured_requests.clear()
 
 
 @given("GitHub returns a generic 200 JSON response")
