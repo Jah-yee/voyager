@@ -1,0 +1,1 @@
+"""Stack bot — assembly phase."""
