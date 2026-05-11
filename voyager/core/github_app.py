@@ -241,6 +241,7 @@ class GitHubAppClient:
                   startLine
                   comments(first: 20) {
                     nodes {
+                      databaseId
                       author {
                         login
                       }

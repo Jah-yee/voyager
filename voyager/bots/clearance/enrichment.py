@@ -87,7 +87,7 @@ def build_clearance_comment(
         lines.extend(
             [
                 "",
-                "SWM automation:",
+                "Clearance automation:",
                 f"- Status: {automation.get('status', 'unknown')}",
                 f"- Thread sync actions: {automation.get('sync_actions_count', 0)}",
                 f"- Checkbox tick: {tick_status}",
