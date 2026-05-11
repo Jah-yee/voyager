@@ -146,7 +146,7 @@ Feature: SWM state store — JSONL append-only poll and thread state
     Then the on-disk JSONL line round-trips back into a valid PollRecord
 
   Scenario: append_poll recovers when previous appender crashed without trailing newline
-    Given polls.jsonl for "owner/repo" PR 49 ends in a corrupt half-line with no trailing newline
+    Given polls.jsonl for "owner/repo" PR 49 has one valid record followed by a corrupt half-line with no trailing newline
     And a PollRecord for repo "owner/repo" PR 49 with status "pending"
     When the poll is appended after the corrupt tail
-    Then exactly 1 poll is returned
+    Then exactly 2 polls are returned

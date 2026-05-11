@@ -158,10 +158,12 @@ def _extract_json_object(text: str) -> dict:
     """Extract one JSON object from a possibly-noisy LLM response.
 
     Strategy, in order of decreasing assumption:
-      1. Try ``json.loads`` directly on the *un-stripped* text. A model that
-         emitted exactly one JSON object — including ``"evidence":["``code``"]``
+      1. Try ``json.loads`` directly on the whitespace-stripped text. A model
+         that emitted exactly one JSON object — including ``"evidence":[…]``
          strings whose values contain literal backticks — parses cleanly and
-         the fence-strip step never runs. DeepSeek N2 round-2 review flag.
+         neither the fence-strip nor the walker runs. DeepSeek N2 round-2
+         review flag: this MUST come before any backtick handling, otherwise
+         legitimate JSON with inline-code evidence is corrupted.
       2. On failure, strip fenced code blocks anywhere and retry ``json.loads``.
          The fenced-block stripper uses non-greedy matching so two adjacent
          fenced blocks are not collapsed across.
@@ -356,9 +358,12 @@ def build_investigator_from_env() -> DeepSeekInvestigator | None:
     # lets us tailor the warning: "this is a known Flash, did you mean it?"
     # vs "we don't recognize this model at all".
     if model not in _KNOWN_PRO_MODELS:
-        tier = "Flash-tier" if model in _KNOWN_FLASH_MODELS else "unrecognized"
+        # Carry the article in the tier phrase so the rendered sentence
+        # reads "is a Flash-tier model" / "is an unrecognized model"
+        # — DeepSeek round-3 R3-N2 grammar fix.
+        tier = "a Flash-tier" if model in _KNOWN_FLASH_MODELS else "an unrecognized"
         _log.warning(
-            "investigator: VOYAGER_INVESTIGATOR_MODEL=%r is a %s model "
+            "investigator: VOYAGER_INVESTIGATOR_MODEL=%r is %s model "
             "(known Pro: %s). The min_confidence=%.2f threshold was tuned against "
             "Pro, so verdicts may bypass the gate with lower-quality reasoning. "
             "Re-evaluate the threshold or pin to a Pro model.",

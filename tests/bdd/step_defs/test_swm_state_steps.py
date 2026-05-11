@@ -590,19 +590,25 @@ def reopened_line_validates(reopened_payload: str) -> None:
 
 
 @given(
-    'polls.jsonl for "owner/repo" PR 49 ends in a corrupt half-line with no trailing newline',
+    'polls.jsonl for "owner/repo" PR 49 has one valid record followed by a corrupt half-line with no trailing newline',
     target_fixture="corrupt_tail_setup",
 )
-def polls_corrupt_tail_no_newline(store) -> None:
-    """Simulate a crash mid-write: body bytes flushed, trailing newline lost.
+def polls_one_valid_then_corrupt_tail(store) -> None:
+    """Simulate a crash mid-write *after* a successful prior append.
 
+    Layout: valid record (with newline) + corrupt half-line (no newline).
     Without tail recovery in _atomic_append_jsonl, the next append would
-    concatenate onto this byte stream, merging into one invalid line that
-    _read_jsonl rejects — the new record would be silently dropped.
+    concatenate onto the corrupt byte stream, merging into one invalid
+    line that _read_jsonl rejects, AND silently dropping the new record.
+    Strengthening the scenario per MiniMax round-3 NI-2: the valid prior
+    record lets us assert the recovered count is 2 (1 valid pre-existing +
+    1 newly appended), so a buggy impl that only drops the new record
+    would be caught by ``Then exactly 2 polls are returned`` failing.
     """
+    valid = _make_poll(head_sha="sha_pre_crash")
+    store.append_poll(valid)
     polls_path = store._polls_path(REPO, PR)
-    polls_path.parent.mkdir(parents=True, exist_ok=True)
-    with polls_path.open("w") as f:
+    with polls_path.open("a") as f:
         f.write('{"ts": "2026-05-08T12:00:00Z", "repo": "owner/repo", "pr": 49, "head_sha')
 
 
