@@ -56,6 +56,10 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     # Clearance stage
     (Stage.PR_OPEN.value, "clearance-pending"): Stage.CLEARANCE_PENDING.value,
     (Stage.CLEARANCE_PENDING.value, "clearance-ready"): Stage.CLEARANCE_READY.value,
+    # Clearance can block on the FIRST evaluation (from pending) or on a
+    # re-evaluation (from ready). Both routes must transition to BLOCKED;
+    # otherwise a first-eval block leaves the pipeline wedged at pending.
+    (Stage.CLEARANCE_PENDING.value, "clearance-blocked"): Stage.CLEARANCE_BLOCKED.value,
     (Stage.CLEARANCE_READY.value, "clearance-blocked"): Stage.CLEARANCE_BLOCKED.value,
     (Stage.CLEARANCE_BLOCKED.value, "clearance-ready"): Stage.CLEARANCE_READY.value,
     # Liftoff

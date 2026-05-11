@@ -165,3 +165,19 @@ Feature: Rocket Factory Pipeline — orchestration state machine
     And a malformed force-restart signal with restart_to "garbage_stage"
     When the signal is applied to the pipeline state and may raise
     Then a ValueError is raised mentioning "invalid restart_to"
+
+  # ---------------------------------------------------------------------------
+  # Clearance first-evaluation block from PENDING (Codex round 2)
+  # ---------------------------------------------------------------------------
+
+  Scenario: clearance-blocked signal from CLEARANCE_PENDING transitions directly to CLEARANCE_BLOCKED
+    Given a fresh pipeline target "iterwheel/voyager#88"
+    When the following signals are applied in order:
+      | signal_kind         |
+      | blueprint-ready     |
+      | stack-classified    |
+      | pr-opened           |
+      | clearance-pending   |
+      | clearance-blocked   |
+    Then the final stage is "clearance_blocked"
+    And history contains 5 transitions
