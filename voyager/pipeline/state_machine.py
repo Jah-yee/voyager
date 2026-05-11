@@ -66,8 +66,14 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     (Stage.CLEARANCE_READY.value, "liftoff-done"): Stage.LIFTOFF_DONE.value,
 }
 
-# Signal kinds that originate from a specific source stage rank.
-# Used to detect stale signals: if the signal's source rank < current rank, it is stale.
+# For each signal kind, the MAX rank of stages it can legitimately originate
+# from. Stale check: `if source_rank < current_rank: signal is stale`.
+# Using MAX (not MIN) is critical for signals that originate from multiple
+# stages — e.g. clearance-ready fires both from CLEARANCE_PENDING (5) on
+# happy path and from CLEARANCE_BLOCKED (6) on recovery. If source rank
+# were set to PENDING's rank, the stale check would silently swallow the
+# recovery signal and the PR would be permanently wedged at BLOCKED.
+# (Codex round 4 P1.)
 _SIGNAL_SOURCE_RANK: dict[str, int] = {
     "blueprint-ready": _STAGE_ORDER[Stage.BLUEPRINT_PENDING.value],
     "blueprint-revision": _STAGE_ORDER[Stage.BLUEPRINT_PENDING.value],
@@ -75,7 +81,9 @@ _SIGNAL_SOURCE_RANK: dict[str, int] = {
     "stack-classified": _STAGE_ORDER[Stage.BLUEPRINT_READY.value],
     "pr-opened": _STAGE_ORDER[Stage.STACK_CLASSIFIED.value],
     "clearance-pending": _STAGE_ORDER[Stage.PR_OPEN.value],
-    "clearance-ready": _STAGE_ORDER[Stage.CLEARANCE_PENDING.value],
+    # Originates from PENDING (5) on happy path AND BLOCKED (6) on recovery.
+    # MAX = 6. Setting to PENDING's rank wedges blocked PRs (Codex r4 P1).
+    "clearance-ready": _STAGE_ORDER[Stage.CLEARANCE_BLOCKED.value],
     "clearance-blocked": _STAGE_ORDER[Stage.CLEARANCE_READY.value],
     "liftoff-done": _STAGE_ORDER[Stage.CLEARANCE_READY.value],
     "no-blueprint-needed": _STAGE_ORDER[Stage.BLUEPRINT_PENDING.value],

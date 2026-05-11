@@ -181,3 +181,20 @@ Feature: Rocket Factory Pipeline — orchestration state machine
       | clearance-blocked   |
     Then the final stage is "clearance_blocked"
     And history contains 5 transitions
+
+  # ---------------------------------------------------------------------------
+  # Clearance recovery from blocked (Codex round 4 P1)
+  # ---------------------------------------------------------------------------
+
+  Scenario: clearance-ready signal recovers a CLEARANCE_BLOCKED PR (first-eval block recovery)
+    Given a fresh pipeline target "iterwheel/voyager#89"
+    When the following signals are applied in order:
+      | signal_kind         |
+      | blueprint-ready     |
+      | stack-classified    |
+      | pr-opened           |
+      | clearance-pending   |
+      | clearance-blocked   |
+      | clearance-ready     |
+    Then the final stage is "clearance_ready"
+    And history contains 6 transitions
