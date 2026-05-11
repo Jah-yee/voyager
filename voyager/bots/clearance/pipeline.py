@@ -12,9 +12,11 @@ delivery processed by ``dispatch_route_writeback``.
 
 from __future__ import annotations
 
-import contextlib
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+
+import httpx
 
 from voyager.bots.clearance.classify import (
     ThreadState,
@@ -46,6 +48,8 @@ from voyager.core.writeback import dry_run_enabled
 
 if TYPE_CHECKING:
     from voyager.bots.clearance.investigator import ThreadInvestigator
+
+_log = logging.getLogger(__name__)
 
 
 def _now_utc() -> datetime:
@@ -197,13 +201,21 @@ async def _maybe_sync_stage_15(
             )
             continue
 
-        with contextlib.suppress(Exception):
+        try:
             await client.create_review_thread_reply(
                 CLEARANCE_AGENT_SLUG,
                 repository,
                 pr,
                 thread.comment_id,
                 body=comment_body,
+            )
+        except (httpx.HTTPError, RuntimeError) as exc:
+            _log.warning(
+                "in-thread reply suppressed for thread %s (Stage 1.5 mutation proceeds): %s: %s",
+                thread.id,
+                exc.__class__.__name__,
+                exc,
+                exc_info=True,
             )
 
         result = await client.resolve_review_thread(CLEARANCE_AGENT_SLUG, repository, thread.id)
