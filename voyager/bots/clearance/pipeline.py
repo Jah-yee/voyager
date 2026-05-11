@@ -201,23 +201,6 @@ async def _maybe_sync_stage_15(
             )
             continue
 
-        try:
-            await client.create_review_thread_reply(
-                CLEARANCE_AGENT_SLUG,
-                repository,
-                pr,
-                thread.comment_id,
-                body=comment_body,
-            )
-        except (httpx.HTTPError, RuntimeError) as exc:
-            _log.warning(
-                "in-thread reply suppressed for thread %s (Stage 1.5 mutation proceeds): %s: %s",
-                thread.id,
-                exc.__class__.__name__,
-                exc,
-                exc_info=True,
-            )
-
         result = await client.resolve_review_thread(CLEARANCE_AGENT_SLUG, repository, thread.id)
         actions.append(
             Stage15Action(
@@ -235,6 +218,29 @@ async def _maybe_sync_stage_15(
             synced_at=now,
         )
         thread.github_isResolved = True
+
+        # In-thread reply is best-effort UX; the resolveReviewThread mutation above
+        # is the system-of-record state change. Posting AFTER the mutation succeeds
+        # guarantees we never leave a duplicate "RESOLVED" reply on a thread that
+        # isn't actually resolved (Codex PR #9 P2): if the mutation fails, this
+        # block never runs, and the next webhook re-enters the same branch with
+        # a fresh snapshot — no spurious comment lingers from a partial attempt.
+        try:
+            await client.create_review_thread_reply(
+                CLEARANCE_AGENT_SLUG,
+                repository,
+                pr,
+                thread.comment_id,
+                body=comment_body,
+            )
+        except (httpx.HTTPError, RuntimeError) as exc:
+            _log.warning(
+                "in-thread reply suppressed for thread %s (Stage 1.5 mutation already applied): %s: %s",
+                thread.id,
+                exc.__class__.__name__,
+                exc,
+                exc_info=True,
+            )
 
     return actions
 
