@@ -17,30 +17,78 @@ production use.
 
 from __future__ import annotations
 
+import fcntl
+import json
+import logging
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 from voyager.bots.clearance.models import BoxMiss, LedgerEntry, PollRecord, ThreadSnapshot
 
+_log = logging.getLogger(__name__)
+
 
 def now_utc() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
+def _atomic_append_jsonl(path: Path, line: str) -> None:
+    """Append one JSONL line under an advisory exclusive lock, fsynced before close.
+
+    Guards two failure modes the bare ``with path.open("a") as f: f.write(...)``
+    pattern doesn't cover:
+
+    - **Interleaving** — concurrent appenders (webhook background task + poller
+      cron) calling ``write()`` simultaneously can produce one line spliced
+      into another above the platform's atomic-write threshold. POSIX
+      O_APPEND only guarantees atomicity up to ``PIPE_BUF`` (~512 bytes on
+      macOS, ~4 KiB on Linux); a PollRecord with embedded threads easily
+      exceeds that. ``flock(LOCK_EX)`` serializes appenders.
+    - **Durability** — a crash between ``write()`` and ``close()`` leaves the
+      new line in the kernel page cache. ``fsync`` forces it to disk so a
+      restart sees either the full line or none.
+
+    The lock is advisory (mandatory locking isn't portable). Every cross-process
+    appender must call this helper or the guarantees break.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
 def _read_jsonl(path: Path) -> Iterator[str]:
-    """Yield non-blank lines from a JSONL file. Empty if the file is missing."""
+    """Yield non-blank, JSON-valid lines from a JSONL file.
+
+    Malformed lines — most plausibly a partial append from an appender that
+    crashed before fsync could complete — are skipped with a warning rather
+    than propagated to Pydantic, which would raise ValidationError and abort
+    the whole read.
+    """
     if not path.exists():
         return
     with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                yield line
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError as exc:
+                _log.warning("state: skipping malformed JSONL line in %s: %s", path, exc)
+                continue
+            yield line
 
 
 class StateStore:
-    """Filesystem-backed state. Each method is a thin file op — no locking."""
+    """Filesystem-backed state. Each append uses fcntl+fsync; reads skip malformed lines."""
 
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
@@ -67,10 +115,7 @@ class StateStore:
     # --- polls ---------------------------------------------------------------
 
     def append_poll(self, record: PollRecord) -> None:
-        path = self._polls_path(record.repo, record.pr)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(record.model_dump_json() + "\n")
+        _atomic_append_jsonl(self._polls_path(record.repo, record.pr), record.model_dump_json())
 
     def read_polls(self, repo: str | None = None, pr: int | None = None) -> Iterator[PollRecord]:
         for path in self._iter_polls_paths(repo, pr):
@@ -116,10 +161,10 @@ class StateStore:
 
     def write_thread(self, snapshot: ThreadSnapshot) -> None:
         """Append the snapshot as a new JSONL line — never overwrites prior history."""
-        path = self._thread_path(snapshot.repo, snapshot.pr, snapshot.thread_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(snapshot.model_dump_json() + "\n")
+        _atomic_append_jsonl(
+            self._thread_path(snapshot.repo, snapshot.pr, snapshot.thread_id),
+            snapshot.model_dump_json(),
+        )
 
     def read_thread(self, repo: str, pr: int, thread_id: str) -> ThreadSnapshot | None:
         """Most recent snapshot (last line of JSONL), or None when missing."""
@@ -140,10 +185,7 @@ class StateStore:
 
     def append_ledger(self, entry: LedgerEntry) -> None:
         """Append one Stage-3+ write record to ledger.jsonl. Never overwritten."""
-        path = self._ledger_path(entry.repo, entry.pr)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(entry.model_dump_json() + "\n")
+        _atomic_append_jsonl(self._ledger_path(entry.repo, entry.pr), entry.model_dump_json())
 
     def read_ledger(self, repo: str, pr: int) -> list[LedgerEntry]:
         """Every ledger entry for this PR, oldest-first. Empty when missing."""
@@ -155,10 +197,7 @@ class StateStore:
     # --- box misses (classifier blind-spot visibility) -----------------------
 
     def append_box_miss(self, miss: BoxMiss) -> None:
-        path = self._box_misses_path(miss.repo, miss.pr)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(miss.model_dump_json() + "\n")
+        _atomic_append_jsonl(self._box_misses_path(miss.repo, miss.pr), miss.model_dump_json())
 
     def read_box_misses(self, repo: str | None = None) -> Iterator[BoxMiss]:
         """Walk every box-misses.jsonl matching the optional repo filter."""

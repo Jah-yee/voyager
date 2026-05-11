@@ -501,3 +501,89 @@ def write_poll_and_snapshot(store, layout_fixtures) -> Path:
 def pr_dir_has_files(pr_dir: Path) -> None:
     assert (pr_dir / "polls.jsonl").exists()
     assert (pr_dir / "threads" / f"{THREAD_ID}.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# Crash / concurrency safety
+# ---------------------------------------------------------------------------
+
+
+@given(
+    'polls.jsonl for "owner/repo" PR 49 contains one valid record followed by a truncated half-line',
+    target_fixture="polls_corrupt_setup",
+)
+def polls_with_truncated_tail(store) -> None:
+    """Simulate a crashed appender: one valid record, then a half-written line.
+
+    The half-line is JSON-prefix without a closing brace — what would land on
+    disk if a process crashed mid-write before fsync flushed the rest.
+    """
+    valid = _make_poll(head_sha="sha_valid")
+    store.append_poll(valid)
+    polls_path = store._polls_path(REPO, PR)
+    with polls_path.open("a") as f:
+        f.write('{"ts": "2026-05-08T12:00:00Z", "repo": "owner/repo", "pr": 49, "head_sha')
+
+
+@when(
+    'all polls are read for "owner/repo" PR 49',
+    target_fixture="polls_result",
+)
+def read_polls_after_corruption(store, polls_corrupt_setup) -> list:
+    return list(store.read_polls(repo=REPO, pr=PR))
+
+
+@given(
+    'ledger.jsonl for "owner/repo" PR 7 contains one valid entry and one corrupt line',
+    target_fixture="ledger_corrupt_setup",
+)
+def ledger_with_corrupt_line(store) -> None:
+    from voyager.bots.clearance.models import LedgerAction, LedgerEntry
+
+    valid = LedgerEntry(
+        ts=_ts(),
+        repo="owner/repo",
+        pr=7,
+        head_sha="abc1234",
+        action=LedgerAction.SUBMIT_REVIEW_APPROVE,
+        actor="iterwheel-clearance[bot]",
+        authorized_by="SWM-1103",
+        reason="all green",
+    )
+    store.append_ledger(valid)
+    ledger_path = store._ledger_path("owner/repo", 7)
+    with ledger_path.open("a") as f:
+        f.write("not even json\n")
+
+
+@when(
+    'the ledger is re-read after corruption for "owner/repo" PR 7',
+    target_fixture="ledger_result_corrupt",
+)
+def read_ledger_after_corruption(store, ledger_corrupt_setup) -> list:
+    return list(store.read_ledger("owner/repo", 7))
+
+
+@then(parsers.parse("exactly {n:d} ledger entry is returned"))
+def exactly_n_ledger_entries(ledger_result_corrupt, n: int) -> None:
+    assert len(ledger_result_corrupt) == n
+
+
+@when(
+    "the poll is appended and the polls file is reopened independently",
+    target_fixture="reopened_payload",
+)
+def append_then_reopen(store, poll) -> str:
+    store.append_poll(poll)
+    polls_path = store._polls_path(REPO, PR)
+    with polls_path.open() as f:
+        return f.read().strip()
+
+
+@then("the on-disk JSONL line round-trips back into a valid PollRecord")
+def reopened_line_validates(reopened_payload: str) -> None:
+    from voyager.bots.clearance.models import PollRecord
+
+    record = PollRecord.model_validate_json(reopened_payload)
+    assert record.repo == REPO
+    assert record.pr == PR

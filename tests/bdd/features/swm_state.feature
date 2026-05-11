@@ -125,3 +125,22 @@ Feature: SWM state store — JSONL append-only poll and thread state
     Given a PollRecord and ThreadSnapshot for "owner/repo" PR 49
     When both are written
     Then the PR directory contains polls.jsonl and a thread file
+
+  # ---------------------------------------------------------------------------
+  # crash / concurrency safety
+  # ---------------------------------------------------------------------------
+
+  Scenario: read_polls tolerates a half-line from a crashed appender
+    Given polls.jsonl for "owner/repo" PR 49 contains one valid record followed by a truncated half-line
+    When all polls are read for "owner/repo" PR 49
+    Then exactly 1 poll is returned
+
+  Scenario: read_ledger tolerates a malformed line
+    Given ledger.jsonl for "owner/repo" PR 7 contains one valid entry and one corrupt line
+    When the ledger is re-read after corruption for "owner/repo" PR 7
+    Then exactly 1 ledger entry is returned
+
+  Scenario: append_poll persists the line so a reopened reader sees the full record
+    Given a PollRecord for repo "owner/repo" PR 49 with status "pending"
+    When the poll is appended and the polls file is reopened independently
+    Then the on-disk JSONL line round-trips back into a valid PollRecord
