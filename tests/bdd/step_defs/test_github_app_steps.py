@@ -830,13 +830,9 @@ def reviews_endpoint_call_count(state: ClientState, expected: int) -> None:
 
 @given("GitHub returns 2 pages of issue comments with 100 then 30 items")
 def mock_paginated_issue_comments(state: ClientState) -> None:
-    page1 = [
-        {"id": i, "body": f"comment-{i}", "user": {"login": "alice"}}
-        for i in range(100)
-    ]
+    page1 = [{"id": i, "body": f"comment-{i}", "user": {"login": "alice"}} for i in range(100)]
     page2 = [
-        {"id": 100 + i, "body": f"comment-{100 + i}", "user": {"login": "bob"}}
-        for i in range(30)
+        {"id": 100 + i, "body": f"comment-{100 + i}", "user": {"login": "bob"}} for i in range(30)
     ]
     existing = getattr(state, "_mock_responses", [])
     state._mock_responses = [  # type: ignore[attr-defined]

@@ -273,6 +273,12 @@ Feature: Clearance bot — PR review readiness verification and routing
     Then the evaluation status is "clearance_blocked"
     And the evaluation reasons include "review thread(s) are unresolved"
 
+  Scenario: Outdated unresolved review thread does NOT block clearance (Codex round 5 P2)
+    Given a clearance snapshot with only an outdated unresolved review thread and a current approval
+    When the clearance snapshot is evaluated
+    Then the evaluation status is "clearance_ready"
+    And the evaluation reasons exclude "review thread(s) are unresolved"
+
   Scenario: Later approval supersedes earlier changes-requested from same author
     Given a clearance snapshot where a reviewer re-approved after requesting changes
     When the clearance snapshot is evaluated

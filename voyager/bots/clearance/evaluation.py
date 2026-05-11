@@ -62,7 +62,15 @@ def evaluate_clearance_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         for author, review in approvals.items()
         if head_sha and review.get("commit_id") and review.get("commit_id") != head_sha
     )
-    unresolved_threads = [thread for thread in review_threads if not thread.get("isResolved")]
+    # Outdated unresolved threads (isOutdated=true) are conversations on code
+    # that has since been replaced; counting them as blockers would keep
+    # Clearance in BLOCKED even after the author pushes a fix. Filter them out
+    # so only current unresolved threads block readiness. Codex round 5 P2.
+    unresolved_threads = [
+        thread
+        for thread in review_threads
+        if not thread.get("isResolved") and not thread.get("isOutdated")
+    ]
 
     reasons: list[str] = []
     if pull_request.get("draft"):

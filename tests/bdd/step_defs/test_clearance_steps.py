@@ -164,6 +164,15 @@ def _unresolved_thread() -> dict:
     return {"isResolved": False}
 
 
+def _outdated_unresolved_thread() -> dict:
+    """Unresolved review thread on code that has since become outdated.
+
+    GraphQL's PullRequestReviewThread carries `isOutdated` precisely so callers
+    can distinguish stale conversations from live ones. Codex round 5 P2.
+    """
+    return {"isResolved": False, "isOutdated": True}
+
+
 # ---------------------------------------------------------------------------
 # Given — evaluate_clearance_snapshot scenarios
 # ---------------------------------------------------------------------------
@@ -219,6 +228,18 @@ def snapshot_unresolved_thread() -> dict:
         "pull_request": _open_pr(),
         "reviews": [_approval()],
         "review_threads": [_unresolved_thread()],
+    }
+
+
+@given(
+    "a clearance snapshot with only an outdated unresolved review thread and a current approval",
+    target_fixture="snapshot",
+)
+def snapshot_only_outdated_unresolved_thread() -> dict:
+    return {
+        "pull_request": _open_pr(),
+        "reviews": [_approval()],
+        "review_threads": [_outdated_unresolved_thread()],
     }
 
 
@@ -292,6 +313,12 @@ def evaluation_no_reasons(evaluation: dict) -> None:
 def evaluation_reasons_include(evaluation: dict, text: str) -> None:
     reasons = evaluation["confidence"]["reasons"]
     assert any(text in r for r in reasons), f"{text!r} not found in reasons: {reasons}"
+
+
+@then(parsers.parse('the evaluation reasons exclude "{text}"'))
+def evaluation_reasons_exclude(evaluation: dict, text: str) -> None:
+    reasons = evaluation["confidence"]["reasons"]
+    assert not any(text in r for r in reasons), f"{text!r} unexpectedly found in reasons: {reasons}"
 
 
 @then(parsers.parse('the evaluation reactions add "{content}"'))
