@@ -15,6 +15,7 @@ from voyager.bots.blueprint import route_blueprint_event
 from voyager.bots.clearance import route_clearance_event
 from voyager.bots.stack import route_stack_event
 from voyager.core.security import match_signature
+from voyager.core.writeback import dry_run_enabled
 
 app = FastAPI(title="Iterwheel GitHub Bridge")
 
@@ -41,10 +42,6 @@ def _get_client() -> Any:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def dry_run_enabled() -> bool:
-    return os.environ.get("DRY_RUN", "").lower() in {"1", "true", "yes"}
 
 
 def configured_webhook_secrets() -> dict[str, str]:

@@ -8,7 +8,18 @@ if TYPE_CHECKING:
 
 
 def dry_run_enabled() -> bool:
-    return os.environ.get("DRY_RUN", "true").lower() != "false"
+    """Canonical dry-run predicate, shared by the server and writeback paths.
+
+    Default is **true** (safe). When DRY_RUN is unset/empty/"1"/"true"/"yes",
+    no GitHub writes happen — the background task only returns planned actions.
+    Explicit "0" / "false" / "no" disables dry-run.
+
+    Codex round 6 P2 (PR #7): the server's /healthz response and the writeback
+    helper must agree on the same predicate, otherwise the bridge can claim
+    writes are enabled while the helper silently no-ops, or vice versa.
+    """
+    raw = os.environ.get("DRY_RUN", "true").strip().lower()
+    return raw not in {"0", "false", "no"}
 
 
 async def apply_route_writeback(
