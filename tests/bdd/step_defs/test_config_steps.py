@@ -65,6 +65,34 @@ def given_env_nonexistent(path: str) -> dict[str, Any]:
     return {"config_path": None, "env_path": path, "config": None, "raised": None}
 
 
+@given(
+    "VOYAGER_CONFIG_PATH is set to a tilde path resolving to a valid config",
+    target_fixture="state",
+)
+def given_env_tilde_resolves_to_valid(tmp_path, monkeypatch) -> dict[str, Any]:
+    """Codex round 3 P2: tilde in VOYAGER_CONFIG_PATH must be expanded.
+
+    Place a valid TOML config at tmp_path/.voyager/config.toml, then point HOME
+    at tmp_path so ``~/.voyager/config.toml`` expands to that file. The env
+    override should resolve and load it (instead of raising "file not found"
+    on a literal ~).
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    target_dir = tmp_path / ".voyager"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / "config.toml"
+
+    fixtures_dir = Path(__file__).parent.parent.parent / "fixtures" / "config"
+    target_file.write_text((fixtures_dir / "valid_two_apps.toml").read_text())
+
+    return {
+        "config_path": None,
+        "env_path": "~/.voyager/config.toml",
+        "config": None,
+        "raised": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # When
 # ---------------------------------------------------------------------------

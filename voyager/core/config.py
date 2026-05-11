@@ -82,10 +82,15 @@ def load_config(path: str | Path | None = None) -> VoyagerConfig:
             # (PR #7): silently falling back to the default search order on a
             # missing override masks operator typos and risks loading a stale
             # config with different GitHub App IDs / private keys.
-            path = Path(env_path)
+            #
+            # Codex round 3 P2: expand tilde first — operators routinely set
+            # paths like "~/.voyager/config.toml" and a literal ~ check would
+            # always fail. Tilde expansion is consistent with private_key_path
+            # and work_dir handling below.
+            path = Path(env_path).expanduser()
             if not path.exists():
                 raise FileNotFoundError(
-                    f"VOYAGER_CONFIG_PATH is set but file not found: {env_path}"
+                    f"VOYAGER_CONFIG_PATH is set but file not found: {path}"
                 )
         else:
             for candidate_fn in _DEFAULT_SEARCH_ORDER:

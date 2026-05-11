@@ -51,3 +51,8 @@ Feature: TOML config loader
     When the config load is attempted via the env override
     Then a FileNotFoundError is raised
     And the error message mentions "VOYAGER_CONFIG_PATH"
+
+  Scenario: VOYAGER_CONFIG_PATH tilde prefix is expanded before existence check (Codex round 3 P2)
+    Given VOYAGER_CONFIG_PATH is set to a tilde path resolving to a valid config
+    When the config is loaded without an explicit path
+    Then the apps dict has 2 entries
