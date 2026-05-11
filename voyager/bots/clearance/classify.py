@@ -15,9 +15,25 @@ from typing import Literal
 
 CODEX_BOT_LOGIN = "chatgpt-codex-connector"
 CODEX_BOT_LOGIN_REST = "chatgpt-codex-connector[bot]"
-SWM_MARKER_PREFIX = "<!-- swm-"
+
+# Voyager writes the new prefix; the old SWM prefix is kept in the read-side
+# filter so that PRs already carrying sweeping-monk's old conclusion comments
+# do not promote those comments to "author replies" after the rename and flip
+# the thread state from A to C. The user explicitly chose the new prefix and
+# said the old comments are frozen; this is purely defensive on the read path.
+CLEARANCE_MARKER_PREFIX = "<!-- clearance-"
+_LEGACY_SWM_MARKER_PREFIX = "<!-- swm-"
+_RECOGNIZED_CONCLUSION_PREFIXES = (CLEARANCE_MARKER_PREFIX, _LEGACY_SWM_MARKER_PREFIX)
+
 ThreadState = Literal["A", "B", "C"]
 CodexBodySignal = Literal["reviewing", "approved"]
+
+
+def _is_bot_conclusion_comment(body: str | None) -> bool:
+    """True when the comment body carries any recognized bot-conclusion marker."""
+    if not body:
+        return False
+    return any(body.startswith(prefix) for prefix in _RECOGNIZED_CONCLUSION_PREFIXES)
 
 
 def codex_pr_body_signal(reactions: list[dict]) -> CodexBodySignal | None:
@@ -70,11 +86,16 @@ def author_replies(thread: dict) -> list[dict]:
 
 
 def latest_author_reply(thread: dict) -> dict | None:
-    """The most recent non-Codex, non-SWM-marker reply, or None."""
+    """The most recent non-Codex, non-bot-conclusion reply, or None.
+
+    Bot-conclusion comments (Clearance's own, and the legacy SWM prefix from
+    sweeping-monk before the rename) are filtered out so they cannot be
+    mistaken for author engagement.
+    """
     replies = [
         c
         for c in author_replies(thread)
-        if _login(c) != CODEX_BOT_LOGIN and not (c.get("body") or "").startswith(SWM_MARKER_PREFIX)
+        if _login(c) != CODEX_BOT_LOGIN and not _is_bot_conclusion_comment(c.get("body"))
     ]
     return replies[-1] if replies else None
 

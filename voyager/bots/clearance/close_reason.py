@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
-
 from voyager.bots.clearance.models import Thread, ThreadSnapshot
 
 
-def has_flash_close_reason(thread: Thread, snapshot: ThreadSnapshot | None) -> bool:
+def has_llm_close_reason(thread: Thread, snapshot: ThreadSnapshot | None) -> bool:
     evidence = snapshot.evidence if snapshot else None
     return bool(thread.llm_reason or (evidence and evidence.llm_reason))
 
@@ -24,11 +22,11 @@ def _verdict_value(thread: Thread) -> str:
 
 
 def conclusion_marker(thread: Thread, *, head_sha: str) -> str:
-    return f"swm-thread-conclusion:{thread.id}:{head_sha[:12]}"
+    return f"clearance-thread-conclusion:{thread.id}:{head_sha[:12]}"
 
 
 def close_reason_marker(thread: Thread, *, head_sha: str) -> str:
-    return f"swm-close-reason:{thread.id}:{head_sha[:12]}"
+    return f"clearance-close-reason:{thread.id}:{head_sha[:12]}"
 
 
 def existing_conclusion_markers(thread: Thread, *, head_sha: str) -> list[str]:
@@ -44,7 +42,7 @@ def _evidence_lines(thread: Thread, snapshot: ThreadSnapshot | None) -> list[str
 
     lines: list[str] = []
     if evidence and evidence.thread_state:
-        lines.append(f"SWM thread state `{evidence.thread_state}`.")
+        lines.append(f"Clearance thread state `{evidence.thread_state}`.")
     author_reply_id = getattr(thread, "author_reply_id", None)
     if author_reply_id:
         lines.append(f"Author reply observed at review comment `{author_reply_id}`.")
@@ -54,7 +52,8 @@ def _evidence_lines(thread: Thread, snapshot: ThreadSnapshot | None) -> list[str
         lines.append("GitHub marks the original review anchor as outdated on the current head.")
     if not lines:
         lines.append(
-            f"SWM's latest poll judged this review thread {_verdict_value(thread)} on the current head."
+            f"Clearance's latest poll judged this review thread {_verdict_value(thread)} "
+            f"on the current head."
         )
     return lines
 
@@ -66,22 +65,33 @@ def build_thread_conclusion_comment(
     head_sha: str,
     model: str | None = None,
 ) -> str:
-    """Build the public GitHub reply posted under a Codex review thread."""
+    """Build the public GitHub reply posted under a Codex review thread.
+
+    ``model`` is the model identifier that actually produced the LLM verdict
+    (when present). Callers should pass the model from the investigator they
+    used, not let it default — otherwise the comment can claim a model that
+    is different from the one whose verdict it is rendering. The earlier
+    implementation fell back to ``os.environ`` at render time, which under
+    multi-model dispatch (Pro/Flash) could mislabel verdicts. GLM-5.1 H2 +
+    MiniMax M2.7 M4 review flag.
+    """
     evidence = snapshot.evidence if snapshot else None
-    flash_reason = thread.llm_reason or (evidence.llm_reason if evidence else None)
+    llm_reason = thread.llm_reason or (evidence.llm_reason if evidence else None)
     verdict = _verdict_value(thread)
     resolved = verdict == "RESOLVED"
     reason = (
-        flash_reason
+        llm_reason
         or thread.verdict_reason
         or (
-            "SWM judged this review thread RESOLVED."
+            "Clearance judged this review thread RESOLVED."
             if resolved
-            else "SWM did not find enough evidence to close this review thread."
+            else "Clearance did not find enough evidence to close this review thread."
         )
     )
-    model_name = model or os.environ.get("VOYAGER_INVESTIGATOR_MODEL", "deepseek-v4-pro")
-    verifier = f"OpenClaw Flash (`{model_name}`)" if flash_reason else "SWM deterministic verifier"
+    if llm_reason:
+        verifier = f"Clearance Investigator (`{model}`)" if model else "Clearance Investigator"
+    else:
+        verifier = "Clearance deterministic verifier"
     confidence = thread.llm_confidence or (evidence.llm_confidence if evidence else None)
     confidence_line = f"\n- Confidence: `{confidence:.2f}`" if confidence is not None else ""
     location = f"{thread.path}:{thread.line}" if thread.line else thread.path

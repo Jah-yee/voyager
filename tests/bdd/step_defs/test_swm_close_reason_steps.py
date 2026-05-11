@@ -120,35 +120,35 @@ def markers_has_conclusion(thread_and_sha: dict, markers: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Given — has_flash_close_reason scenarios
+# Given — has_llm_close_reason scenarios
 # ---------------------------------------------------------------------------
 
 
-@given('a thread with llm_reason "diff removes token logging"', target_fixture="flash_thread")
+@given('a thread with llm_reason "diff removes token logging"', target_fixture="llm_thread")
 def thread_with_llm_reason() -> dict:
     return {"thread": _make_thread(llm_reason="diff removes token logging"), "snapshot": None}
 
 
-@given("a thread with no llm_reason", target_fixture="flash_thread")
+@given("a thread with no llm_reason", target_fixture="llm_thread")
 def thread_no_llm_reason() -> dict:
     return {"thread": _make_thread(), "snapshot": None}
 
 
-@when("has_flash_close_reason is called with no snapshot", target_fixture="flash_result")
-def call_has_flash(flash_thread: dict) -> bool:
-    from voyager.bots.clearance.close_reason import has_flash_close_reason
+@when("has_llm_close_reason is called with no snapshot", target_fixture="llm_result")
+def call_has_llm(llm_thread: dict) -> bool:
+    from voyager.bots.clearance.close_reason import has_llm_close_reason
 
-    return has_flash_close_reason(flash_thread["thread"], flash_thread["snapshot"])
-
-
-@then("the flash close reason result is true")
-def flash_result_true(flash_result: bool) -> None:
-    assert flash_result is True
+    return has_llm_close_reason(llm_thread["thread"], llm_thread["snapshot"])
 
 
-@then("the flash close reason result is false")
-def flash_result_false(flash_result: bool) -> None:
-    assert flash_result is False
+@then("the llm close reason result is true")
+def llm_result_true(llm_result: bool) -> None:
+    assert llm_result is True
+
+
+@then("the llm close reason result is false")
+def llm_result_false(llm_result: bool) -> None:
+    assert llm_result is False
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +200,20 @@ def call_build_conclusion_comment(comment_thread: dict, sha: str) -> str:
     )
 
 
+@when(
+    parsers.parse(
+        'build_thread_conclusion_comment is called with head_sha "{sha}" and model "{model}"'
+    ),
+    target_fixture="conclusion_comment",
+)
+def call_build_conclusion_with_model(comment_thread: dict, sha: str, model: str) -> str:
+    from voyager.bots.clearance.close_reason import build_thread_conclusion_comment
+
+    return build_thread_conclusion_comment(
+        comment_thread["thread"], comment_thread["snapshot"], head_sha=sha, model=model
+    )
+
+
 # ---------------------------------------------------------------------------
 # Then — comment content
 # ---------------------------------------------------------------------------
@@ -208,6 +222,11 @@ def call_build_conclusion_comment(comment_thread: dict, sha: str) -> str:
 @then(parsers.parse('the comment contains "{text}"'))
 def comment_contains(conclusion_comment: str, text: str) -> None:
     assert text in conclusion_comment, f"{text!r} not found in comment:\n{conclusion_comment}"
+
+
+@then(parsers.parse('the comment does not contain "{text}"'))
+def comment_does_not_contain(conclusion_comment: str, text: str) -> None:
+    assert text not in conclusion_comment, f"{text!r} unexpectedly found in:\n{conclusion_comment}"
 
 
 # ---------------------------------------------------------------------------

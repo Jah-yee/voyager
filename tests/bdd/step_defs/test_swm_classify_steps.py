@@ -7,7 +7,14 @@ from pytest_bdd import given, parsers, scenarios, then, when
 scenarios("../features/swm_classify.feature")
 
 CODEX_LOGIN = "chatgpt-codex-connector"
-SWM_MARKER = "<!-- swm-thread-conclusion:PRRT_abc:deadbeef1234 -->\nClearance conclusion..."
+# Both prefixes must be filtered from "author replies": SWM is the legacy
+# prefix from sweeping-monk (PRs still in flight at rename time), Clearance
+# is what voyager writes now. Tests assert both branches of
+# _RECOGNIZED_CONCLUSION_PREFIXES in classify.py.
+LEGACY_SWM_MARKER = "<!-- swm-thread-conclusion:PRRT_abc:deadbeef1234 -->\nLegacy conclusion..."
+CLEARANCE_MARKER = (
+    "<!-- clearance-thread-conclusion:PRRT_abc:deadbeef1234 -->\nClearance conclusion..."
+)
 
 
 def _comment(login: str, body: str = "...", *, db_id: int = 1) -> dict:
@@ -143,7 +150,21 @@ def thread_swm_marker_then_human() -> dict:
     return _thread(
         comments=[
             _comment(CODEX_LOGIN, "P1: serious issue", db_id=1),
-            _comment("iterwheel-clearance[bot]", SWM_MARKER, db_id=9),
+            _comment("iterwheel-clearance[bot]", LEGACY_SWM_MARKER, db_id=9),
+            _comment("ryosaeba1985", "fixed in abc123", db_id=10),
+        ]
+    )
+
+
+@given(
+    "a thread with a Clearance marker comment followed by a human reply",
+    target_fixture="thread",
+)
+def thread_clearance_marker_then_human() -> dict:
+    return _thread(
+        comments=[
+            _comment(CODEX_LOGIN, "P1: serious issue", db_id=1),
+            _comment("iterwheel-clearance[bot]", CLEARANCE_MARKER, db_id=9),
             _comment("ryosaeba1985", "fixed in abc123", db_id=10),
         ]
     )
@@ -154,7 +175,17 @@ def thread_only_swm_marker() -> dict:
     return _thread(
         comments=[
             _comment(CODEX_LOGIN, "P1: serious issue", db_id=1),
-            _comment("iterwheel-clearance[bot]", SWM_MARKER, db_id=7),
+            _comment("iterwheel-clearance[bot]", LEGACY_SWM_MARKER, db_id=7),
+        ]
+    )
+
+
+@given("a thread with only a Clearance marker comment and no human reply", target_fixture="thread")
+def thread_only_clearance_marker() -> dict:
+    return _thread(
+        comments=[
+            _comment(CODEX_LOGIN, "P1: serious issue", db_id=1),
+            _comment("iterwheel-clearance[bot]", CLEARANCE_MARKER, db_id=7),
         ]
     )
 

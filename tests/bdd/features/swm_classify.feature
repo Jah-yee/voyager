@@ -63,13 +63,23 @@ Feature: SWM classify — Codex thread state classification
     When latest_author_reply is called
     Then the latest reply databaseId is 2
 
-  Scenario: latest_author_reply skips SWM marker comments
+  Scenario: latest_author_reply skips legacy SWM marker comments
     Given a thread with a SWM marker comment followed by a human reply
     When latest_author_reply is called
     Then the latest reply databaseId is 10
 
-  Scenario: latest_author_reply returns None when only SWM markers are present
+  Scenario: latest_author_reply skips Clearance marker comments
+    Given a thread with a Clearance marker comment followed by a human reply
+    When latest_author_reply is called
+    Then the latest reply databaseId is 10
+
+  Scenario: latest_author_reply returns None when only legacy SWM markers are present
     Given a thread with only a SWM marker comment and no human reply
+    When latest_author_reply is called
+    Then the latest author reply is None
+
+  Scenario: latest_author_reply returns None when only Clearance markers are present
+    Given a thread with only a Clearance marker comment and no human reply
     When latest_author_reply is called
     Then the latest author reply is None
 

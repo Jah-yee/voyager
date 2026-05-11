@@ -1,4 +1,4 @@
-"""Pydantic models for SWM watchdog state.
+"""Pydantic models for Clearance watchdog state.
 
 Mirrors the JSON shapes from sweeping-monk SWM-1101 (thread verdict shape).
 Validation here is the single source of truth for both JSONL writes and reads.
