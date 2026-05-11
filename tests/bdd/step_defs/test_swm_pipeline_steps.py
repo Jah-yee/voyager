@@ -56,6 +56,7 @@ class _StubGitHubAppClient:
         self.fail_pull_request: bool = False
         self.resolve_calls: list[tuple[str, str]] = []
         self.create_comment_calls: list[tuple[str, str, int, str]] = []
+        self.review_thread_reply_calls: list[tuple[str, str, int, int, str]] = []
         self.graphql_calls: list[tuple[str, dict[str, Any]]] = []
         self.resolve_response: dict[str, Any] = {
             "id": THREAD_ID,
@@ -79,6 +80,18 @@ class _StubGitHubAppClient:
     ) -> dict[str, Any]:
         self.create_comment_calls.append((app_slug, repository, issue_number, body))
         return {"html_url": "https://example/comment/1"}
+
+    async def create_review_thread_reply(
+        self,
+        app_slug: str,
+        repository: str,
+        pull_number: int,
+        comment_id: int,
+        *,
+        body: str,
+    ) -> dict[str, Any]:
+        self.review_thread_reply_calls.append((app_slug, repository, pull_number, comment_id, body))
+        return {"html_url": "https://example/comment/inline-1"}
 
     async def resolve_review_thread(
         self, app_slug: str, repository: str, thread_id: str
@@ -353,6 +366,25 @@ def then_no_mutation(ctx) -> None:
 @then(parsers.parse("exactly {count:d} resolveReviewThread mutation was invoked"))
 def then_n_mutations(ctx, count: int) -> None:
     assert len(ctx["client"].resolve_calls) == count, f"resolve_calls={ctx['client'].resolve_calls}"
+
+
+@then(parsers.parse("exactly {count:d} in-thread reply was posted under the Codex review comment"))
+def then_n_inline_replies(ctx, count: int) -> None:
+    calls = ctx["client"].review_thread_reply_calls
+    assert len(calls) == count, f"in-thread reply calls={calls!r}"
+    if count >= 1:
+        # Sanity: the comment_id we replied under matches the Codex review comment.
+        _slug, _repo, _pr, comment_id, _body = calls[0]
+        assert comment_id == CODEX_COMMENT_ID, (
+            f"replied under comment_id={comment_id!r}, expected {CODEX_COMMENT_ID}"
+        )
+
+
+@then("no in-thread reply was posted")
+def then_no_inline_reply(ctx) -> None:
+    assert ctx["client"].review_thread_reply_calls == [], (
+        f"unexpected in-thread reply calls: {ctx['client'].review_thread_reply_calls}"
+    )
 
 
 # ---------------------------------------------------------------------------
