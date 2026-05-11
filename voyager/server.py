@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,6 +17,26 @@ from voyager.bots.stack import route_stack_event
 from voyager.core.security import match_signature
 
 app = FastAPI(title="Iterwheel GitHub Bridge")
+
+_log = logging.getLogger(__name__)
+_recent_writebacks: deque[dict[str, Any]] = deque(maxlen=100)
+_client: Any = None
+
+
+def _get_client() -> Any:
+    """Return a memoized GitHubAppClient, or None if config is unavailable."""
+    global _client
+    if _client is not None:
+        return _client
+    try:
+        from voyager.core.config import load_config
+        from voyager.core.github_app import GitHubAppClient
+
+        cfg = load_config()
+        _client = GitHubAppClient(cfg.apps)
+        return _client
+    except Exception:
+        return None
 
 
 def _utc_now() -> str:
@@ -56,13 +78,29 @@ def _route_summaries(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 async def _process_route_writebacks(
     *,
-    matched_slug: str,
+    matched_slug: str,  # noqa: ARG001 — reserved for future per-slug client selection
     event: str,
     delivery_id: str,
     payload: dict[str, Any],
     routes: list[dict[str, Any]],
 ) -> None:
-    """Background task: placeholder for writeback processing (no real I/O in tests)."""
+    """Background task: apply writeback actions for each matched route."""
+    from voyager.core.writeback import apply_route_writeback
+
+    client = _get_client()
+    if client is None:
+        _log.warning(
+            "writeback: no client available (config missing?), skipping %d routes", len(routes)
+        )
+        return
+
+    repository: str | None = (payload.get("repository") or {}).get("full_name")
+    for route in routes:
+        try:
+            result = await apply_route_writeback(client, route, repository=repository)
+            _recent_writebacks.append({"delivery_id": delivery_id, "event": event, **result})
+        except Exception:
+            _log.exception("writeback failed for route %r", route.get("agent"))
 
 
 @app.get("/")
@@ -132,5 +170,5 @@ async def github_webhook(
         "event": x_github_event,
         "delivery_id": x_github_delivery,
         "routes": _route_summaries(routes),
-        "writebacks": {"status": "stub", "scheduled": len(routes)},
+        "writebacks": {"status": "queued", "scheduled": len(routes)},
     }
