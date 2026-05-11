@@ -81,8 +81,13 @@ async def _process_route_writebacks(
     payload: dict[str, Any],
     routes: list[dict[str, Any]],
 ) -> None:
-    """Background task: apply writeback actions for each matched route."""
-    from voyager.core.writeback import apply_route_writeback
+    """Background task: dispatch writeback actions for each matched route.
+
+    Clearance routes carry a dynamic-enrichment marker — dispatch_route_writeback
+    handles them by calling enrich_clearance_route first; Blueprint/Stack routes
+    already have concrete writeback shapes and dispatch passes through.
+    """
+    from voyager.core.writeback import dispatch_route_writeback
 
     client = _get_client()
     if client is None:
@@ -94,7 +99,7 @@ async def _process_route_writebacks(
     repository: str | None = (payload.get("repository") or {}).get("full_name")
     for route in routes:
         try:
-            result = await apply_route_writeback(client, route, repository=repository)
+            result = await dispatch_route_writeback(client, route, repository=repository)
             _recent_writebacks.append({"delivery_id": delivery_id, "event": event, **result})
         except Exception:
             _log.exception("writeback failed for route %r", route.get("agent"))

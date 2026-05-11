@@ -65,3 +65,27 @@ Feature: apply_route_writeback — write GitHub labels/reactions/comments
     When apply_route_writeback is called with repository "iterwheel/voyager-sandbox"
     Then the result has applied false
     And the result reason mentions "issue number"
+
+  # ---------------------------------------------------------------------------
+  # dispatch_route_writeback — Codex round 1 P1 (PR #7):
+  # Clearance routes carry only {"dynamic": "clearance_readiness"} in writeback;
+  # they MUST be enriched first via enrich_clearance_route before apply.
+  # ---------------------------------------------------------------------------
+
+  Scenario: Dispatch with a clearance dynamic route and no repository is skipped
+    Given a writeback client with a recording transport
+    And a clearance dynamic route on PR 42
+    And DRY_RUN is "false"
+    When dispatch_route_writeback is called with repository None
+    Then the result has applied false
+    And the result reason mentions "Clearance enrichment"
+
+  Scenario: Dispatch with a clearance dynamic route enriches before applying
+    Given a writeback client with a recording transport for label changes
+    And a clearance dynamic route on PR 42
+    And enrich_clearance_route is stubbed to return a concrete writeback
+    And DRY_RUN is "false"
+    When dispatch_route_writeback is called with repository "iterwheel/voyager-sandbox"
+    Then the result has applied true
+    And the result planned add_labels contains "clearance-ready"
+    And the result planned remove_labels contains "clearance-pending"

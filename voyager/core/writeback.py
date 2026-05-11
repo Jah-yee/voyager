@@ -89,3 +89,45 @@ async def apply_route_writeback(
         "planned": planned,
         "comment_url": (comment or {}).get("html_url"),
     }
+
+
+async def dispatch_route_writeback(
+    client: GitHubAppClient,
+    route: dict[str, Any],
+    *,
+    repository: str | None,
+) -> dict[str, Any]:
+    """Dispatch a route to the right writeback path.
+
+    Routes from `route_clearance_event` carry only ``{"dynamic": "clearance_readiness"}``
+    in their writeback shape — the real labels / comment / reactions come from
+    `enrich_clearance_route`, which fetches the live PR snapshot (pull request,
+    reviews, review threads) and computes the concrete writeback. Routes from
+    Blueprint and Stack already carry concrete writeback shapes, so they go
+    straight to ``apply_route_writeback``.
+
+    Codex round 1 P1 (PR #7).
+    """
+    writeback = route.get("writeback") or {}
+    dynamic = writeback.get("dynamic")
+
+    if dynamic == "clearance_readiness":
+        if not repository:
+            return {
+                "applied": False,
+                "reason": "missing repository (required for Clearance enrichment)",
+            }
+        # Lazy import: the clearance bot is a separate package, importing it at
+        # module top would create a tight coupling and complicate test mocking.
+        from voyager.bots.clearance import enrich_clearance_route
+
+        try:
+            enriched = await enrich_clearance_route(client, route, repository=repository)
+        except Exception as exc:
+            return {
+                "applied": False,
+                "reason": f"clearance enrichment failed: {exc.__class__.__name__}: {exc}",
+            }
+        return await apply_route_writeback(client, enriched, repository=repository)
+
+    return await apply_route_writeback(client, route, repository=repository)

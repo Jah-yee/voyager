@@ -344,6 +344,110 @@ def when_apply_writeback_none_repo(state: WritebackState) -> WritebackState:
 
 
 # ---------------------------------------------------------------------------
+# dispatch_route_writeback — Codex round 1 P1 (PR #7)
+# ---------------------------------------------------------------------------
+
+
+@given(parsers.parse("a clearance dynamic route on PR {pr:d}"))
+def given_clearance_dynamic_route(state: WritebackState, pr: int) -> None:
+    """Mimic the shape that route_clearance_event() returns.
+
+    Clearance bot routes carry only a dynamic-enrichment marker — the real
+    labels/comment/reactions come from enrich_clearance_route(), which fetches
+    the live PR snapshot.
+
+    Also register an iterwheel-clearance AppConfig in state.apps so the test
+    client knows the slug (GitHubAppClient holds state.apps by reference, so
+    mutating the dict after client construction is observed).
+    """
+    if "iterwheel-clearance" not in state.apps:
+        state.apps["iterwheel-clearance"] = _make_app_config(slug="iterwheel-clearance")
+
+    state.route = {
+        "agent": "iterwheel-clearance",
+        "kind": "clearance_readiness",
+        "validation": {
+            "pr_number": pr,
+            "issue_number": pr,
+            "status": "clearance_pending",
+            "conclusion": "neutral",
+        },
+        "writeback": {"dynamic": "clearance_readiness"},
+    }
+
+
+@given("enrich_clearance_route is stubbed to return a concrete writeback")
+def stub_enrich_clearance_route(state: WritebackState, monkeypatch) -> None:
+    """Stub the clearance bot's enrich function so the dispatcher can be tested
+    without mocking the full 3-call GitHub snapshot flow (pull_request +
+    pull_request_reviews + pull_request_review_threads).
+    """
+
+    async def fake_enrich(
+        client, route, *, repository: str, automation=None
+    ) -> dict:  # pragma: no cover - signature mirrors the real function
+        return {
+            "agent": route["agent"],
+            "kind": route["kind"],
+            "validation": {**route["validation"], "issue_number": route["validation"]["pr_number"]},
+            "writeback": {
+                "labels": {
+                    "add": ["clearance-ready"],
+                    "remove": ["clearance-pending"],
+                },
+                "reactions": {"add": [], "remove": []},
+            },
+        }
+
+    import voyager.bots.clearance as clearance_pkg
+
+    monkeypatch.setattr(clearance_pkg, "enrich_clearance_route", fake_enrich)
+
+
+@when(
+    parsers.parse('dispatch_route_writeback is called with repository "{repository}"'),
+    target_fixture="state",
+)
+def when_dispatch_writeback(state: WritebackState, repository: str) -> WritebackState:
+    import asyncio
+
+    from voyager.core.writeback import dispatch_route_writeback  # lazy
+
+    old = os.environ.get("DRY_RUN")
+    os.environ["DRY_RUN"] = state.dry_run_env
+    try:
+        state.result = asyncio.get_event_loop().run_until_complete(
+            dispatch_route_writeback(state.client, state.route, repository=repository)
+        )
+    finally:
+        if old is None:
+            os.environ.pop("DRY_RUN", None)
+        else:
+            os.environ["DRY_RUN"] = old
+    return state
+
+
+@when("dispatch_route_writeback is called with repository None", target_fixture="state")
+def when_dispatch_writeback_none_repo(state: WritebackState) -> WritebackState:
+    import asyncio
+
+    from voyager.core.writeback import dispatch_route_writeback  # lazy
+
+    old = os.environ.get("DRY_RUN")
+    os.environ["DRY_RUN"] = state.dry_run_env
+    try:
+        state.result = asyncio.get_event_loop().run_until_complete(
+            dispatch_route_writeback(state.client, state.route, repository=None)
+        )
+    finally:
+        if old is None:
+            os.environ.pop("DRY_RUN", None)
+        else:
+            os.environ["DRY_RUN"] = old
+    return state
+
+
+# ---------------------------------------------------------------------------
 # Then
 # ---------------------------------------------------------------------------
 
