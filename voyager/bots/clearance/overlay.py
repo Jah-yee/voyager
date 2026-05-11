@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
+from .classify import CodexBodySignal
 from .constants import (
     CLEARANCE_AGENT_SLUG,
     CLEARANCE_BLOCKED_LABEL,
@@ -12,18 +13,19 @@ from .constants import (
     CLEARANCE_LABELS,
     CLEARANCE_PENDING_LABEL,
 )
+from .evaluation import ClearanceEvaluation
 
 
 def apply_swm_overlay(
-    evaluation: dict[str, Any], automation: dict[str, Any] | None
-) -> dict[str, Any]:
+    evaluation: ClearanceEvaluation, automation: dict[str, Any] | None
+) -> ClearanceEvaluation:
     if not automation or not automation.get("enabled"):
         return evaluation
     swm_status = automation.get("status")
     if swm_status not in {"blocked", "pending", "error"}:
         return evaluation
 
-    updated = dict(evaluation)
+    updated: dict[str, Any] = dict(evaluation)
     confidence = dict(updated.get("confidence") or {})
     reasons = list(confidence.get("reasons") or [])
     reason = (
@@ -51,7 +53,7 @@ def apply_swm_overlay(
         "remove": [item for item in CLEARANCE_LABELS if item != label],
     }
     updated["reactions"] = {"add": ["eyes"], "remove": ["+1", "rocket"]}
-    return updated
+    return cast(ClearanceEvaluation, updated)
 
 
 def clearance_swm_codex_pr_body_signal(route: dict[str, Any]) -> str | None:
@@ -66,7 +68,7 @@ def clearance_waiting_on_codex_pr_body_reaction(route: dict[str, Any]) -> bool:
     return (
         route.get("agent") == CLEARANCE_AGENT_SLUG
         and validation.get("status") == "clearance_pending"
-        and clearance_swm_codex_pr_body_signal(route) == "reviewing"
+        and clearance_swm_codex_pr_body_signal(route) == CodexBodySignal.REVIEWING
     )
 
 

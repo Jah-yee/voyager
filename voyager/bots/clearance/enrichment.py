@@ -12,7 +12,7 @@ from .constants import (
     CLEARANCE_CLASSIFIER_VERSION,
     CLEARANCE_COMMENT_MARKER,
 )
-from .evaluation import evaluate_clearance_snapshot
+from .evaluation import ClearanceEvaluation, evaluate_clearance_snapshot
 from .overlay import apply_swm_overlay
 
 
@@ -47,7 +47,7 @@ def one_line(value: Any, *, limit: int = 260) -> str:
 
 
 def build_clearance_comment(
-    evaluation: dict[str, Any], automation: dict[str, Any] | None = None
+    evaluation: ClearanceEvaluation, automation: dict[str, Any] | None = None
 ) -> str:
     review_state = evaluation["review_state"]
     lines = [

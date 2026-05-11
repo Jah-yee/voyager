@@ -11,7 +11,7 @@ and downstream callers can still inspect the full thread for additional signal.
 
 from __future__ import annotations
 
-from typing import Literal
+from enum import StrEnum
 
 CODEX_BOT_LOGIN = "chatgpt-codex-connector"
 CODEX_BOT_LOGIN_REST = "chatgpt-codex-connector[bot]"
@@ -25,8 +25,16 @@ CLEARANCE_MARKER_PREFIX = "<!-- clearance-"
 _LEGACY_SWM_MARKER_PREFIX = "<!-- swm-"
 _RECOGNIZED_CONCLUSION_PREFIXES = (CLEARANCE_MARKER_PREFIX, _LEGACY_SWM_MARKER_PREFIX)
 
-ThreadState = Literal["A", "B", "C"]
-CodexBodySignal = Literal["reviewing", "approved"]
+
+class ThreadState(StrEnum):
+    A = "A"
+    B = "B"
+    C = "C"
+
+
+class CodexBodySignal(StrEnum):
+    REVIEWING = "reviewing"
+    APPROVED = "approved"
 
 
 def _is_bot_conclusion_comment(body: str | None) -> bool:
@@ -55,9 +63,9 @@ def codex_pr_body_signal(reactions: list[dict]) -> CodexBodySignal | None:
         elif r.get("content") == "EYES":
             has_eyes = True
     if has_thumbs:
-        return "approved"
+        return CodexBodySignal.APPROVED
     if has_eyes:
-        return "reviewing"
+        return CodexBodySignal.REVIEWING
     return None
 
 
@@ -109,7 +117,7 @@ def latest_codex_followup(thread: dict) -> dict | None:
 def classify_thread(thread: dict) -> ThreadState:
     """Return A/B/C per the SWM-1101 taxonomy. Outdated wins over replied."""
     if thread.get("isOutdated"):
-        return "B"
+        return ThreadState.B
     if latest_author_reply(thread) is not None:
-        return "C"
-    return "A"
+        return ThreadState.C
+    return ThreadState.A

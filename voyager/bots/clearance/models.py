@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from voyager.bots.clearance.classify import CodexBodySignal, ThreadState
 
 
 class Status(StrEnum):
@@ -43,10 +44,15 @@ class CIConclusion(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class Stage15Mutation(StrEnum):
+    RESOLVE_REVIEW_THREAD = "resolveReviewThread"
+    UNRESOLVE_REVIEW_THREAD = "unresolveReviewThread"
+
+
 class Stage15Action(BaseModel):
     """Record of a Stage 1.5 GraphQL mutation the watchdog performed."""
 
-    mutation: Literal["resolveReviewThread", "unresolveReviewThread"]
+    mutation: Stage15Mutation
     threadId: str  # noqa: N815 — mirrors GitHub GraphQL field name
     result: dict
 
@@ -95,7 +101,7 @@ class PollRecord(BaseModel):
     codex_resolved: int = 0
     codex_last_review_at: datetime | None = None
     codex_last_review_head: str | None = None
-    codex_pr_body_signal: Literal["reviewing", "approved"] | None = None
+    codex_pr_body_signal: CodexBodySignal | None = None
     threads: list[Thread] = Field(default_factory=list)
     summary: str | None = None
     trigger: str | None = None
@@ -123,7 +129,7 @@ class Evidence(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    thread_state: Literal["A", "B", "C"] | None = None
+    thread_state: ThreadState | None = None
     author_reply_id: int | None = None
     author_reply_substantive: bool | None = None
     author_reply_summary: str | None = None
