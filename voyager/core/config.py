@@ -89,9 +89,7 @@ def load_config(path: str | Path | None = None) -> VoyagerConfig:
             # and work_dir handling below.
             path = Path(env_path).expanduser()
             if not path.exists():
-                raise FileNotFoundError(
-                    f"VOYAGER_CONFIG_PATH is set but file not found: {path}"
-                )
+                raise FileNotFoundError(f"VOYAGER_CONFIG_PATH is set but file not found: {path}")
         else:
             for candidate_fn in _DEFAULT_SEARCH_ORDER:
                 candidate = candidate_fn()
