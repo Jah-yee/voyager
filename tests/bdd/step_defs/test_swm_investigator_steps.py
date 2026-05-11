@@ -41,23 +41,38 @@ def _ok_response(verdict: str = "RESOLVED", confidence: float = 0.91) -> str:
 
 
 class _StubDeepSeekClient:
-    """Minimal stub for DeepSeekClient — returns pre-set content or raises."""
+    """Minimal stub for DeepSeekClient — returns pre-set content or raises.
+
+    Also captures the messages and thinking flag of the last call so tests
+    can assert that ``thinking=True`` was forwarded and that the system
+    prompt carries the output schema (GLM M3 review flag — the original
+    stub silently accepted any ``**kwargs`` and was unobservable).
+    """
 
     def __init__(
-        self, *, response_text: str | None = None, raise_exc: Exception | None = None
+        self,
+        *,
+        response_text: str | None = None,
+        reasoning_text: str | None = None,
+        raise_exc: Exception | None = None,
     ) -> None:
         self._response_text = response_text
+        self._reasoning_text = reasoning_text
         self._raise_exc = raise_exc
         self._model = "stub-model"
+        self.last_messages: list | None = None
+        self.last_thinking: bool | None = None
 
     async def complete(self, messages, *, thinking=True, **kwargs):
         from voyager.llm.deepseek import AssistantTurn
 
+        self.last_messages = list(messages)
+        self.last_thinking = thinking
         if self._raise_exc is not None:
             raise self._raise_exc
         return AssistantTurn(
             content=self._response_text,
-            reasoning_content=None,
+            reasoning_content=self._reasoning_text,
         )
 
 
@@ -80,6 +95,28 @@ def raw_text_plain(text: str) -> str:
 )
 def raw_text_fenced(verdict: str) -> str:
     return f'```json\n{{"verdict":"{verdict}","confidence":0.9,"reason":"ok","evidence":[]}}\n```'
+
+
+@given(
+    parsers.parse('raw text containing two JSON objects with verdicts "{first}" and "{second}"'),
+    target_fixture="raw_text",
+)
+def raw_text_two_objects(first: str, second: str) -> str:
+    return (
+        f'{{"verdict":"{first}","confidence":0.9,"reason":"first","evidence":[]}}\n'
+        f'{{"verdict":"{second}","confidence":0.4,"reason":"second","evidence":[]}}'
+    )
+
+
+@given(
+    "raw text where reasoning includes an unrelated brace pair before the verdict JSON",
+    target_fixture="raw_text",
+)
+def raw_text_with_brace_pair_preamble() -> str:
+    return (
+        "Considering the diff sample {a:1, b:2}, the fix addresses the concern.\n"
+        '{"verdict":"RESOLVED","confidence":0.9,"reason":"diff addresses concern","evidence":[]}'
+    )
 
 
 @when("_extract_json_object is called", target_fixture="extracted")
@@ -163,10 +200,61 @@ def stub_client_resolved(conf: float):
 
 @given("a DeepSeekClient stub that raises an exception", target_fixture="investigator")
 def stub_client_raises():
+    """Use httpx.HTTPError so the narrow except in investigate() catches it.
+
+    The investigator now only wraps integration-layer exceptions
+    (httpx.HTTPError, openai.APIError, ValueError) into InvestigationError;
+    a generic RuntimeError would propagate to expose programming errors
+    (DeepSeek M2 review flag).
+    """
+    import httpx
+
     from voyager.bots.clearance.investigator import DeepSeekInvestigator
 
-    stub = _StubDeepSeekClient(raise_exc=RuntimeError("network error"))
+    stub = _StubDeepSeekClient(raise_exc=httpx.HTTPError("simulated network error"))
     return DeepSeekInvestigator(client=stub)
+
+
+@given(
+    "a DeepSeekClient stub that returns reasoning_content but no content",
+    target_fixture="investigator",
+)
+def stub_client_reasoning_only():
+    from voyager.bots.clearance.investigator import DeepSeekInvestigator
+
+    stub = _StubDeepSeekClient(
+        response_text=None,
+        reasoning_text="Considering several angles before deciding...",
+    )
+    return DeepSeekInvestigator(client=stub)
+
+
+@given(
+    parsers.parse(
+        "a DeepSeekClient stub that returns a RESOLVED verdict with confidence "
+        '{conf:f} and reasoning "{reasoning}"'
+    ),
+    target_fixture="investigator",
+)
+def stub_client_with_reasoning(conf: float, reasoning: str):
+    from voyager.bots.clearance.investigator import DeepSeekInvestigator
+
+    stub = _StubDeepSeekClient(
+        response_text=_ok_response("RESOLVED", conf),
+        reasoning_text=reasoning,
+    )
+    return DeepSeekInvestigator(client=stub, min_confidence=0.8)
+
+
+@given(
+    "a recording DeepSeekClient stub that returns a RESOLVED verdict",
+    target_fixture="investigator",
+)
+def recording_stub():
+    from voyager.bots.clearance.investigator import DeepSeekInvestigator
+
+    stub = _StubDeepSeekClient(response_text=_ok_response("RESOLVED", 0.9))
+    return DeepSeekInvestigator(client=stub, min_confidence=0.8)
 
 
 @given("a DeepSeekClient stub that returns garbled non-JSON text", target_fixture="investigator")
@@ -217,6 +305,38 @@ def investigation_confidence(inv_result, conf: float) -> None:
 @then("an InvestigationError is raised from investigate")
 def investigation_error_from_investigate(inv_result) -> None:
     assert "error" in inv_result, f"Expected InvestigationError but got: {inv_result}"
+
+
+@then(parsers.parse('an InvestigationError mentioning "{text}" is raised from investigate'))
+def investigation_error_mentions(inv_result, text: str) -> None:
+    assert "error" in inv_result, f"Expected InvestigationError but got: {inv_result}"
+    assert text in str(inv_result["error"]), (
+        f"Expected {text!r} in error message: {inv_result['error']}"
+    )
+
+
+@then(parsers.parse('the decision raw_text contains "{text}"'))
+def decision_raw_text_contains(inv_result, text: str) -> None:
+    assert "decision" in inv_result, f"Expected decision but got: {inv_result}"
+    raw_text = inv_result["decision"].raw_text or ""
+    assert text in raw_text, f"Expected {text!r} in raw_text: {raw_text!r}"
+
+
+@then("the client was called with thinking enabled")
+def client_called_with_thinking(investigator) -> None:
+    assert investigator._client.last_thinking is True, (
+        f"thinking flag was {investigator._client.last_thinking!r}, expected True"
+    )
+
+
+@then("the system message contains the output schema")
+def system_message_has_schema(investigator) -> None:
+    messages = investigator._client.last_messages or []
+    system = next((m for m in messages if m.role == "system"), None)
+    assert system is not None, "no system message captured"
+    assert "RESOLVED|OPEN|NEEDS_HUMAN_JUDGMENT" in (system.content or ""), (
+        f"system prompt missing output schema: {system.content!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

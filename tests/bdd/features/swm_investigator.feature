@@ -18,6 +18,16 @@ Feature: SWM investigator — DeepSeek-backed thread verdict investigation
     When _extract_json_object is called
     Then the extracted dict has verdict "RESOLVED"
 
+  Scenario: Extract first JSON object when model emits two
+    Given raw text containing two JSON objects with verdicts "RESOLVED" and "OPEN"
+    When _extract_json_object is called
+    Then the extracted dict has verdict "RESOLVED"
+
+  Scenario: Extract JSON from reasoning preamble with brace pair
+    Given raw text where reasoning includes an unrelated brace pair before the verdict JSON
+    When _extract_json_object is called
+    Then the extracted dict has verdict "RESOLVED"
+
   # ---------------------------------------------------------------------------
   # _coerce_decision helper
   # ---------------------------------------------------------------------------
@@ -72,6 +82,25 @@ Feature: SWM investigator — DeepSeek-backed thread verdict investigation
     And an investigation input for a state C thread
     When DeepSeekInvestigator.investigate is awaited
     Then the investigation verdict is "NEEDS_HUMAN_JUDGMENT"
+
+  Scenario: DeepSeekInvestigator raises diagnostic when only reasoning is returned
+    Given a DeepSeekClient stub that returns reasoning_content but no content
+    And an investigation input for a state C thread
+    When DeepSeekInvestigator.investigate is awaited
+    Then an InvestigationError mentioning "reasoning-only response" is raised from investigate
+
+  Scenario: DeepSeekInvestigator records reasoning in audit raw_text
+    Given a DeepSeekClient stub that returns a RESOLVED verdict with confidence 0.91 and reasoning "the diff removes token logging"
+    And an investigation input for a state C thread
+    When DeepSeekInvestigator.investigate is awaited
+    Then the decision raw_text contains "the diff removes token logging"
+
+  Scenario: DeepSeekInvestigator invokes the client with thinking enabled
+    Given a recording DeepSeekClient stub that returns a RESOLVED verdict
+    And an investigation input for a state C thread
+    When DeepSeekInvestigator.investigate is awaited
+    Then the client was called with thinking enabled
+    And the system message contains the output schema
 
   # ---------------------------------------------------------------------------
   # build_investigator_from_env

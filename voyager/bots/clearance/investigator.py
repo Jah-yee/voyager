@@ -12,13 +12,27 @@ from the sweeping-monk source so Phase B wiring requires no interface changes.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
+import httpx
+import openai
+
 if TYPE_CHECKING:
     from voyager.llm.deepseek import DeepSeekClient
+
+_log = logging.getLogger(__name__)
+
+# Models supported by DeepSeek's V4 lineup. Pro is the default; Flash is
+# substantially cheaper but weaker at multi-step semantic reasoning, so we
+# warn when the factory builds an investigator targeting it. DeepSeek M3
+# review flag — the confidence threshold was tuned against Pro.
+_KNOWN_PRO_MODELS = frozenset({"deepseek-v4-pro", "deepseek-reasoner"})
+_KNOWN_FLASH_MODELS = frozenset({"deepseek-v4-flash", "deepseek-chat"})
 
 InvestigatorVerdict = Literal["RESOLVED", "OPEN", "NEEDS_HUMAN_JUDGMENT"]
 
@@ -66,18 +80,83 @@ def _truncate(value: str, limit: int) -> str:
     return value[:limit] + "\n...[truncated]..."
 
 
+def _strip_fenced_block(text: str) -> str:
+    """Strip a single leading+trailing fenced code block, if present.
+
+    Handles both ``​```json ... ```​`` and bare ``​``` ... ```​`` markers
+    appearing anywhere in the text. DeepSeek L1 review flag — the original
+    fenced-block stripper only triggered when the response *started* with a
+    backtick, so a "Here is the verdict:\n```{...}```" response fell through
+    to the regex fallback. With the brace-counting walker that fallback is
+    safer, but a uniform strip keeps the direct-parse path warm.
+    """
+    return re.sub(r"```(?:json)?\s*([\s\S]*?)\s*```", r"\1", text)
+
+
+def _iter_balanced_objects(text: str) -> Iterator[str]:
+    """Yield each top-level balanced ``{...}`` substring, in document order.
+
+    Single forward pass, string-literal aware: braces inside a JSON string
+    literal do not affect depth, and backslash escapes are honoured so that
+    ``\\"`` does not prematurely close the string. Replaces a greedy
+    ``re.search(r"\\{.*\\}", text, re.S)`` matcher — that pattern would
+    match from the first ``{`` to the *last* ``}`` and produce a single
+    invalid union of any pair of objects (DeepSeek H1 review flag).
+    """
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0 and start >= 0:
+                yield text[start : i + 1]
+                start = -1
+
+
 def _extract_json_object(text: str) -> dict:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-        stripped = re.sub(r"\s*```$", "", stripped)
+    """Extract one JSON object from a possibly-noisy LLM response.
+
+    Strategy:
+      1. Strip fenced code blocks anywhere in the text.
+      2. Try direct ``json.loads`` on the result.
+      3. On failure, walk every top-level balanced ``{...}`` in document
+         order and return the first one that parses as valid JSON. This
+         tolerates both a reasoning preamble containing brace-not-JSON
+         fragments (e.g., ``{a:1, b:2}``) and multi-object outputs.
+
+    The original ``JSONDecodeError`` from the direct parse is re-raised if
+    no candidate fragment parses — that error preserves the most useful
+    position information for debugging.
+    """
+    stripped = _strip_fenced_block(text).strip()
     try:
         return dict(json.loads(stripped))
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", stripped, flags=re.S)
-        if not match:
-            raise
-        return dict(json.loads(match.group(0)))
+        for fragment in _iter_balanced_objects(stripped):
+            try:
+                return dict(json.loads(fragment))
+            except json.JSONDecodeError:
+                continue
+        raise
 
 
 def _coerce_decision(raw: dict, *, min_confidence: float, raw_text: str) -> InvestigationDecision:
@@ -111,6 +190,14 @@ def _coerce_decision(raw: dict, *, min_confidence: float, raw_text: str) -> Inve
 
 
 def _build_prompt(item: ThreadInvestigationInput, *, max_diff_chars: int) -> str:
+    """Build the user message — pure data payload, no instructions.
+
+    DeepSeek M4 review flag — instructions belong in the system prompt so the
+    output schema is part of the model's persona, not co-resident with the
+    payload data. With ``thinking=True``, V4 processes the system prompt
+    first; mixing instructions into the user message made them compete with
+    the JSON payload for attention.
+    """
     payload = {
         "repo": item.repo,
         "pr": item.pr,
@@ -126,25 +213,21 @@ def _build_prompt(item: ThreadInvestigationInput, *, max_diff_chars: int) -> str
         },
         "diff_excerpt": _truncate(item.diff_excerpt, max_diff_chars),
     }
-    return (
-        "You are the Clearance investigator for a GitHub PR review thread. "
-        "Decide whether the review concern is actually fixed in the current head.\n"
-        "Use only the provided PR diff excerpt, review comment, and author reply. "
-        "Do not assume fixes that are not evidenced. If the evidence is partial, "
-        "ambiguous, outside the diff excerpt, or requires running code, choose "
-        "NEEDS_HUMAN_JUDGMENT.\n"
-        "Return exactly one JSON object with this schema:\n"
-        '{"verdict":"RESOLVED|OPEN|NEEDS_HUMAN_JUDGMENT","confidence":0.0,'
-        '"reason":"short factual reason","evidence":["quoted or paraphrased evidence"]}\n'
-        "Input:\n"
-        f"{json.dumps(payload, ensure_ascii=False)}"
-    )
+    return f"Input:\n{json.dumps(payload, ensure_ascii=False)}"
 
 
 _SYSTEM_PROMPT = (
-    "You are a semantic code-review verifier. Given a Codex review comment, an author "
-    "reply, and a PR diff excerpt, determine whether the author's fix genuinely addresses "
-    "the reviewer's concern. Think step by step before deciding."
+    "You are the Clearance investigator: a semantic code-review verifier for "
+    "GitHub PR review threads. Given a Codex review comment, an author reply, "
+    "and a PR diff excerpt, decide whether the author's fix genuinely addresses "
+    "the reviewer's concern in the current head.\n"
+    "Use only the provided PR diff excerpt, review comment, and author reply. "
+    "Do not assume fixes that are not evidenced. If the evidence is partial, "
+    "ambiguous, outside the diff excerpt, or requires running code, choose "
+    "NEEDS_HUMAN_JUDGMENT.\n"
+    "Return exactly one JSON object with this schema and no extra prose:\n"
+    '{"verdict":"RESOLVED|OPEN|NEEDS_HUMAN_JUDGMENT","confidence":0.0,'
+    '"reason":"short factual reason","evidence":["quoted or paraphrased evidence"]}'
 )
 
 
@@ -176,15 +259,40 @@ class DeepSeekInvestigator:
         ]
         try:
             turn = await self._client.complete(messages, thinking=True)
-        except Exception as exc:
+        except (httpx.HTTPError, openai.APIError, ValueError) as exc:
+            # Narrow the catch to integration exceptions — DeepSeekClient
+            # normalizes server errors to openai.APIError / httpx.HTTPError /
+            # ValueError. A bare ``except Exception`` (DeepSeek M2 review
+            # flag) would also swallow AttributeError/TypeError from a future
+            # refactor and surface them as "DeepSeek call failed", obscuring
+            # programming bugs.
             raise InvestigationError(f"DeepSeek call failed: {exc}") from exc
 
-        raw_text = turn.content or ""
+        content = (turn.content or "").strip()
+        reasoning = (turn.reasoning_content or "").strip()
+        if not content:
+            # GLM M4 + DeepSeek H2 review flag — silently collapsing
+            # ``content=None`` to "" lost the diagnostic that V4 thinking
+            # mode produced reasoning but no final content (typically a
+            # token-budget exhaustion during thinking).
+            diagnostic = "DeepSeek returned empty content"
+            if reasoning:
+                diagnostic += (
+                    " (reasoning-only response — likely max_tokens reached during thinking; "
+                    "raise the budget or shrink the prompt)"
+                )
+            raise InvestigationError(diagnostic)
+
+        # Preserve reasoning_content in the audit trail so a downstream
+        # reviewer can replay the model's chain-of-thought against the
+        # verdict. DeepSeek M1 review flag — dropping the reasoning is the
+        # observability gap on an automated path that influences merges.
+        audit_text = content if not reasoning else f"{content}\n\n--- reasoning ---\n{reasoning}"
         try:
-            raw = _extract_json_object(raw_text)
-        except Exception as exc:
+            raw = _extract_json_object(content)
+        except json.JSONDecodeError as exc:
             raise InvestigationError(f"could not parse investigator JSON: {exc}") from exc
-        return _coerce_decision(raw, min_confidence=self.min_confidence, raw_text=raw_text)
+        return _coerce_decision(raw, min_confidence=self.min_confidence, raw_text=audit_text)
 
 
 def build_investigator_from_env() -> DeepSeekInvestigator | None:
@@ -205,6 +313,22 @@ def build_investigator_from_env() -> DeepSeekInvestigator | None:
     model = os.environ.get("VOYAGER_INVESTIGATOR_MODEL", "deepseek-v4-pro")
     max_diff = int(os.environ.get("VOYAGER_INVESTIGATOR_MAX_DIFF_CHARS", "20000"))
     min_confidence = float(os.environ.get("VOYAGER_INVESTIGATOR_MIN_CONFIDENCE", "0.78"))
+
+    # MiniMax M2.7 + DeepSeek M3 review flag: routing Pro vs Flash should be a
+    # deliberate per-deployment choice. Flash is ~4x cheaper but materially
+    # weaker on multi-step semantic reasoning, and the 0.78 min_confidence
+    # threshold was calibrated against Pro. Warn loudly when a non-Pro model
+    # is wired up via env so the operator notices in logs.
+    if model not in _KNOWN_PRO_MODELS:
+        _log.warning(
+            "investigator: VOYAGER_INVESTIGATOR_MODEL=%r is not a known Pro model "
+            "(known Pro: %s). Flash-tier models are weaker at multi-step semantic "
+            "reasoning and the min_confidence=%.2f threshold was tuned against Pro. "
+            "Re-evaluate the threshold or pin to a Pro model.",
+            model,
+            ", ".join(sorted(_KNOWN_PRO_MODELS)),
+            min_confidence,
+        )
 
     from voyager.llm.deepseek import DeepSeekClient
 
