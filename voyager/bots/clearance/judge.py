@@ -99,9 +99,19 @@ def judge(
                 Verdict.RESOLVED,
                 "thread outdated; author commit changed the lines Codex anchored to (SWM-1101 step 3)",
             )
+        # SWM-1101 §Decision Tree step 3 enumerates three outcomes for state B:
+        #   addresses-the-failure  → RESOLVED
+        #   touches-but-not-addressing → OPEN
+        #   makes-worse → OPEN (with severity escalation, handled elsewhere)
+        # `code_changed=False` collapses the last two: the diff anchor was
+        # invalidated (isOutdated=true) but our diff comparator did not see the
+        # change as addressing the named concern. Per spec, that is OPEN — the
+        # original concern still applies at the new anchor. The faithful port
+        # from sweeping-monk returned NEEDS_HUMAN_JUDGMENT here, which deviated
+        # from the SOP; MiniMax M2.7 flagged it and we align with the spec.
         return VerdictDecision(
-            Verdict.NEEDS_HUMAN_JUDGMENT,
-            "thread marked outdated but no matching code change detected — manual review",
+            Verdict.OPEN,
+            "thread outdated by unrelated edit; original concern still applies in new diff (SWM-1101 step 3)",
         )
 
     if classification == "C":

@@ -14,10 +14,11 @@ Feature: SWM judge — verdict assignment per SWM-1101 decision tree
     Then the verdict is "RESOLVED"
     And the reason mentions "outdated"
 
-  Scenario: State B without code change needs human judgment
+  Scenario: State B without matching code change stays OPEN per SWM-1101 step 3
     Given a state B thread with code_changed false
     When the thread is judged
-    Then the verdict is "NEEDS_HUMAN_JUDGMENT"
+    Then the verdict is "OPEN"
+    And the reason mentions "outdated by unrelated edit"
 
   # ---------------------------------------------------------------------------
   # State C — author replied
