@@ -97,6 +97,13 @@ def _parse_app(item: dict[str, Any]) -> AppConfig:
 
 
 def _parse_profile(name: str, item: dict[str, Any]) -> Profile:
+    if not isinstance(item, dict):
+        raise ValueError(
+            f"Profile {name!r}: must be a TOML table (e.g., '[profiles.{name}]'), "
+            f"got {type(item).__name__}: {item!r}. "
+            "A scalar value under [profiles] is most likely a schema typo — "
+            "use '[profiles.<name>]' to define a profile table."
+        )
     model_raw = item.get("model")
     if not isinstance(model_raw, str):
         raise ValueError(
