@@ -94,7 +94,7 @@ Feature: TOML config loader
     When the config is loaded
     Then profile "flash_fast" has model "deepseek-v4-flash"
     And profile "flash_fast" has thinking false
-    And profile "flash_fast" has reasoning_effort "low"
+    And profile "flash_fast" has reasoning_effort None
     And profile "flash_fast" has max_diff_chars 8000
     And profile "flash_fast" has min_confidence 0.90
 
@@ -113,6 +113,33 @@ Feature: TOML config loader
     Given the TOML config file "profile_missing_model.toml"
     When the config load is attempted
     Then a ValueError is raised mentioning "model"
+
+  Scenario: Profile thinking as string raises ValueError (TOML bool coercion guard)
+    Given the TOML config file "profile_thinking_string.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "thinking"
+    And the error message mentions "boolean"
+
+  Scenario: Profile reasoning_effort outside allowlist raises ValueError
+    Given the TOML config file "profile_reasoning_effort_invalid.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "reasoning_effort"
+
+  Scenario: Profile with thinking=false and reasoning_effort raises ValueError (V4 coupling)
+    Given the TOML config file "profile_thinking_false_with_effort.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "reasoning_effort"
+    And the error message mentions "thinking"
+
+  Scenario: Profile min_confidence at 0.0 raises ValueError (out of range)
+    Given the TOML config file "profile_min_confidence_out_of_range.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "min_confidence"
+
+  Scenario: Profile max_diff_chars at 0 raises ValueError (out of range)
+    Given the TOML config file "profile_max_diff_chars_zero.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "max_diff_chars"
 
   Scenario: default_profile referencing nonexistent profile raises ValueError
     Given the TOML config file "default_profile_missing.toml"
