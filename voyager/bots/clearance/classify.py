@@ -11,7 +11,7 @@ and downstream callers can still inspect the full thread for additional signal.
 
 from __future__ import annotations
 
-from typing import Literal
+from enum import StrEnum
 
 CODEX_BOT_LOGIN = "chatgpt-codex-connector"
 CODEX_BOT_LOGIN_REST = "chatgpt-codex-connector[bot]"
@@ -25,8 +25,16 @@ CLEARANCE_MARKER_PREFIX = "<!-- clearance-"
 _LEGACY_SWM_MARKER_PREFIX = "<!-- swm-"
 _RECOGNIZED_CONCLUSION_PREFIXES = (CLEARANCE_MARKER_PREFIX, _LEGACY_SWM_MARKER_PREFIX)
 
-ThreadState = Literal["A", "B", "C"]
-CodexBodySignal = Literal["reviewing", "approved"]
+
+class ThreadState(StrEnum):
+    A = "A"
+    B = "B"
+    C = "C"
+
+
+class CodexBodySignal(StrEnum):
+    REVIEWING = "reviewing"
+    APPROVED = "approved"
 
 
 def _is_bot_conclusion_comment(body: str | None) -> bool:
@@ -55,9 +63,9 @@ def codex_pr_body_signal(reactions: list[dict]) -> CodexBodySignal | None:
         elif r.get("content") == "EYES":
             has_eyes = True
     if has_thumbs:
-        return "approved"
+        return CodexBodySignal.APPROVED
     if has_eyes:
-        return "reviewing"
+        return CodexBodySignal.REVIEWING
     return None
 
 
@@ -85,8 +93,14 @@ def author_replies(thread: dict) -> list[dict]:
     return [c for c in _comment_nodes(thread)[1:] if c]
 
 
-def latest_author_reply(thread: dict) -> dict | None:
-    """The most recent non-Codex, non-bot-conclusion reply, or None.
+def latest_author_reply(thread: dict, *, author_login: str | None = None) -> dict | None:
+    """The most recent reply by the PR author, or None.
+
+    When ``author_login`` is None (legacy / test fixtures), falls back to
+    the older behavior of "any non-Codex, non-bot-conclusion reply."
+    Production callers should always pass the PR author so a reviewer's
+    or maintainer's comment with a code identifier doesn't get judged
+    substantive.
 
     Bot-conclusion comments (Clearance's own, and the legacy SWM prefix from
     sweeping-monk before the rename) are filtered out so they cannot be
@@ -97,6 +111,8 @@ def latest_author_reply(thread: dict) -> dict | None:
         for c in author_replies(thread)
         if _login(c) != CODEX_BOT_LOGIN and not _is_bot_conclusion_comment(c.get("body"))
     ]
+    if author_login is not None:
+        replies = [c for c in replies if _login(c) == author_login]
     return replies[-1] if replies else None
 
 
@@ -109,7 +125,7 @@ def latest_codex_followup(thread: dict) -> dict | None:
 def classify_thread(thread: dict) -> ThreadState:
     """Return A/B/C per the SWM-1101 taxonomy. Outdated wins over replied."""
     if thread.get("isOutdated"):
-        return "B"
+        return ThreadState.B
     if latest_author_reply(thread) is not None:
-        return "C"
-    return "A"
+        return ThreadState.C
+    return ThreadState.A

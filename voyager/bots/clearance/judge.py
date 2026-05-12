@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
 
+from voyager.bots.clearance.classify import ThreadState
 from voyager.bots.clearance.models import Verdict
-
-ThreadState = Literal["A", "B", "C"]
 
 _COMMIT_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 _FILE_RE = re.compile(r"\b[\w./-]+\.(?:py|js|ts|tsx|jsx|go|rs|rb|java|sh|yml|yaml|toml|md)\b")

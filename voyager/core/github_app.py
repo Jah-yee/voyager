@@ -11,6 +11,26 @@ import jwt
 GITHUB_API = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 
+_THREAD_COMMENTS_QUERY = """
+query ThreadComments($threadId: ID!, $cursor: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          databaseId
+          author { login }
+          body
+          url
+          createdAt
+          replyTo { databaseId }
+        }
+      }
+    }
+  }
+}
+"""
+
 
 @dataclass
 class InstallationToken:
@@ -239,7 +259,8 @@ class GitHubAppClient:
                   path
                   line
                   startLine
-                  comments(first: 20) {
+                  comments(first: 100) {
+                    pageInfo { hasNextPage endCursor }
                     nodes {
                       databaseId
                       author {
@@ -248,6 +269,7 @@ class GitHubAppClient:
                       body
                       url
                       createdAt
+                      replyTo { databaseId }
                     }
                   }
                 }
@@ -278,7 +300,100 @@ class GitHubAppClient:
             if not page_info.get("hasNextPage"):
                 break
             cursor = page_info.get("endCursor")
+
+        for thread in threads:
+            page_info = (thread.get("comments") or {}).get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                continue
+            cursor = page_info.get("endCursor")
+            while True:
+                data = await self.graphql(
+                    app_slug,
+                    repo,
+                    query=_THREAD_COMMENTS_QUERY,
+                    variables={"threadId": thread["id"], "cursor": cursor},
+                )
+                comments_conn = (((data or {}).get("node") or {}).get("comments")) or {}
+                new_nodes = comments_conn.get("nodes") or []
+                thread.setdefault("comments", {}).setdefault("nodes", []).extend(new_nodes)
+                page_info = comments_conn.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    break
+                cursor = page_info.get("endCursor")
+
         return threads
+
+    async def resolve_review_thread(
+        self, app_slug: str, repository: str, thread_id: str
+    ) -> dict[str, Any]:
+        """Resolve a GitHub review thread via GraphQL mutation.
+
+        Used by Stage 1.5 of SWM-1101: after the deterministic pipeline judges a
+        thread RESOLVED, the watchdog calls this to sync the GitHub UI state so
+        maintainers see the resolution without manual clicks.
+
+        Callers must verify the thread's current ``isResolved`` state immediately
+        before invoking this mutation — reading ``isResolved`` from a stale cached
+        snapshot and then mutating can silently clobber a maintainer's own manual
+        resolve (or un-resolve) performed in the GitHub UI since the last fetch.
+        Prefer fetching ``pull_request_review_threads`` just before calling this.
+        """
+        query = """
+        mutation ResolveReviewThread($threadId: ID!) {
+          resolveReviewThread(input: {threadId: $threadId}) {
+            thread {
+              id
+              isResolved
+              isOutdated
+              resolvedBy {
+                login
+              }
+            }
+          }
+        }
+        """
+        data = await self.graphql(
+            app_slug,
+            repository,
+            query=query,
+            variables={"threadId": thread_id},
+        )
+        return (((data or {}).get("resolveReviewThread") or {}).get("thread")) or {}
+
+    async def unresolve_review_thread(
+        self, app_slug: str, repository: str, thread_id: str
+    ) -> dict[str, Any]:
+        """Unresolve a GitHub review thread via GraphQL mutation.
+
+        Mirror of ``resolve_review_thread`` for the reverse direction. Used when
+        Stage 1.5 of SWM-1101 determines a previously-resolved thread needs to be
+        re-opened (e.g., maintainer override or follow-up Codex flag).
+
+        Callers must verify the thread's current ``isResolved`` state immediately
+        before invoking this mutation to avoid clobbering a maintainer's manual
+        state change since the last fetch.
+        """
+        query = """
+        mutation UnresolveReviewThread($threadId: ID!) {
+          unresolveReviewThread(input: {threadId: $threadId}) {
+            thread {
+              id
+              isResolved
+              isOutdated
+              resolvedBy {
+                login
+              }
+            }
+          }
+        }
+        """
+        data = await self.graphql(
+            app_slug,
+            repository,
+            query=query,
+            variables={"threadId": thread_id},
+        )
+        return (((data or {}).get("unresolveReviewThread") or {}).get("thread")) or {}
 
     async def add_labels(
         self, app_slug: str, repo: str, issue_number: int, labels: list[str]
@@ -412,6 +527,35 @@ class GitHubAppClient:
             json_body={"body": body},
         )
         return dict(result or {})
+
+    async def create_review_thread_reply(
+        self,
+        app_slug: str,
+        repository: str,
+        pull_number: int,
+        comment_id: int,
+        *,
+        body: str,
+    ) -> dict[str, Any]:
+        """POST a reply to a PR review-comment thread.
+
+        GitHub renders the reply inline next to the code the original review
+        comment anchored to, so the Clearance pipeline's Stage 1.5 conclusion
+        comments appear contextually — readers see the verdict alongside the
+        code Codex flagged, not buried in the PR's top-level conversation.
+
+        Uses the REST endpoint
+        ``POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies``.
+        """
+        owner, name = repository.split("/", 1)
+        payload = await self.request(
+            app_slug,
+            "POST",
+            f"/repos/{owner}/{name}/pulls/{pull_number}/comments/{comment_id}/replies",
+            repository=repository,
+            json_body={"body": body},
+        )
+        return dict(payload or {})
 
     async def upsert_issue_comment(
         self,

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Any
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .github_app import GitHubAppClient
@@ -96,6 +99,7 @@ async def dispatch_route_writeback(
     route: dict[str, Any],
     *,
     repository: str | None,
+    store: Any = None,
 ) -> dict[str, Any]:
     """Dispatch a route to the right writeback path.
 
@@ -105,6 +109,11 @@ async def dispatch_route_writeback(
     reviews, review threads) and computes the concrete writeback. Routes from
     Blueprint and Stack already carry concrete writeback shapes, so they go
     straight to ``apply_route_writeback``.
+
+    When ``store`` is provided, the SWM-1101 per-thread pipeline runs via
+    ``compute_clearance_automation`` before enrichment and its result is passed
+    as ``automation=`` to ``enrich_clearance_route``. When ``store`` is None,
+    legacy PR-body-only enrichment runs unchanged.
 
     Codex round 1 P1 (PR #7).
     """
@@ -121,9 +130,36 @@ async def dispatch_route_writeback(
         # module top would create a tight coupling and complicate test mocking.
         from voyager.bots.clearance import enrich_clearance_route
 
+        automation: dict[str, Any] | None = None
+        if store is not None:
+            from voyager.bots.clearance.pipeline import compute_clearance_automation
+
+            try:
+                automation = await compute_clearance_automation(
+                    client, route, repository=repository, store=store
+                )
+            except Exception as exc:
+                _log.exception(
+                    "clearance pipeline failed for %s; falling back to error automation",
+                    repository,
+                )
+                automation = {
+                    "enabled": True,
+                    "status": "error",
+                    "reason": f"pipeline failed: {exc.__class__.__name__}: {exc}",
+                    "sync_actions": [],
+                    "sync_actions_count": 0,
+                }
+
         try:
-            enriched = await enrich_clearance_route(client, route, repository=repository)
+            enriched = await enrich_clearance_route(
+                client, route, repository=repository, automation=automation
+            )
         except Exception as exc:
+            _log.exception(
+                "clearance enrichment failed for %s; returning applied=False",
+                repository,
+            )
             return {
                 "applied": False,
                 "reason": f"clearance enrichment failed: {exc.__class__.__name__}: {exc}",
