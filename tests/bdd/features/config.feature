@@ -141,6 +141,24 @@ Feature: TOML config loader
     When the config load is attempted
     Then a ValueError is raised mentioning "max_diff_chars"
 
+  Scenario: Profile model as integer raises ValueError (type guard N1)
+    Given the TOML config file "profile_model_int.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "model"
+    And the error message mentions "int"
+
+  Scenario: Profile max_diff_chars as boolean raises ValueError (type guard N2)
+    Given the TOML config file "profile_max_diff_chars_bool.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "max_diff_chars"
+    And the error message mentions "bool"
+
+  Scenario: Profile min_confidence as string raises ValueError (type guard N3)
+    Given the TOML config file "profile_min_confidence_string.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "min_confidence"
+    And the error message mentions "str"
+
   Scenario: default_profile referencing nonexistent profile raises ValueError
     Given the TOML config file "default_profile_missing.toml"
     When the config load is attempted
