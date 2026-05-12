@@ -34,6 +34,5 @@ min_confidence = 0.85
 [profiles.flash_fast]
 model = "deepseek-v4-flash"
 thinking = false
-reasoning_effort = "low"
 max_diff_chars = 8000
 min_confidence = 0.90

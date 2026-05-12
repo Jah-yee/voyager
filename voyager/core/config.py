@@ -8,6 +8,8 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
+_VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
+
 _DEFAULT_SEARCH_ORDER = [
     lambda: str(Path.home() / ".voyager" / "config.toml"),
     lambda: str(Path.cwd() / "voyager.toml"),
@@ -101,16 +103,51 @@ def _parse_profile(name: str, item: dict[str, Any]) -> Profile:
 
     if "thinking" not in item:
         raise ValueError(
-            f"Profile {name!r}: 'thinking' is required (no implicit default — "
-            "DeepSeek's two modes are independently configurable)"
+            f"Profile {name!r}: 'thinking' is required (no implicit default — make the choice explicit; "
+            "note 'reasoning_effort' is only meaningful when thinking is true)"
         )
-    thinking = bool(item["thinking"])
+    thinking_raw = item["thinking"]
+    if not isinstance(thinking_raw, bool):
+        raise ValueError(
+            f"Profile {name!r}: 'thinking' must be a TOML boolean (true/false), "
+            f"got {type(thinking_raw).__name__}: {thinking_raw!r}. "
+            "TOML strings 'true'/'false' are coerced incorrectly by Python's bool() — "
+            "use bare TOML booleans without quotes."
+        )
+    thinking = thinking_raw
 
     reasoning_effort_raw = item.get("reasoning_effort")
-    reasoning_effort = str(reasoning_effort_raw) if reasoning_effort_raw is not None else None
+    if reasoning_effort_raw is None:
+        reasoning_effort: str | None = None
+    else:
+        if not isinstance(reasoning_effort_raw, str):
+            raise ValueError(
+                f"Profile {name!r}: 'reasoning_effort' must be a string, "
+                f"got {type(reasoning_effort_raw).__name__}: {reasoning_effort_raw!r}"
+            )
+        if reasoning_effort_raw not in _VALID_REASONING_EFFORTS:
+            raise ValueError(
+                f"Profile {name!r}: 'reasoning_effort' must be one of "
+                f"{sorted(_VALID_REASONING_EFFORTS)!r}, got {reasoning_effort_raw!r}"
+            )
+        reasoning_effort = reasoning_effort_raw
 
     max_diff_chars = int(item["max_diff_chars"]) if "max_diff_chars" in item else 20000
+    if max_diff_chars <= 0:
+        raise ValueError(f"Profile {name!r}: 'max_diff_chars' must be > 0, got {max_diff_chars!r}")
+
     min_confidence = float(item["min_confidence"]) if "min_confidence" in item else 0.78
+    if not 0.0 < min_confidence <= 1.0:
+        raise ValueError(
+            f"Profile {name!r}: 'min_confidence' must be in (0.0, 1.0], got {min_confidence!r}"
+        )
+
+    if reasoning_effort is not None and thinking is False:
+        raise ValueError(
+            f"Profile {name!r}: 'reasoning_effort' is only meaningful when "
+            "'thinking' is true (DeepSeek V4 silently nullifies reasoning_effort "
+            "when thinking is disabled). Either set thinking=true or drop reasoning_effort."
+        )
 
     return Profile(
         name=name,
