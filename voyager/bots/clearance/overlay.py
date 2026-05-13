@@ -11,8 +11,8 @@ from .constants import (
     CLEARANCE_CODEX_REACTION_FOLLOW_UP_ACTION,
     CLEARANCE_CODEX_REACTION_FOLLOW_UP_EVENT,
     CLEARANCE_LABELS,
-    CLEARANCE_OK_LABEL,
     CLEARANCE_PENDING_LABEL,
+    CLEARANCE_READY_LABEL,
 )
 from .evaluation import ClearanceEvaluation
 
@@ -29,13 +29,20 @@ def apply_swm_overlay(
     updated: dict[str, Any] = dict(evaluation)
 
     if swm_status == "ready_with_low_priority":
+        review_state = evaluation.get("review_state") or {}
+        has_non_thread_blockers = bool(
+            review_state.get("blocking_reviewers")
+            or (evaluation.get("status") == "clearance_pending")
+        )
+        if has_non_thread_blockers:
+            return evaluation
         reason = automation.get("reason") or f"Clearance automation status is {swm_status}."
-        updated["status"] = "clearance_ok"
+        updated["status"] = "clearance_ready"
         updated["conclusion"] = "success"
         updated["summary"] = reason
         updated["labels"] = {
-            "add": [CLEARANCE_OK_LABEL],
-            "remove": [item for item in CLEARANCE_LABELS if item != CLEARANCE_OK_LABEL],
+            "add": [CLEARANCE_READY_LABEL],
+            "remove": [item for item in CLEARANCE_LABELS if item != CLEARANCE_READY_LABEL],
         }
         updated["reactions"] = {"add": ["+1"], "remove": ["eyes", "rocket"]}
         return cast(ClearanceEvaluation, updated)
