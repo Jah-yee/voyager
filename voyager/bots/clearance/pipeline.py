@@ -49,7 +49,6 @@ from voyager.bots.clearance.models import (
     Evidence,
     GitHubThreadState,
     PollRecord,
-    Severity,
     Stage15Action,
     Stage15Mutation,
     Status,
@@ -58,6 +57,8 @@ from voyager.bots.clearance.models import (
     Verdict,
     VerdictHistoryEntry,
 )
+from voyager.bots.clearance.severity import evaluate as evaluate_severity
+from voyager.bots.clearance.severity_input import extract_severity_and_kind
 from voyager.bots.clearance.state import StateStore
 from voyager.core.github_app import GitHubAppClient
 from voyager.core.writeback import dry_run_enabled
@@ -77,6 +78,8 @@ async def _process_thread(
     head_sha: str,
     pr_title: str | None,
     now: datetime,
+    base_branch: str,
+    client: GitHubAppClient,
     pr_author_login: str | None = None,
     investigator: ThreadInvestigator | None = None,
     get_diff: Callable[[], Awaitable[str]] | None = None,
@@ -106,6 +109,49 @@ async def _process_thread(
     followup_body_for_judge = (followup or {}).get("body") if followup_ts > reply_ts else None
 
     author_reply_body = (reply or {}).get("body")
+
+    # Extract codex severity + finding_kind from review body
+    comments_nodes = (thread_dict.get("comments") or {}).get("nodes") or []
+    codex_sev, finding_kind = extract_severity_and_kind(comments_nodes)
+
+    # Lazy-fetch branch protection state (REST call per webhook)
+    # Fail-safe to True on any exception so we don't demote on uncertainty
+    try:
+        protected = await client.branch_protected(CLEARANCE_AGENT_SLUG, repo, base_branch)
+    except Exception as exc:
+        _log.warning(
+            "branch_protected fetch failed for %s branch=%s (fail-safe → True): %s",
+            repo,
+            base_branch,
+            exc,
+        )
+        protected = True
+
+    # Evaluate severity demotion
+    sev_decision = evaluate_severity(
+        codex_severity=codex_sev,
+        finding_kind=finding_kind,
+        branch_protected=protected,
+        base_branch=base_branch,
+    )
+
+    # Emit structured log on demotion
+    if sev_decision.effective_severity != sev_decision.codex_severity:
+        _log.info(
+            "severity_demoted: %s",
+            json.dumps(
+                {
+                    "event": "severity_demoted",
+                    "repo": repo,
+                    "pr": pr,
+                    "thread_id": thread_dict.get("id"),
+                    "codex_severity": sev_decision.codex_severity.value,
+                    "effective_severity": sev_decision.effective_severity.value,
+                    "reason": sev_decision.reason,
+                }
+            ),
+        )
+
     decision = judge(
         classification=state,
         author_reply_body=author_reply_body,
@@ -223,8 +269,9 @@ async def _process_thread(
         comment_id=comment_id,
         path=path,
         line=line,
-        codex_severity=Severity.P2,
-        effective_severity=Severity.P2,
+        codex_severity=sev_decision.codex_severity,
+        effective_severity=sev_decision.effective_severity,
+        demotion_reason=sev_decision.reason,
         verdict=decision.verdict,
         verdict_reason=decision.reason,
         github_isResolved=bool(thread_dict.get("isResolved")),
@@ -245,8 +292,9 @@ async def _process_thread(
         codex_comment_id=comment_id,
         path=path,
         current_line=line,
-        codex_severity=Severity.P2,
-        effective_severity=Severity.P2,
+        codex_severity=sev_decision.codex_severity,
+        effective_severity=sev_decision.effective_severity,
+        demotion_reason=sev_decision.reason,
         verdict=decision.verdict,
         verdict_history=[
             VerdictHistoryEntry(ts=now, verdict=decision.verdict, reason=decision.reason)
@@ -427,6 +475,7 @@ async def compute_clearance_automation(
     head_sha = (pr_data.get("head") or {}).get("sha") or ""
     pr_title = pr_data.get("title")
     pr_author_login: str | None = (pr_data.get("user") or {}).get("login") or None
+    base_branch = (pr_data.get("base") or {}).get("ref") or "main"
 
     # Lazy memoized diff fetch — fires GitHub API only when the first
     # State B + code_changed=False thread actually needs it. Gemini's
@@ -453,6 +502,8 @@ async def compute_clearance_automation(
             head_sha=head_sha,
             pr_title=pr_title,
             now=now,
+            base_branch=base_branch,
+            client=client,
             pr_author_login=pr_author_login,
             investigator=investigator,
             get_diff=get_diff,
