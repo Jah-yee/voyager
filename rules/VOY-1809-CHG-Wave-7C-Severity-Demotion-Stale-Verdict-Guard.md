@@ -231,9 +231,10 @@ Each impl+test pair (6 pairs total) must pass:
 | 2026-05-14 | `2efd57a` + `468c32c` | Commit 4 — β aggregation MVE (impl + 11 unit + 5 fixture realism updates) | 461 tests pass; MVE gate enters | Claude Haiku + Sonnet |
 | 2026-05-14 | (this round) | MVE trinity round | PROCEED ≥9.0 from all 4 (Gemini 9.8, DeepSeek 9.1, GLM 9.0, Codex 9.0; average 9.225); 3-way convergent P2s (grammar `need→needs`, S5 title rename, `branch_protected` per-thread→per-webhook memoization) folded into subsequent polish | Claude Opus 4.7 |
 | 2026-05-14 | `426173d` + `974220d` | Commit 5 — head_sha in automation (impl + 3 BDD) | 464 tests pass | Claude Haiku + Sonnet |
-| | (pending) | Commit 6 — stale-verdict guard | | |
-| | (pending) | Final trinity round | | |
-| | (pending) | Push + PR + merge | | |
+| 2026-05-14 | `fc6618a` | MVE polish — grammar fix, S5 title, branch_protected per-webhook memoize, severity_demoted log expansion, commit 6 test prep (5 BDD scenarios G1-G5) | 467 / 469 pass (G2+G3 RED awaiting commit 6) | Claude Opus 4.7 + Sonnet |
+| 2026-05-14 | `4bd52f9` | Commit 6 — stale-verdict guard in writeback (impl). Catches `(httpx.HTTPError, TimeoutError)`, fail-open with `stale_guard_failed_fail_open` counter, `.get("head_sha")` F8 tolerance, dry_run short-circuit, early-return shape per D5 | 469 tests pass | Claude Haiku |
+| 2026-05-14 | (this round) | Final trinity round | PROCEED ≥9.0 from all 4 (Gemini 10.0, GLM 9.4, Codex 9.4, DeepSeek 9.2; average 9.5). Zero P1/P2 remaining. ThreadSnapshot test-coverage gap acknowledged as post-merge P3 follow-up. | Claude Opus 4.7 |
+| | (pending) | Push fork → Open PR → Codex iteration → Merge | | |
 
 ---
 
