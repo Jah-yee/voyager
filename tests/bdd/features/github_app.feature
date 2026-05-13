@@ -259,3 +259,12 @@ Feature: GitHub App authentication — JWT and installation token machinery
     When branch_protected is called for "iterwheel/voyager-sandbox" branch "main"
     Then branch_protected returned True
     And a warning was logged
+
+  Scenario: B5 — branch_protected URL-encodes slash in branch name
+    Given a test GitHub App with slug "iterwheel-clearance" and app_id "9999"
+    And the app has a valid RSA private key
+    And the app has installation_id "55544433"
+    And the GitHub API returns a token then a branch response with protected true
+    When branch_protected is called for "iterwheel/voyager-sandbox" branch "release/2026.05"
+    Then branch_protected returned True
+    And the branch REST URL contains "%2F" not "release/2026.05" as a path segment

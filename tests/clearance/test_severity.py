@@ -7,12 +7,12 @@ Red phase: these tests fail with ImportError until the production module exists.
 from __future__ import annotations
 
 import pytest
+
+from voyager.bots.clearance.models import Severity
 from voyager.bots.clearance.severity import (
     SeverityDecision,
     evaluate,
 )
-
-from voyager.bots.clearance.models import Severity
 
 # ---------------------------------------------------------------------------
 # Scenario matrix: demote path

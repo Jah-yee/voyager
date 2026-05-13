@@ -9,9 +9,9 @@ Red phase: these tests fail with ImportError until the production module exists.
 from __future__ import annotations
 
 import pytest
-from voyager.bots.clearance.severity_input import extract_severity_and_kind
 
 from voyager.bots.clearance.models import Severity
+from voyager.bots.clearance.severity_input import extract_severity_and_kind
 
 
 def _comments(body: str) -> list[dict]:
@@ -36,6 +36,31 @@ def test_severity_badge_extraction(body: str, expected: Severity) -> None:
     """Recognized badge markers are parsed to the correct Severity member."""
     sev, _ = extract_severity_and_kind(_comments(body))
     assert sev == expected
+
+
+# ---------------------------------------------------------------------------
+# Severity extraction — bracket-prefix format ([PN] Codex title style)
+# ---------------------------------------------------------------------------
+
+_BRACKET_FORMAT_CASES = [
+    ("[P1] SQL injection in query_user", Severity.P1),
+    ("[P2] Missing input validation", Severity.P2),
+    ("[P3] Variable name 'data' is non-descriptive", Severity.P3),
+]
+
+
+@pytest.mark.parametrize(("body", "expected"), _BRACKET_FORMAT_CASES)
+def test_severity_bracket_format(body: str, expected: Severity) -> None:
+    """[PN] bracket-prefix Codex format is parsed to the correct Severity member."""
+    sev, _ = extract_severity_and_kind(_comments(body))
+    assert sev == expected
+
+
+def test_severity_bracket_format_p1_wins_over_p2() -> None:
+    """[P1] prefix wins even when **P2** marker is also present in the body."""
+    body = "[P1] First; **P2** secondary mention"
+    sev, _ = extract_severity_and_kind(_comments(body))
+    assert sev == Severity.P1
 
 
 # ---------------------------------------------------------------------------

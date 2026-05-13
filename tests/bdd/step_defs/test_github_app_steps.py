@@ -1013,3 +1013,15 @@ def branch_protected_false(state: ClientState) -> None:
 def warning_was_logged(state: ClientState) -> None:
     warnings = getattr(state, "_warning_log", [])
     assert warnings, "Expected at least one WARNING log entry, got none"
+
+
+@then('the branch REST URL contains "%2F" not "release/2026.05" as a path segment')
+def branch_url_encoded(state: ClientState) -> None:
+    branch_calls = [r for r in state.captured_requests if "/branches/" in str(r.url)]
+    assert branch_calls, "No branch REST call captured"
+    url = str(branch_calls[-1].url)
+    assert "%2F" in url, f"Expected %2F in URL but got: {url!r}"
+    path = url.split("/branches/", 1)[-1]
+    assert "/" not in path.split("?")[0], (
+        f"Raw slash found in branch path segment after encoding: {url!r}"
+    )
