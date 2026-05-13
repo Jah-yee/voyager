@@ -349,7 +349,9 @@ def _compute_status(threads: list[Thread]) -> tuple[Status, str]:
     if open_low:
         n = len(open_low)
         noun = "thread" if n == 1 else "threads"
-        return Status.READY, (f"all blocking threads RESOLVED; {n} low-priority {noun} still open")
+        return Status.READY_WITH_LOW_PRIORITY, (
+            f"all blocking threads RESOLVED; {n} low-priority {noun} still open"
+        )
 
     return Status.READY, "all Codex review threads RESOLVED"
 
@@ -447,6 +449,7 @@ async def compute_clearance_automation(
     store: StateStore,
     investigator: ThreadInvestigator | None = None,
     default_profile_name: str | None = None,
+    expected_sha: str | None = None,
 ) -> dict[str, Any]:
     """Run the SWM-1101 per-thread verdict pipeline for one webhook event.
 
@@ -459,6 +462,11 @@ async def compute_clearance_automation(
     When ``investigator`` is provided, State B threads with ``code_changed=False``
     are routed through the LLM investigator (Wave 7B-3 D1=B AUGMENT). Threads
     on the deterministic fast-path pay zero diff cost (lazy memoized fetch).
+
+    When ``expected_sha`` is provided (the webhook-time PR head SHA), Stage 1.5
+    mutations are skipped if the freshly fetched PR head has advanced past
+    ``expected_sha``. This pre-mutation stale check prevents applying verdicts
+    computed against a now-superseded commit.
 
     Returns a dict with keys: ``enabled``, ``status``, ``reason``,
     ``sync_actions``, ``sync_actions_count``, ``dry_run``.
@@ -546,6 +554,32 @@ async def compute_clearance_automation(
         snapshots.append(snapshot)
 
     status, reason = _compute_status(threads)
+
+    # Pre-mutation stale guard: if the caller supplied the webhook-time head SHA
+    # and the freshly fetched PR head has already advanced, skip Stage 1.5 writes
+    # so we don't apply verdicts computed against a superseded commit.
+    if expected_sha and head_sha and head_sha != expected_sha:
+        _log.info(
+            "pipeline_stale_verdict_skip: %s",
+            json.dumps(
+                {
+                    "event": "pipeline_stale_verdict_skip",
+                    "repo": repository,
+                    "pr": pr_number,
+                    "expected_sha": expected_sha,
+                    "actual_sha": head_sha,
+                }
+            ),
+        )
+        return {
+            "enabled": True,
+            "status": "stale_verdict_skip",
+            "reason": f"head advanced from {expected_sha} to {head_sha}; Stage 1.5 skipped",
+            "sync_actions": [],
+            "sync_actions_count": 0,
+            "dry_run": dry_run,
+            "head_sha": head_sha,
+        }
 
     sync_actions = await _maybe_sync_stage_15(
         client=client,

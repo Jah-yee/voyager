@@ -150,6 +150,9 @@ async def dispatch_route_writeback(
             from voyager.bots.clearance.pipeline import compute_clearance_automation
 
             try:
+                webhook_head_sha: str | None = (route.get("validation") or {}).get(
+                    "webhook_head_sha"
+                ) or None
                 automation = await compute_clearance_automation(
                     client,
                     route,
@@ -157,6 +160,7 @@ async def dispatch_route_writeback(
                     store=store,
                     default_profile_name=default_profile_name,
                     investigator=investigator,
+                    expected_sha=webhook_head_sha,
                 )
             except Exception as exc:
                 _log.exception(
