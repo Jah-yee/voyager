@@ -7,7 +7,7 @@ import logging
 import os
 from collections import deque
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
@@ -23,6 +23,8 @@ _log = logging.getLogger(__name__)
 _recent_writebacks: deque[dict[str, Any]] = deque(maxlen=100)
 _client: Any = None
 _store: Any = None
+_SENTINEL: Any = object()
+_default_profile_name: Any = _SENTINEL
 
 
 def _get_client() -> Any:
@@ -59,6 +61,20 @@ def _get_store() -> Any:
         return _store
     except Exception:
         return None
+
+
+def _get_default_profile_name() -> str | None:
+    """Return ``cfg.default_profile`` (may be None), or None if config unavailable."""
+    global _default_profile_name
+    if _default_profile_name is _SENTINEL:
+        try:
+            from voyager.core.config import load_config
+
+            cfg = load_config()
+            _default_profile_name = cfg.default_profile
+        except Exception:
+            _default_profile_name = None
+    return cast("str | None", _default_profile_name)
 
 
 def _utc_now() -> str:
@@ -119,10 +135,15 @@ async def _process_route_writebacks(
 
     store = _get_store()
     repository: str | None = (payload.get("repository") or {}).get("full_name")
+    default_profile_name = _get_default_profile_name()
     for route in routes:
         try:
             result = await dispatch_route_writeback(
-                client, route, repository=repository, store=store
+                client,
+                route,
+                repository=repository,
+                store=store,
+                default_profile_name=default_profile_name,
             )
             _recent_writebacks.append({"delivery_id": delivery_id, "event": event, **result})
         except Exception:

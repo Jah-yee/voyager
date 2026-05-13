@@ -264,6 +264,7 @@ async def compute_clearance_automation(
     repository: str,
     store: StateStore,
     investigator: ThreadInvestigator | None = None,  # noqa: ARG001 — reserved for 7B-3 LLM path
+    default_profile_name: str | None = None,  # noqa: ARG001 — reserved for 7B-3 investigator dispatch
 ) -> dict[str, Any]:
     """Run the SWM-1101 per-thread verdict pipeline for one webhook event.
 
