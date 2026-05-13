@@ -49,6 +49,7 @@ from voyager.bots.clearance.models import (
     Evidence,
     GitHubThreadState,
     PollRecord,
+    Severity,
     Stage15Action,
     Stage15Mutation,
     Status,
@@ -322,24 +323,40 @@ async def _process_thread(
 def _compute_status(threads: list[Thread]) -> tuple[Status, str]:
     """Aggregate per-thread verdicts into a pipeline-level Status + reason.
 
-    Rules (in precedence order):
-      - No Codex threads → READY
-      - Any OPEN verdict → BLOCKED
-      - Any NEEDS_HUMAN_JUDGMENT verdict → PENDING
-      - Otherwise all RESOLVED → READY
+    β precedence (Wave 7C, VOY-1809):
+      1. No threads → READY
+      2. Any OPEN with effective_severity ∈ {P1, P2} → BLOCKED (count only
+         high-priority OPEN in the reason)
+      3. Any NEEDS_HUMAN_JUDGMENT → PENDING
+      4. Only OPEN P3 remaining (others RESOLVED) → READY with low-priority note
+      5. All RESOLVED → READY
     """
     if not threads:
         return Status.READY, "no Codex review threads on PR"
 
-    open_count = sum(1 for t in threads if t.verdict == Verdict.OPEN)
-    if open_count:
-        noun = "thread" if open_count == 1 else "threads"
-        return Status.BLOCKED, f"{open_count} Codex review {noun} still OPEN"
+    open_high = [
+        t
+        for t in threads
+        if t.verdict == Verdict.OPEN and t.effective_severity in (Severity.P1, Severity.P2)
+    ]
+    if open_high:
+        n = len(open_high)
+        noun = "thread" if n == 1 else "threads"
+        return Status.BLOCKED, f"{n} high-priority {noun} still OPEN"
 
-    nhj_count = sum(1 for t in threads if t.verdict == Verdict.NEEDS_HUMAN_JUDGMENT)
-    if nhj_count:
-        noun = "thread" if nhj_count == 1 else "threads"
-        return Status.PENDING, f"{nhj_count} Codex review {noun} need human judgment"
+    nhj = [t for t in threads if t.verdict == Verdict.NEEDS_HUMAN_JUDGMENT]
+    if nhj:
+        n = len(nhj)
+        noun = "thread" if n == 1 else "threads"
+        return Status.PENDING, f"{n} Codex review {noun} need human judgment"
+
+    open_low = [
+        t for t in threads if t.verdict == Verdict.OPEN and t.effective_severity == Severity.P3
+    ]
+    if open_low:
+        n = len(open_low)
+        noun = "thread" if n == 1 else "threads"
+        return Status.READY, (f"all blocking threads RESOLVED; {n} low-priority {noun} still open")
 
     return Status.READY, "all Codex review threads RESOLVED"
 
