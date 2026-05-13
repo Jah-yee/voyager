@@ -2,7 +2,25 @@
 
 from __future__ import annotations
 
+import re
+
 from voyager.bots.clearance.models import Thread, ThreadSnapshot
+
+_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _sanitize_markdown(value: str) -> str:
+    """Strip markdown control characters that could break the comment layout.
+
+    Currently only collapses runs of backticks to apostrophes — LLM-supplied
+    evidence that quotes inline code with backticks would otherwise close the
+    surrounding comment's formatting context. Other markdown chars (asterisks,
+    underscores, brackets) are inert in our bullet-list context, so leaving
+    them unescaped keeps the rendered comment readable.
+
+    Codex round-1 review hygiene (Phase 7B-3 hardening #6).
+    """
+    return _BACKTICK_RUN.sub("'", value)
 
 
 def has_llm_close_reason(thread: Thread, snapshot: ThreadSnapshot | None) -> bool:
@@ -11,6 +29,7 @@ def has_llm_close_reason(thread: Thread, snapshot: ThreadSnapshot | None) -> boo
 
 
 def _clip(value: str, limit: int = 600) -> str:
+    value = _sanitize_markdown(value)  # strip backticks before whitespace collapse
     value = " ".join(value.split())
     if len(value) <= limit:
         return value
@@ -94,7 +113,7 @@ def build_thread_conclusion_comment(
         verifier = "Clearance deterministic verifier"
     confidence = thread.llm_confidence or (evidence.llm_confidence if evidence else None)
     confidence_line = f"\n- Confidence: `{confidence:.2f}`" if confidence is not None else ""
-    location = f"{thread.path}:{thread.line}" if thread.line else thread.path
+    location = _sanitize_markdown(f"{thread.path}:{thread.line}" if thread.line else thread.path)
     marker_name = (
         close_reason_marker(thread, head_sha=head_sha)
         if resolved

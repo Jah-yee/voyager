@@ -95,6 +95,129 @@ Feature: Clearance pipeline — webhook-driven SWM-1101 per-thread verdict orche
     And the sync actions count is 0
 
   # ---------------------------------------------------------------------------
+  # Wave 7B-3: investigator path
+  # ---------------------------------------------------------------------------
+
+  Scenario: No investigator wired — State B thread verdicts OPEN with no llm_verdict (regression guard)
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread that is outdated with no author reply
+    And no investigator is configured
+    When compute_clearance_automation runs with investigator
+    Then the automation status is "blocked"
+    And the thread llm_verdict is None
+    And the pipeline trigger is "webhook"
+
+  Scenario: State B + investigator returns RESOLVED — thread verdict overridden to RESOLVED
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "RESOLVED" confidence 0.95 reason "Fix confirmed in diff"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the thread verdict is "RESOLVED"
+    And the thread llm_verdict is "RESOLVED"
+    And the thread llm_confidence is 0.95
+    And the thread llm_reason contains "Fix confirmed in diff"
+    And the pipeline trigger contains "webhook+investigator"
+
+  Scenario: State B + investigator returns OPEN — thread verdict remains OPEN
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "OPEN" confidence 0.80 reason "Concern not addressed"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the thread verdict is "OPEN"
+    And the thread llm_verdict is "OPEN"
+    And the thread llm_reason contains "Concern not addressed"
+    And the pipeline trigger contains "webhook+investigator"
+
+  Scenario: State B + investigator returns NEEDS_HUMAN_JUDGMENT
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "NEEDS_HUMAN_JUDGMENT" confidence 0.60 reason "Ambiguous evidence"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the thread verdict is "NEEDS_HUMAN_JUDGMENT"
+    And the thread llm_verdict is "NEEDS_HUMAN_JUDGMENT"
+    And the pipeline trigger contains "webhook+investigator"
+
+  Scenario: State A thread (fresh) + investigator configured — investigator NOT called
+    Given the stub PR "iterwheel/sandbox" #49 has 1 fresh Codex thread (State A) at path "app.py"
+    And a fake investigator returning verdict "RESOLVED" confidence 0.99 reason "Would fire if called"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the investigator was never called
+    And the thread llm_verdict is None
+    And the pipeline trigger is "webhook"
+
+  Scenario: State C thread + investigator configured — investigator NOT called
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    And a fake investigator returning verdict "RESOLVED" confidence 0.99 reason "Would fire if called"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the investigator was never called
+    And the thread llm_verdict is None
+
+  Scenario: State B + InvestigationError — falls back to deterministic OPEN with no llm_verdict
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator that raises InvestigationError "LLM quota exceeded"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the thread verdict is "OPEN"
+    And the thread llm_verdict is None
+    And the pipeline trigger is "webhook"
+
+  Scenario: Lazy memoize — zero State B threads means pull_request_diff never called
+    Given the stub PR "iterwheel/sandbox" #49 has 1 fresh Codex thread (State A) at path "app.py"
+    And a fake investigator returning verdict "RESOLVED" confidence 0.99 reason "irrelevant"
+    And the stub client records pull_request_diff calls
+    When compute_clearance_automation runs with investigator
+    Then pull_request_diff was called 0 times
+
+  Scenario: Lazy memoize — 2 State B threads on same PR call pull_request_diff exactly once
+    Given the stub PR "iterwheel/sandbox" #49 has 2 outdated Codex threads at path "app.py" line 10
+    And a fake investigator returning verdict "OPEN" confidence 0.80 reason "Not fixed" for each thread
+    And the stub client records pull_request_diff calls
+    When compute_clearance_automation runs with investigator
+    Then pull_request_diff was called 1 time
+    And the investigator was called 2 times
+
+  Scenario: Trigger composition — investigator fired + Stage 1.5 sync produces combined trigger
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "RESOLVED" confidence 0.95 reason "Fix confirmed"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator and DRY_RUN false
+    Then the pipeline trigger is "webhook+investigator+stage1.5-sync"
+
+  # ---------------------------------------------------------------------------
+  # Wave 7B-3: new exception-path coverage (P1 httpx, P2 ValueError, Gemini gap)
+  # ---------------------------------------------------------------------------
+
+  Scenario: httpx.HTTPError on pull_request_diff — falls back to deterministic OPEN, automation not "error"
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "RESOLVED" confidence 0.95 reason "Would fire if diff fetched"
+    And the stub client raises httpx.HTTPStatusError on pull_request_diff
+    When compute_clearance_automation runs with investigator
+    Then the thread verdict is "OPEN"
+    And the thread llm_verdict is None
+    And the automation status is "blocked"
+    And the pipeline trigger is "webhook"
+
+  Scenario: Investigator returns unknown verdict string — falls back to deterministic OPEN via ValueError
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning unknown verdict "MAYBE"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the thread verdict is "OPEN"
+    And the thread llm_verdict is None
+    And the automation status is "blocked"
+    And the pipeline trigger is "webhook"
+
+  Scenario: Two State B threads on different paths — diff fetched once, investigator called twice with different excerpts
+    Given the stub PR "iterwheel/sandbox" #49 has 2 outdated Codex threads at different paths
+    And a fake investigator returning verdict "OPEN" confidence 0.80 reason "Not fixed" for each thread
+    And the stub client returns a sample diff covering both paths
+    When compute_clearance_automation runs with investigator
+    Then pull_request_diff was called 1 time
+    And the investigator was called 2 times
+    And the investigator received different diff excerpts for each thread
+
+  # ---------------------------------------------------------------------------
   # State persistence
   # ---------------------------------------------------------------------------
 
@@ -136,3 +259,41 @@ Feature: Clearance pipeline — webhook-driven SWM-1101 per-thread verdict orche
     When client.resolve_review_thread is awaited for "PRRT_abc123"
     Then the returned thread has isResolved true
     And the recorded GraphQL variables include threadId "PRRT_abc123"
+
+  # ---------------------------------------------------------------------------
+  # Wave 7B-3 hardening #5: investigator failure-mode contract
+  # ---------------------------------------------------------------------------
+
+  Scenario: State B + InvestigationError → automation has investigator_error_* fields
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator that raises InvestigationError "LLM quota exceeded"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the automation status is "blocked"
+    And the automation investigator_error_count is 1
+    And the automation investigator_error_thread_ids contains "PRRT_codex_alpha"
+    And the automation investigator_error_reason contains "LLM quota exceeded"
+    And the snapshot evidence llm_error for thread "PRRT_codex_alpha" contains "LLM quota exceeded"
+
+  Scenario: 2 State B threads both fail → investigator_error_count is 2
+    Given the stub PR "iterwheel/sandbox" #49 has 2 outdated Codex threads at different paths
+    And a fake investigator that raises InvestigationError for all threads "network error"
+    And the stub client returns a sample diff covering both paths
+    When compute_clearance_automation runs with investigator
+    Then the automation investigator_error_count is 2
+    And the automation investigator_error_thread_ids contains "PRRT_codex_alpha"
+    And the automation investigator_error_thread_ids contains "PRRT_codex_beta"
+
+  Scenario: Happy path (no failures) → investigator_error_* fields absent
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "RESOLVED" confidence 0.95 reason "Fix confirmed in diff"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator
+    Then the automation has no investigator_error_fields
+
+  Scenario: httpx fallback — Evidence.llm_error is set on the failed thread
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "RESOLVED" confidence 0.95 reason "Would fire if diff fetched"
+    And the stub client raises httpx.HTTPStatusError on pull_request_diff
+    When compute_clearance_automation runs with investigator
+    Then the snapshot evidence llm_error for thread "PRRT_codex_alpha" contains "500"

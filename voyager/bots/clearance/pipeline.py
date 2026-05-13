@@ -18,13 +18,17 @@ delivery processed by ``dispatch_route_writeback``.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
 from voyager.bots.clearance.classify import (
+    ThreadState,
     classify_thread,
     codex_comment_id,
     is_codex_thread,
@@ -33,7 +37,14 @@ from voyager.bots.clearance.classify import (
 )
 from voyager.bots.clearance.close_reason import build_close_reason_comment
 from voyager.bots.clearance.constants import CLEARANCE_AGENT_SLUG
-from voyager.bots.clearance.judge import judge
+from voyager.bots.clearance.diff_excerpt import extract_anchor_excerpt
+from voyager.bots.clearance.investigator import (
+    InvestigationDecision,
+    InvestigationError,
+    ThreadInvestigationInput,
+    ThreadInvestigator,
+)
+from voyager.bots.clearance.judge import VerdictDecision, judge
 from voyager.bots.clearance.models import (
     Evidence,
     GitHubThreadState,
@@ -51,9 +62,6 @@ from voyager.bots.clearance.state import StateStore
 from voyager.core.github_app import GitHubAppClient
 from voyager.core.writeback import dry_run_enabled
 
-if TYPE_CHECKING:
-    from voyager.bots.clearance.investigator import ThreadInvestigator
-
 _log = logging.getLogger(__name__)
 
 
@@ -61,13 +69,19 @@ def _now_utc() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
-def _process_thread(
+async def _process_thread(
     thread_dict: dict[str, Any],
     *,
     repo: str,
     pr: int,
+    head_sha: str,
+    pr_title: str | None,
     now: datetime,
     pr_author_login: str | None = None,
+    investigator: ThreadInvestigator | None = None,
+    get_diff: Callable[[], Awaitable[str]] | None = None,
+    failures: list[tuple[str, str]] | None = None,
+    profile_name: str | None = None,
 ) -> tuple[Thread, ThreadSnapshot] | None:
     """Classify, judge, and build Thread + ThreadSnapshot for one Codex thread.
 
@@ -91,9 +105,10 @@ def _process_thread(
     # Otherwise the followup is stale evidence about a prior state.
     followup_body_for_judge = (followup or {}).get("body") if followup_ts > reply_ts else None
 
+    author_reply_body = (reply or {}).get("body")
     decision = judge(
         classification=state,
-        author_reply_body=(reply or {}).get("body"),
+        author_reply_body=author_reply_body,
         code_changed=False,  # 7B-1: deferred to investigator wave (7B-3 adds diff verification)
         codex_followup_body=followup_body_for_judge,
         github_isResolved=bool(thread_dict.get("isResolved")),
@@ -101,6 +116,107 @@ def _process_thread(
 
     path = thread_dict.get("path") or "unknown"
     line = thread_dict.get("line")
+
+    # AUGMENT invariant: gate skips when judge() already returned RESOLVED.
+    # Together with `state == ThreadState.B` this preserves *every* deterministic
+    # RESOLVED path (github_isResolved=true, positive Codex follow-up, future
+    # code_changed=True) without LLM overrule. Do not loosen the gate without
+    # extending the regression set.
+    llm_decision: InvestigationDecision | None = None
+    llm_error_str: str | None = None
+    if (
+        investigator is not None
+        and get_diff is not None
+        and state == ThreadState.B
+        and decision.verdict != Verdict.RESOLVED  # skip if already deterministically RESOLVED
+    ):
+        model_name = getattr(getattr(investigator, "_client", None), "model", "unknown")
+        started = time.monotonic()
+        failure_type: str | None = None
+        try:
+            diff_text = await get_diff()
+            excerpt = extract_anchor_excerpt(
+                diff_text,
+                path=path,
+                line=line,
+                max_chars=investigator.max_diff_chars,
+            )
+            comments = (thread_dict.get("comments") or {}).get("nodes") or []
+            codex_comment_body = (comments[0].get("body") if comments else None) or ""
+            item = ThreadInvestigationInput(
+                repo=repo,
+                pr=pr,
+                pr_title=pr_title,
+                head_sha=head_sha,
+                path=path,
+                line=line,
+                classification="B",
+                codex_comment_body=codex_comment_body,
+                author_reply_body=author_reply_body,
+                diff_excerpt=excerpt,
+                heuristic_verdict=decision.verdict.value,
+                heuristic_reason=decision.reason,
+            )
+            returned = await investigator.investigate(item)
+            try:
+                coerced = Verdict(returned.verdict)
+            except ValueError as exc:
+                raise InvestigationError(
+                    f"investigator returned unknown verdict: {returned.verdict!r}"
+                ) from exc
+            llm_decision = returned
+            decision = VerdictDecision(
+                verdict=coerced,
+                reason=llm_decision.reason,
+                substantive=decision.substantive,
+            )
+        except InvestigationError as exc:
+            failure_type = "investigation_error"
+            _log.warning(
+                "investigator failed for thread %s (falling back to deterministic): %s",
+                thread_dict.get("id"),
+                exc,
+                exc_info=True,
+            )
+            llm_error_str = str(exc)
+            if failures is not None:
+                failures.append((thread_dict.get("id") or "", str(exc)))
+        except (httpx.HTTPError, TimeoutError) as exc:
+            failure_type = "timeout" if isinstance(exc, TimeoutError) else "http_error"
+            _log.warning(
+                "diff fetch / investigator network failure for thread %s "
+                "(falling back to deterministic): %s",
+                thread_dict.get("id"),
+                exc,
+                exc_info=True,
+            )
+            llm_error_str = str(exc)
+            if failures is not None:
+                failures.append((thread_dict.get("id") or "", str(exc)))
+        finally:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            downgrade = bool(
+                llm_decision and llm_decision.reason and "below threshold" in llm_decision.reason
+            )
+            _log.info(
+                "investigator_call: %s",
+                json.dumps(
+                    {
+                        "event": "investigator_call",
+                        "repo": repo,
+                        "pr": pr,
+                        "thread_id": thread_dict.get("id"),
+                        "profile_name": profile_name,
+                        "model": model_name,
+                        "latency_ms": latency_ms,
+                        "verdict": llm_decision.verdict if llm_decision else None,
+                        "confidence": llm_decision.confidence if llm_decision else None,
+                        "threshold_downgrade_fired": downgrade,
+                        "failed": failure_type is not None,
+                        "failure_type": failure_type,
+                    }
+                ),
+            )
 
     thread_model = Thread(
         id=thread_dict["id"],
@@ -115,6 +231,9 @@ def _process_thread(
         author_reply_id=(reply or {}).get("databaseId"),
         author_reply_substantive=decision.substantive,
         code_changed=None,
+        llm_verdict=llm_decision.verdict if llm_decision else None,
+        llm_confidence=llm_decision.confidence if llm_decision else None,
+        llm_reason=llm_decision.reason if llm_decision else None,
     )
 
     snapshot = ThreadSnapshot(
@@ -138,6 +257,11 @@ def _process_thread(
             author_reply_substantive=decision.substantive,
             code_changed=None,
             codex_followed_up=bool(followup),
+            llm_verdict=llm_decision.verdict if llm_decision else None,
+            llm_confidence=llm_decision.confidence if llm_decision else None,
+            llm_reason=llm_decision.reason if llm_decision else None,
+            llm_evidence=llm_decision.evidence if llm_decision else None,
+            llm_error=llm_error_str,
         ),
         github_state=GitHubThreadState(
             isResolved=bool(thread_dict.get("isResolved")),
@@ -263,7 +387,8 @@ async def compute_clearance_automation(
     *,
     repository: str,
     store: StateStore,
-    investigator: ThreadInvestigator | None = None,  # noqa: ARG001 — reserved for 7B-3 LLM path
+    investigator: ThreadInvestigator | None = None,
+    default_profile_name: str | None = None,
 ) -> dict[str, Any]:
     """Run the SWM-1101 per-thread verdict pipeline for one webhook event.
 
@@ -273,8 +398,9 @@ async def compute_clearance_automation(
     the ``automation`` dict shape that ``enrich_clearance_route`` / ``apply_swm_overlay``
     consume.
 
-    The ``investigator`` kwarg is reserved for Phase 7B-3 (LLM verdict layer).
-    Pass ``None`` (the default) in 7B-1; the deterministic path is always used.
+    When ``investigator`` is provided, State B threads with ``code_changed=False``
+    are routed through the LLM investigator (Wave 7B-3 D1=B AUGMENT). Threads
+    on the deterministic fast-path pay zero diff cost (lazy memoized fetch).
 
     Returns a dict with keys: ``enabled``, ``status``, ``reason``,
     ``sync_actions``, ``sync_actions_count``, ``dry_run``.
@@ -302,12 +428,36 @@ async def compute_clearance_automation(
     pr_title = pr_data.get("title")
     pr_author_login: str | None = (pr_data.get("user") or {}).get("login") or None
 
+    # Lazy memoized diff fetch — fires GitHub API only when the first
+    # State B + code_changed=False thread actually needs it. Gemini's
+    # round-3 refinement of D3=B: a webhook where every thread resolves
+    # via deterministic fast-path pays zero diff cost.
+    _diff_cache: dict[str, str] = {}
+
+    async def get_diff() -> str:
+        if "diff" not in _diff_cache:
+            _diff_cache["diff"] = await client.pull_request_diff(
+                CLEARANCE_AGENT_SLUG, repository, pr_number
+            )
+        return _diff_cache["diff"]
+
     threads: list[Thread] = []
     snapshots: list[ThreadSnapshot] = []
+    investigator_failures: list[tuple[str, str]] = []
 
     for thread_dict in raw_threads:
-        result = _process_thread(
-            thread_dict, repo=repository, pr=pr_number, now=now, pr_author_login=pr_author_login
+        result = await _process_thread(
+            thread_dict,
+            repo=repository,
+            pr=pr_number,
+            head_sha=head_sha,
+            pr_title=pr_title,
+            now=now,
+            pr_author_login=pr_author_login,
+            investigator=investigator,
+            get_diff=get_diff,
+            failures=investigator_failures,
+            profile_name=default_profile_name,
         )
         if result is None:
             continue
@@ -328,7 +478,15 @@ async def compute_clearance_automation(
         now=now,
     )
 
-    trigger = "webhook+stage1.5-sync" if sync_actions and not dry_run else "webhook"
+    investigator_fired = any(t.llm_verdict for t in threads)
+    if investigator_fired:
+        trigger = "webhook+investigator" + (
+            "+stage1.5-sync" if sync_actions and not dry_run else ""
+        )
+    elif sync_actions and not dry_run:
+        trigger = "webhook+stage1.5-sync"
+    else:
+        trigger = "webhook"
 
     open_count = sum(1 for t in threads if t.verdict != Verdict.RESOLVED)
     resolved_count = sum(1 for t in threads if t.verdict == Verdict.RESOLVED)
@@ -350,7 +508,7 @@ async def compute_clearance_automation(
     for snap in snapshots:
         store.write_thread(snap)
 
-    return {
+    result_dict: dict[str, Any] = {
         "enabled": True,
         "status": status.value,
         "reason": reason,
@@ -358,3 +516,8 @@ async def compute_clearance_automation(
         "sync_actions_count": len(sync_actions),
         "dry_run": dry_run,
     }
+    if investigator_failures:
+        result_dict["investigator_error_count"] = len(investigator_failures)
+        result_dict["investigator_error_thread_ids"] = [tid for tid, _ in investigator_failures]
+        result_dict["investigator_error_reason"] = investigator_failures[0][1]
+    return result_dict
