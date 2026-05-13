@@ -18,7 +18,9 @@ delivery processed by ``dispatch_route_writeback``.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -79,6 +81,7 @@ async def _process_thread(
     investigator: ThreadInvestigator | None = None,
     get_diff: Callable[[], Awaitable[str]] | None = None,
     failures: list[tuple[str, str]] | None = None,
+    profile_name: str | None = None,
 ) -> tuple[Thread, ThreadSnapshot] | None:
     """Classify, judge, and build Thread + ThreadSnapshot for one Codex thread.
 
@@ -127,6 +130,9 @@ async def _process_thread(
         and state == ThreadState.B
         and decision.verdict != Verdict.RESOLVED  # skip if already deterministically RESOLVED
     ):
+        model_name = getattr(getattr(investigator, "_client", None), "model", "unknown")
+        started = time.monotonic()
+        failure_type: str | None = None
         try:
             diff_text = await get_diff()
             excerpt = extract_anchor_excerpt(
@@ -165,6 +171,7 @@ async def _process_thread(
                 substantive=decision.substantive,
             )
         except InvestigationError as exc:
+            failure_type = "investigation_error"
             _log.warning(
                 "investigator failed for thread %s (falling back to deterministic): %s",
                 thread_dict.get("id"),
@@ -175,6 +182,7 @@ async def _process_thread(
             if failures is not None:
                 failures.append((thread_dict.get("id") or "", str(exc)))
         except (httpx.HTTPError, TimeoutError) as exc:
+            failure_type = "timeout" if isinstance(exc, TimeoutError) else "http_error"
             _log.warning(
                 "diff fetch / investigator network failure for thread %s "
                 "(falling back to deterministic): %s",
@@ -185,6 +193,30 @@ async def _process_thread(
             llm_error_str = str(exc)
             if failures is not None:
                 failures.append((thread_dict.get("id") or "", str(exc)))
+        finally:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            downgrade = bool(
+                llm_decision and llm_decision.reason and "below threshold" in llm_decision.reason
+            )
+            _log.info(
+                "investigator_call: %s",
+                json.dumps(
+                    {
+                        "event": "investigator_call",
+                        "repo": repo,
+                        "pr": pr,
+                        "thread_id": thread_dict.get("id"),
+                        "profile_name": profile_name,
+                        "model": model_name,
+                        "latency_ms": latency_ms,
+                        "verdict": llm_decision.verdict if llm_decision else None,
+                        "confidence": llm_decision.confidence if llm_decision else None,
+                        "threshold_downgrade_fired": downgrade,
+                        "failed": failure_type is not None,
+                        "failure_type": failure_type,
+                    }
+                ),
+            )
 
     thread_model = Thread(
         id=thread_dict["id"],
@@ -356,7 +388,7 @@ async def compute_clearance_automation(
     repository: str,
     store: StateStore,
     investigator: ThreadInvestigator | None = None,
-    default_profile_name: str | None = None,  # noqa: ARG001 — forwarded from writeback, not consumed here
+    default_profile_name: str | None = None,
 ) -> dict[str, Any]:
     """Run the SWM-1101 per-thread verdict pipeline for one webhook event.
 
@@ -425,6 +457,7 @@ async def compute_clearance_automation(
             investigator=investigator,
             get_diff=get_diff,
             failures=investigator_failures,
+            profile_name=default_profile_name,
         )
         if result is None:
             continue
