@@ -78,6 +78,7 @@ async def _process_thread(
     pr_author_login: str | None = None,
     investigator: ThreadInvestigator | None = None,
     get_diff: Callable[[], Awaitable[str]] | None = None,
+    failures: list[tuple[str, str]] | None = None,
 ) -> tuple[Thread, ThreadSnapshot] | None:
     """Classify, judge, and build Thread + ThreadSnapshot for one Codex thread.
 
@@ -119,6 +120,7 @@ async def _process_thread(
     # code_changed=True) without LLM overrule. Do not loosen the gate without
     # extending the regression set.
     llm_decision: InvestigationDecision | None = None
+    llm_error_str: str | None = None
     if (
         investigator is not None
         and get_diff is not None
@@ -169,6 +171,9 @@ async def _process_thread(
                 exc,
                 exc_info=True,
             )
+            llm_error_str = str(exc)
+            if failures is not None:
+                failures.append((thread_dict.get("id") or "", str(exc)))
         except (httpx.HTTPError, TimeoutError) as exc:
             _log.warning(
                 "diff fetch / investigator network failure for thread %s "
@@ -177,6 +182,9 @@ async def _process_thread(
                 exc,
                 exc_info=True,
             )
+            llm_error_str = str(exc)
+            if failures is not None:
+                failures.append((thread_dict.get("id") or "", str(exc)))
 
     thread_model = Thread(
         id=thread_dict["id"],
@@ -221,6 +229,7 @@ async def _process_thread(
             llm_confidence=llm_decision.confidence if llm_decision else None,
             llm_reason=llm_decision.reason if llm_decision else None,
             llm_evidence=llm_decision.evidence if llm_decision else None,
+            llm_error=llm_error_str,
         ),
         github_state=GitHubThreadState(
             isResolved=bool(thread_dict.get("isResolved")),
@@ -402,6 +411,7 @@ async def compute_clearance_automation(
 
     threads: list[Thread] = []
     snapshots: list[ThreadSnapshot] = []
+    investigator_failures: list[tuple[str, str]] = []
 
     for thread_dict in raw_threads:
         result = await _process_thread(
@@ -414,6 +424,7 @@ async def compute_clearance_automation(
             pr_author_login=pr_author_login,
             investigator=investigator,
             get_diff=get_diff,
+            failures=investigator_failures,
         )
         if result is None:
             continue
@@ -464,7 +475,7 @@ async def compute_clearance_automation(
     for snap in snapshots:
         store.write_thread(snap)
 
-    return {
+    result_dict: dict[str, Any] = {
         "enabled": True,
         "status": status.value,
         "reason": reason,
@@ -472,3 +483,8 @@ async def compute_clearance_automation(
         "sync_actions_count": len(sync_actions),
         "dry_run": dry_run,
     }
+    if investigator_failures:
+        result_dict["investigator_error_count"] = len(investigator_failures)
+        result_dict["investigator_error_thread_ids"] = [tid for tid, _ in investigator_failures]
+        result_dict["investigator_error_reason"] = investigator_failures[0][1]
+    return result_dict
