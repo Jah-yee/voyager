@@ -159,7 +159,7 @@ def _codex_thread(
         {
             "databaseId": CODEX_COMMENT_ID,
             "author": {"login": "chatgpt-codex-connector"},
-            "body": "P2: please address this nullable handling.",
+            "body": "**P1** please address this nullable handling.",
             "url": "https://example/c/1",
             "createdAt": "2026-05-11T12:00:00Z",
         }
@@ -209,7 +209,7 @@ def _codex_thread_with_custom_reply(
                 {
                     "databaseId": CODEX_COMMENT_ID,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: please address this nullable handling.",
+                    "body": "**P1** please address this nullable handling.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 },
@@ -257,7 +257,7 @@ def _codex_thread_ordered(
                 {
                     "databaseId": CODEX_COMMENT_ID,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: please address this nullable handling.",
+                    "body": "**P1** please address this nullable handling.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 },
@@ -325,7 +325,7 @@ def _outdated_codex_thread(
                 {
                     "databaseId": codex_comment_id,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: the null dereference on line 10 is not guarded.",
+                    "body": "**P1** the null dereference on line 10 is not guarded.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 }
@@ -352,7 +352,7 @@ def _fresh_codex_thread(
                 {
                     "databaseId": CODEX_COMMENT_ID,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: the null dereference on line 10 is not guarded.",
+                    "body": "**P1** the null dereference on line 10 is not guarded.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 }
