@@ -1,13 +1,16 @@
-"""Step definitions for Clearance pipeline (Phase 7B-1) BDD scenarios.
+"""Step definitions for Clearance pipeline (Phase 7B-1 + 7B-3) BDD scenarios.
 
-Tests the deterministic webhook-driven per-thread verdict pipeline. The
-production code is under ``voyager/bots/clearance/pipeline.py``; this file
-binds the Gherkin scenarios to fixtures + assertions.
+Tests the deterministic webhook-driven per-thread verdict pipeline and the
+Wave 7B-3 investigator augmentation path. Production code lives under
+``voyager/bots/clearance/pipeline.py``; this file binds Gherkin scenarios to
+fixtures + assertions.
 
-Two stubs:
+Stubs:
 - ``_StubGitHubAppClient`` — configurable canned responses + recording of
   every method invocation, so scenarios can both inject thread shapes and
   assert post-hoc on which mutations fired.
+- ``_FakeInvestigator`` — in-memory ThreadInvestigator Protocol double. Returns
+  canned InvestigationDecisions (or raises InvestigationError) with zero network.
 - A real ``StateStore`` rooted at ``tmp_path`` — the pipeline persistence
   layer is small, well-tested, and worth exercising end-to-end here rather
   than mocked away.
@@ -67,10 +70,19 @@ class _StubGitHubAppClient:
             "resolvedBy": {"login": "iterwheel-clearance[bot]"},
         }
 
+    # Wave 7B-3: pull_request_diff — optional diff text + call counter for
+    # lazy-memoize scenarios.
+    diff_text: str = ""
+    diff_call_count: int = 0
+
     async def pull_request(self, app_slug: str, repo: str, pr: int) -> dict[str, Any]:
         if self.fail_pull_request:
             raise RuntimeError("simulated pull_request fetch failure")
         return self.pr_payload
+
+    async def pull_request_diff(self, app_slug: str, repo: str, pull_number: int) -> str:
+        self.diff_call_count += 1
+        return self.diff_text
 
     async def pull_request_review_threads(
         self, app_slug: str, repo: str, pr: int
@@ -278,6 +290,111 @@ def _human_thread() -> dict[str, Any]:
     }
 
 
+def _outdated_codex_thread(
+    *,
+    thread_id: str = THREAD_ID,
+    path: str = "app.py",
+    line: int = 10,
+    codex_comment_id: int = CODEX_COMMENT_ID,
+) -> dict[str, Any]:
+    """A State B (isOutdated=True) Codex thread with no author reply."""
+    return {
+        "id": thread_id,
+        "isResolved": False,
+        "isOutdated": True,
+        "path": path,
+        "line": line,
+        "startLine": None,
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": codex_comment_id,
+                    "author": {"login": "chatgpt-codex-connector"},
+                    "body": "P2: the null dereference on line 10 is not guarded.",
+                    "url": "https://example/c/1",
+                    "createdAt": "2026-05-11T12:00:00Z",
+                }
+            ]
+        },
+    }
+
+
+def _fresh_codex_thread(
+    *,
+    thread_id: str = THREAD_ID,
+    path: str = "app.py",
+) -> dict[str, Any]:
+    """A State A (not outdated, no replies) Codex thread."""
+    return {
+        "id": thread_id,
+        "isResolved": False,
+        "isOutdated": False,
+        "path": path,
+        "line": 10,
+        "startLine": None,
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": CODEX_COMMENT_ID,
+                    "author": {"login": "chatgpt-codex-connector"},
+                    "body": "P2: the null dereference on line 10 is not guarded.",
+                    "url": "https://example/c/1",
+                    "createdAt": "2026-05-11T12:00:00Z",
+                }
+            ]
+        },
+    }
+
+
+# Minimal unified diff that contains app.py at line 10. Used by 7B-3 investigator
+# scenarios so that extract_anchor_excerpt returns a non-empty excerpt.
+_SAMPLE_DIFF_APP_PY = """\
+diff --git a/app.py b/app.py
+index abc1234..def5678 100644
+--- a/app.py
++++ b/app.py
+@@ -8,6 +8,10 @@ def login(user):
+     token = generate_token(user)
+     return token
++def logout(user):
++    if user is None:
++        return None
++    return invalidate_token(user)
+"""
+
+
+# ---------------------------------------------------------------------------
+# Wave 7B-3: FakeInvestigator — in-memory ThreadInvestigator Protocol double
+# ---------------------------------------------------------------------------
+
+
+class _FakeInvestigator:
+    """Test double for ThreadInvestigator Protocol. Returns canned decisions."""
+
+    max_diff_chars = 20000
+
+    def __init__(
+        self,
+        decisions: list[Any] | Any,
+    ) -> None:
+        # decisions may be a list of InvestigationDecision, or an InvestigationError
+        # instance to raise, or a list that may contain an error sentinel.
+        self._decisions = decisions
+        self.calls: list[Any] = []
+
+    async def investigate(self, item: Any) -> Any:
+        from voyager.bots.clearance.investigator import InvestigationError
+
+        self.calls.append(item)
+        if isinstance(self._decisions, InvestigationError):
+            raise self._decisions
+        if isinstance(self._decisions, list):
+            if not self._decisions:
+                raise AssertionError("_FakeInvestigator: no more canned decisions")
+            return self._decisions.pop(0)
+        return self._decisions
+
+
 # ---------------------------------------------------------------------------
 # Shared state container per scenario
 # ---------------------------------------------------------------------------
@@ -292,6 +409,7 @@ def ctx(tmp_path: Path):
         "client": _StubGitHubAppClient(),
         "automation": None,
         "raised": None,
+        "investigator": None,  # Wave 7B-3: set by Given steps for investigator scenarios
     }
 
 
@@ -432,6 +550,7 @@ def _run_pipeline(ctx, *, dry_run: bool | None = None) -> None:
                 _route_for_pr(PR),
                 repository=REPO,
                 store=ctx["store"],
+                investigator=ctx.get("investigator"),
             )
         )
     except Exception as exc:
@@ -612,4 +731,219 @@ def then_graphql_threadid(ctx, thread_id: str) -> None:
     # the stub captured the thread_id in its resolve_calls.
     assert any(call[1] == thread_id for call in ctx["client"].resolve_calls), (
         f"resolve_calls={ctx['client'].resolve_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 7B-3: Given — investigator + diff setup
+# ---------------------------------------------------------------------------
+
+
+@given("no investigator is configured")
+def given_no_investigator(ctx) -> None:
+    ctx["investigator"] = None
+
+
+@given(
+    parsers.parse(
+        'the stub PR "{repo}" #{pr:d} has 1 outdated Codex thread at path "{path}" line {line:d}'
+    )
+)
+def given_outdated_codex_thread(ctx, repo: str, pr: int, path: str, line: int) -> None:
+    ctx["client"].threads = [_outdated_codex_thread(path=path, line=line)]
+
+
+@given(
+    parsers.parse(
+        'the stub PR "{repo}" #{pr:d} has 1 fresh Codex thread (State A) at path "{path}"'
+    )
+)
+def given_fresh_codex_thread(ctx, repo: str, pr: int, path: str) -> None:
+    ctx["client"].threads = [_fresh_codex_thread(path=path)]
+
+
+@given(
+    parsers.parse(
+        'the stub PR "{repo}" #{pr:d} has 2 outdated Codex threads at path "{path}" line {line:d}'
+    )
+)
+def given_two_outdated_codex_threads(ctx, repo: str, pr: int, path: str, line: int) -> None:
+    ctx["client"].threads = [
+        _outdated_codex_thread(thread_id="PRRT_codex_alpha", path=path, line=line),
+        _outdated_codex_thread(
+            thread_id="PRRT_codex_beta",
+            path=path,
+            line=line,
+            codex_comment_id=CODEX_COMMENT_ID + 10,
+        ),
+    ]
+
+
+@given(
+    parsers.parse(
+        'a fake investigator returning verdict "{verdict}" confidence {confidence:g} reason "{reason}"'
+    )
+)
+def given_fake_investigator(ctx, verdict: str, confidence: float, reason: str) -> None:
+    from voyager.bots.clearance.investigator import InvestigationDecision
+
+    decision = InvestigationDecision(
+        verdict=verdict,  # type: ignore[arg-type]
+        confidence=confidence,
+        reason=reason,
+        evidence=[],
+        raw_text=None,
+    )
+    ctx["investigator"] = _FakeInvestigator([decision])
+
+
+@given(
+    parsers.parse(
+        'a fake investigator returning verdict "{verdict}" confidence {confidence:g} reason "{reason}" for each thread'
+    )
+)
+def given_fake_investigator_multi(ctx, verdict: str, confidence: float, reason: str) -> None:
+    from voyager.bots.clearance.investigator import InvestigationDecision
+
+    decisions = [
+        InvestigationDecision(
+            verdict=verdict,  # type: ignore[arg-type]
+            confidence=confidence,
+            reason=reason,
+            evidence=[],
+            raw_text=None,
+        ),
+        InvestigationDecision(
+            verdict=verdict,  # type: ignore[arg-type]
+            confidence=confidence,
+            reason=reason,
+            evidence=[],
+            raw_text=None,
+        ),
+    ]
+    ctx["investigator"] = _FakeInvestigator(decisions)
+
+
+@given(parsers.parse('a fake investigator that raises InvestigationError "{message}"'))
+def given_fake_investigator_error(ctx, message: str) -> None:
+    from voyager.bots.clearance.investigator import InvestigationError
+
+    ctx["investigator"] = _FakeInvestigator(InvestigationError(message))
+
+
+@given(parsers.parse('the stub client returns a sample diff for "{path}"'))
+def given_stub_diff(ctx, path: str) -> None:
+    ctx["client"].diff_text = _SAMPLE_DIFF_APP_PY
+
+
+@given("the stub client records pull_request_diff calls")
+def given_stub_records_diff_calls(ctx) -> None:
+    ctx["client"].diff_text = _SAMPLE_DIFF_APP_PY
+
+
+# ---------------------------------------------------------------------------
+# Wave 7B-3: When — pipeline with investigator
+# ---------------------------------------------------------------------------
+
+
+@when("compute_clearance_automation runs with investigator")
+def when_run_with_investigator(ctx) -> None:
+    _run_pipeline(ctx, dry_run=True)
+
+
+@when("compute_clearance_automation runs with investigator and DRY_RUN false")
+def when_run_with_investigator_dry_run_false(ctx) -> None:
+    _run_pipeline(ctx, dry_run=False)
+
+
+# ---------------------------------------------------------------------------
+# Wave 7B-3: Then — investigator outcome assertions
+# ---------------------------------------------------------------------------
+
+
+def _first_thread(ctx) -> Any:
+    """Return the first Thread model from the latest poll record."""
+    latest = ctx["store"].latest_poll(REPO, PR)
+    assert latest is not None, "no poll record found in store"
+    assert latest.threads, "poll record has no threads"
+    return latest.threads[0]
+
+
+@then(parsers.parse('the thread verdict is "{verdict}"'))
+def then_thread_verdict(ctx, verdict: str) -> None:
+    t = _first_thread(ctx)
+    assert t.verdict.value == verdict, f"thread.verdict={t.verdict!r}, expected {verdict!r}"
+
+
+@then("the thread llm_verdict is None")
+def then_llm_verdict_none(ctx) -> None:
+    t = _first_thread(ctx)
+    assert t.llm_verdict is None, f"expected llm_verdict=None, got {t.llm_verdict!r}"
+
+
+@then(parsers.parse('the thread llm_verdict is "{expected}"'))
+def then_llm_verdict(ctx, expected: str) -> None:
+    t = _first_thread(ctx)
+    assert t.llm_verdict == expected, f"thread.llm_verdict={t.llm_verdict!r}, expected {expected!r}"
+
+
+@then(parsers.parse("the thread llm_confidence is {expected:g}"))
+def then_llm_confidence(ctx, expected: float) -> None:
+    t = _first_thread(ctx)
+    assert t.llm_confidence is not None, "expected llm_confidence to be set, got None"
+    assert abs(t.llm_confidence - expected) < 1e-6, (
+        f"thread.llm_confidence={t.llm_confidence!r}, expected {expected!r}"
+    )
+
+
+@then(parsers.parse('the thread llm_reason contains "{substring}"'))
+def then_llm_reason_contains(ctx, substring: str) -> None:
+    t = _first_thread(ctx)
+    assert t.llm_reason is not None, "expected llm_reason to be set, got None"
+    assert substring in t.llm_reason, (
+        f"thread.llm_reason={t.llm_reason!r} does not contain {substring!r}"
+    )
+
+
+@then(parsers.parse('the pipeline trigger is "{expected}"'))
+def then_pipeline_trigger(ctx, expected: str) -> None:
+    latest = ctx["store"].latest_poll(REPO, PR)
+    assert latest is not None, "no poll record found in store"
+    assert latest.trigger == expected, f"poll.trigger={latest.trigger!r}, expected {expected!r}"
+
+
+@then(parsers.parse('the pipeline trigger contains "{substring}"'))
+def then_pipeline_trigger_contains(ctx, substring: str) -> None:
+    latest = ctx["store"].latest_poll(REPO, PR)
+    assert latest is not None, "no poll record found in store"
+    assert substring in latest.trigger, (
+        f"poll.trigger={latest.trigger!r} does not contain {substring!r}"
+    )
+
+
+@then("the investigator was never called")
+def then_investigator_never_called(ctx) -> None:
+    inv = ctx.get("investigator")
+    assert inv is not None, "no investigator configured in ctx"
+    assert inv.calls == [], f"expected 0 investigator calls, got {len(inv.calls)}: {inv.calls!r}"
+
+
+@then(parsers.parse("the investigator was called {count:d} times"))
+def then_investigator_called_n_times(ctx, count: int) -> None:
+    inv = ctx.get("investigator")
+    assert inv is not None, "no investigator configured in ctx"
+    assert len(inv.calls) == count, f"expected {count} investigator calls, got {len(inv.calls)}"
+
+
+@then(parsers.parse("pull_request_diff was called {count:d} time"))
+def then_diff_called_once(ctx, count: int) -> None:
+    assert ctx["client"].diff_call_count == count, (
+        f"expected pull_request_diff called {count}x, got {ctx['client'].diff_call_count}"
+    )
+
+
+@then(parsers.parse("pull_request_diff was called {count:d} times"))
+def then_diff_called_n_times(ctx, count: int) -> None:
+    assert ctx["client"].diff_call_count == count, (
+        f"expected pull_request_diff called {count}x, got {ctx['client'].diff_call_count}"
     )
