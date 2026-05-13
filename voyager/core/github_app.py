@@ -443,7 +443,10 @@ class GitHubAppClient:
             "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": GITHUB_API_VERSION,
         }
-        url = f"{GITHUB_API}/repos/{owner}/{name}/branches/{branch}"
+        # URL-encode the branch name so slashes (e.g. "release/2026.05") don't
+        # become extra path segments, which would 404 → fail-safe-True → silently
+        # disable the demotion path. Codex PR-#12 P2.
+        url = f"{GITHUB_API}/repos/{owner}/{name}/branches/{quote(branch, safe='')}"
         client = self._async_client()
         try:
             response = await client.get(url, headers=headers)

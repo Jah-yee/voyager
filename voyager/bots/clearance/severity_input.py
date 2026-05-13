@@ -40,15 +40,27 @@ def extract_severity_and_kind(
 def _extract_severity(body: str) -> Severity:
     """Extract severity from badge markers in comment body.
 
-    Checks for literal case markers:
-      "![P1 Badge]", "![P2 Badge]", "![P3 Badge]"
-      "|P1|", "|P2|", "|P3|"
-      "**P1**", "**P2**", "**P3**"
+    Checks for literal case markers (in priority order P1 → P2 → P3 so a
+    P1-marked thread containing an incidental P2 mention still scores P1):
+      "![PN Badge]"  image-badge markdown
+      "|PN|"         table-cell delimiter
+      "**PN**"       bold
+      "[PN]"         bracket prefix (e.g. "[P1] SQL injection ...")  ← Codex r1 P1
 
     Returns Severity.P1/P2/P3 on first match; defaults to Severity.P3.
+
+    Codex PR-#12 P1 finding: previously the bracketed `[P1]` / `[P2]` / `[P3]`
+    format (a common Codex title style) fell through to the P3 default, which
+    under β rule 4 silently unblocks PRs that should have stayed blocked.
+    Adding `[PN]` to the marker set closes the silent-downgrade path.
     """
     for sev in ("P1", "P2", "P3"):
-        if f"![{sev} Badge]" in body or f"|{sev}|" in body or f"**{sev}**" in body:
+        if (
+            f"![{sev} Badge]" in body
+            or f"|{sev}|" in body
+            or f"**{sev}**" in body
+            or f"[{sev}]" in body
+        ):
             return Severity(sev)
     return Severity.P3
 
