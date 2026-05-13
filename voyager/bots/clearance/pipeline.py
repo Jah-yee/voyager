@@ -630,6 +630,7 @@ async def compute_clearance_automation(
         "sync_actions_count": len(sync_actions),
         "dry_run": dry_run,
         "head_sha": head_sha,
+        "codex_thread_count": len(threads),
     }
     if investigator_failures:
         result_dict["investigator_error_count"] = len(investigator_failures)
