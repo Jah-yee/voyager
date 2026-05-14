@@ -125,3 +125,89 @@ Feature: SWM classify — Codex thread state classification
     Given PR body reactions with THUMBS_UP from "chatgpt-codex-connector"
     When codex_pr_body_signal is called
     Then the signal is "approved"
+
+  # ---------------------------------------------------------------------------
+  # VOYAGER_TEST_BOT_LOGINS bypass (sandbox e2e harness only)
+  # ---------------------------------------------------------------------------
+
+  Scenario: Thread whose first comment is by a TEST_BOT_LOGIN is a Codex thread
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "voyager-e2e-bot"
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is true
+
+  Scenario: TEST_BOT_LOGINS unset means non-Codex first commenters are not Codex
+    Given VOYAGER_TEST_BOT_LOGINS env is not set
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is false
+
+  Scenario: TEST_BOT_LOGINS supports multiple comma-separated logins
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "bot-a,bot-b, bot-c"
+    And a thread whose first comment author is "bot-b"
+    When is_codex_thread is called
+    Then the result is true
+
+  Scenario: TEST_BOT_LOGINS reaction THUMBS_UP signals approved
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "voyager-e2e-bot"
+    And PR body reactions with THUMBS_UP from "voyager-e2e-bot"
+    When codex_pr_body_signal is called
+    Then the signal is "approved"
+
+  Scenario: TEST_BOT_LOGINS follow-up comment is recognized as Codex follow-up
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "voyager-e2e-bot"
+    And a thread with a test-bot follow-up comment id 7
+    When latest_codex_followup is called
+    Then the followup databaseId is 7
+
+  Scenario: TEST_BOT_LOGINS reply is excluded from latest_author_reply
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "voyager-e2e-bot"
+    And a thread with a test-bot reply followed by a human reply id 5
+    When latest_author_reply is called
+    Then the latest reply databaseId is 5
+
+  # ---------------------------------------------------------------------------
+  # VOYAGER_TEST_BOT_LOGINS env-parse edge cases (round-1 P2: 3/4 reviewers)
+  # ---------------------------------------------------------------------------
+
+  Scenario: Empty VOYAGER_TEST_BOT_LOGINS string yields no extras
+    Given VOYAGER_TEST_BOT_LOGINS env is set to ""
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is false
+
+  Scenario: Whitespace-only VOYAGER_TEST_BOT_LOGINS yields no extras
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "   "
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is false
+
+  Scenario: Comma-only VOYAGER_TEST_BOT_LOGINS yields no extras
+    Given VOYAGER_TEST_BOT_LOGINS env is set to ",,,"
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is false
+
+  Scenario: Trailing comma in VOYAGER_TEST_BOT_LOGINS is ignored
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "voyager-e2e-bot,"
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is true
+
+  Scenario: Empty parts between commas in VOYAGER_TEST_BOT_LOGINS are dropped
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "a,,voyager-e2e-bot,,b"
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is true
+
+  Scenario: Duplicate logins in VOYAGER_TEST_BOT_LOGINS are accepted (frozenset dedup)
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "voyager-e2e-bot,voyager-e2e-bot"
+    And a thread whose first comment author is "voyager-e2e-bot"
+    When is_codex_thread is called
+    Then the result is true
+
+  Scenario: VOYAGER_TEST_BOT_LOGINS match is case-sensitive (GitHub logins are case-sensitive)
+    Given VOYAGER_TEST_BOT_LOGINS env is set to "voyager-e2e-bot"
+    And a thread whose first comment author is "Voyager-E2E-Bot"
+    When is_codex_thread is called
+    Then the result is false

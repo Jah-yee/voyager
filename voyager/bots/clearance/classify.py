@@ -13,8 +13,13 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from .constants import is_codex_login
+
+# Kept as module-level aliases so existing import sites continue to resolve.
+# The shared identity helper lives in constants.py — see is_codex_login.
 CODEX_BOT_LOGIN = "chatgpt-codex-connector"
 CODEX_BOT_LOGIN_REST = "chatgpt-codex-connector[bot]"
+
 
 # Voyager writes the new prefix; the old SWM prefix is kept in the read-side
 # filter so that PRs already carrying sweeping-monk's old conclusion comments
@@ -56,7 +61,7 @@ def codex_pr_body_signal(reactions: list[dict]) -> CodexBodySignal | None:
     has_eyes = False
     for r in reactions or []:
         login = (r.get("user") or {}).get("login") or ""
-        if login not in (CODEX_BOT_LOGIN, CODEX_BOT_LOGIN_REST):
+        if not is_codex_login(login):
             continue
         if r.get("content") == "THUMBS_UP":
             has_thumbs = True
@@ -78,9 +83,13 @@ def _comment_nodes(thread: dict) -> list[dict]:
 
 
 def is_codex_thread(thread: dict) -> bool:
-    """A thread is 'Codex' iff its first comment was authored by the Codex bot."""
+    """A thread is 'Codex' iff its first comment was authored by the Codex bot.
+
+    Also returns True if the first commenter's login is in
+    ``VOYAGER_TEST_BOT_LOGINS`` — the sandbox e2e bypass.
+    """
     comments = _comment_nodes(thread)
-    return bool(comments) and _login(comments[0]) == CODEX_BOT_LOGIN
+    return bool(comments) and is_codex_login(_login(comments[0]))
 
 
 def codex_comment_id(thread: dict) -> int | None:
@@ -109,7 +118,7 @@ def latest_author_reply(thread: dict, *, author_login: str | None = None) -> dic
     replies = [
         c
         for c in author_replies(thread)
-        if _login(c) != CODEX_BOT_LOGIN and not _is_bot_conclusion_comment(c.get("body"))
+        if not is_codex_login(_login(c)) and not _is_bot_conclusion_comment(c.get("body"))
     ]
     if author_login is not None:
         replies = [c for c in replies if _login(c) == author_login]
@@ -118,7 +127,7 @@ def latest_author_reply(thread: dict, *, author_login: str | None = None) -> dic
 
 def latest_codex_followup(thread: dict) -> dict | None:
     """A Codex follow-up comment after its initial review — used for 👍/👎 detection."""
-    followups = [c for c in author_replies(thread) if _login(c) == CODEX_BOT_LOGIN]
+    followups = [c for c in author_replies(thread) if is_codex_login(_login(c))]
     return followups[-1] if followups else None
 
 

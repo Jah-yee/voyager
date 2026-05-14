@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
 
 scenarios("../features/swm_classify.feature")
@@ -284,3 +285,76 @@ def signal_equals(signal, expected: str) -> None:
 @then("the signal is None")
 def signal_is_none(signal) -> None:
     assert signal is None
+
+
+# ---------------------------------------------------------------------------
+# VOYAGER_TEST_BOT_LOGINS bypass fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _restore_test_bot_logins(monkeypatch):
+    """Ensure VOYAGER_TEST_BOT_LOGINS is removed and cache is cleared per scenario.
+
+    monkeypatch.setenv/delenv auto-restores on teardown. The lru_cache on
+    ``_extra_codex_logins`` is process-lifetime by design (one-shot read at
+    production startup), so tests that flip the env between scenarios call
+    the public ``reset_test_bot_login_cache()`` helper (which also resets
+    the one-shot warning guard, per Gemini r2 P3).
+    """
+    from voyager.bots.clearance.constants import reset_test_bot_login_cache
+
+    monkeypatch.delenv("VOYAGER_TEST_BOT_LOGINS", raising=False)
+    reset_test_bot_login_cache()
+    yield monkeypatch
+    reset_test_bot_login_cache()
+
+
+@given(parsers.parse('VOYAGER_TEST_BOT_LOGINS env is set to "{value}"'))
+def given_test_bot_env(_restore_test_bot_logins, value: str) -> None:
+    from voyager.bots.clearance.constants import reset_test_bot_login_cache
+
+    _restore_test_bot_logins.setenv("VOYAGER_TEST_BOT_LOGINS", value)
+    reset_test_bot_login_cache()
+
+
+@given('VOYAGER_TEST_BOT_LOGINS env is set to ""')
+def given_test_bot_env_empty(_restore_test_bot_logins) -> None:
+    from voyager.bots.clearance.constants import reset_test_bot_login_cache
+
+    _restore_test_bot_logins.setenv("VOYAGER_TEST_BOT_LOGINS", "")
+    reset_test_bot_login_cache()
+
+
+@given("VOYAGER_TEST_BOT_LOGINS env is not set")
+def given_test_bot_env_unset(_restore_test_bot_logins) -> None:
+    # The fixture already cleared env + cache; this step exists for readability.
+    pass
+
+
+@given(
+    parsers.parse("a thread with a test-bot follow-up comment id {db_id:d}"),
+    target_fixture="thread",
+)
+def thread_with_test_bot_followup(db_id: int) -> dict:
+    return _thread(
+        comments=[
+            _comment(CODEX_LOGIN, "initial", db_id=1),
+            _comment("ryosaeba1985", "fix", db_id=2),
+            _comment("voyager-e2e-bot", "looks good", db_id=db_id),
+        ]
+    )
+
+
+@given(
+    parsers.parse("a thread with a test-bot reply followed by a human reply id {db_id:d}"),
+    target_fixture="thread",
+)
+def thread_test_bot_then_human(db_id: int) -> dict:
+    return _thread(
+        comments=[
+            _comment(CODEX_LOGIN, "initial", db_id=1),
+            _comment("voyager-e2e-bot", "auto-comment from test bot", db_id=99),
+            _comment("ryosaeba1985", "my real fix", db_id=db_id),
+        ]
+    )
