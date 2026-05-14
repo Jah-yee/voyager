@@ -38,12 +38,40 @@ _log = logging.getLogger(__name__)
 _BYPASS_WARNED_ONCE = False
 
 
+_BOT_SUFFIX = "[bot]"
+
+
+def _expand_login_forms(login: str) -> tuple[str, str]:
+    """Return both GraphQL (bare) and REST (``[bot]``) forms of a login.
+
+    GitHub Apps surface as ``app-slug`` in GraphQL responses (thread author,
+    reaction user via GraphQL) and as ``app-slug[bot]`` in REST webhook
+    payloads (issue_comment.user, reaction.user via REST). The built-in
+    ``CODEX_REVIEW_BOT_LOGINS`` carries both forms so identity matches
+    uniformly; operator-supplied extras must auto-expand the same way or
+    REST webhooks for the test app get silently dropped at routing ingress.
+
+    Idempotent on either form:
+      "voyager-e2e-bot"       → ("voyager-e2e-bot", "voyager-e2e-bot[bot]")
+      "voyager-e2e-bot[bot]"  → ("voyager-e2e-bot", "voyager-e2e-bot[bot]")
+    """
+    if login.endswith(_BOT_SUFFIX):
+        bare = login[: -len(_BOT_SUFFIX)]
+        return bare, login
+    return login, f"{login}{_BOT_SUFFIX}"
+
+
 @functools.cache
 def _extra_codex_logins() -> frozenset[str]:
     """Extra logins treated as Codex bot, from ``VOYAGER_TEST_BOT_LOGINS``.
 
     Comma-separated; whitespace around each login is stripped; empty parts
     are dropped (so ``"a,,b"``, ``"  ,a"``, and ``"  "`` all parse cleanly).
+    Each parsed login is auto-expanded to BOTH its bare (GraphQL) and
+    ``[bot]``-suffixed (REST) forms, matching how the built-in Codex pair
+    carries both — operators list each app once and the bypass honors
+    both webhook surfaces (Codex r3 P2 on commit 5ebe56c).
+
     Returns ``frozenset()`` when the env var is unset.
 
     Cached for the process lifetime — production sets the env once at startup
@@ -59,7 +87,11 @@ def _extra_codex_logins() -> frozenset[str]:
     """
     global _BYPASS_WARNED_ONCE
     raw = os.environ.get("VOYAGER_TEST_BOT_LOGINS", "")
-    parsed = frozenset(s.strip() for s in raw.split(",") if s.strip())
+    parsed_raw = frozenset(s.strip() for s in raw.split(",") if s.strip())
+    expanded: set[str] = set()
+    for login in parsed_raw:
+        expanded.update(_expand_login_forms(login))
+    parsed = frozenset(expanded)
     if parsed and not _BYPASS_WARNED_ONCE:
         _log.warning(
             "VOYAGER_TEST_BOT_LOGINS is set (extra Codex-equivalent logins: %s). "
