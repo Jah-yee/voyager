@@ -19,6 +19,7 @@ Stubs:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -53,11 +54,15 @@ class _StubGitHubAppClient:
         self.threads: list[dict[str, Any]] = []
         self.pr_payload: dict[str, Any] = {
             "head": {"sha": "head-sha-abc1234"},
+            "base": {"ref": "main"},
             "title": "Fix the bug",
             "number": PR,
             "user": {"login": "ryosaeba1985"},  # default PR author for existing scenarios
         }
+        self.pr_payload_second_fetch: dict[str, Any] | None = None  # R5-P2: second-call head SHA
         self.fail_pull_request: bool = False
+        self.fail_pull_request_httpx: bool = False  # Wave 7C-6: raises httpx.HTTPError
+        self.pull_request_call_count: int = 0  # Wave 7C-6: tracks guard fetch calls
         self.fail_resolve: bool = False
         self.resolve_calls: list[tuple[str, str]] = []
         self.create_comment_calls: list[tuple[str, str, int, str]] = []
@@ -70,6 +75,10 @@ class _StubGitHubAppClient:
             "resolvedBy": {"login": "iterwheel-clearance[bot]"},
         }
 
+        # Wave 7C-3: branch_protected stub controls
+        self._branch_protected_result: bool = True
+        self._branch_protected_raise: BaseException | None = None
+
     # Wave 7B-3: pull_request_diff — optional diff text + call counter for
     # lazy-memoize scenarios. When diff_raise is set, pull_request_diff raises
     # that exception instead of returning diff_text.
@@ -78,8 +87,18 @@ class _StubGitHubAppClient:
     diff_raise: BaseException | None = None
 
     async def pull_request(self, app_slug: str, repo: str, pr: int) -> dict[str, Any]:
+        self.pull_request_call_count += 1
         if self.fail_pull_request:
             raise RuntimeError("simulated pull_request fetch failure")
+        if self.fail_pull_request_httpx:
+            import httpx as _httpx
+
+            raise _httpx.HTTPError("simulated httpx transport error")
+        # R5-P2: return a different head SHA on the second fetch if configured
+        if self.pull_request_call_count >= 2 and self.pr_payload_second_fetch is not None:
+            payload = dict(self.pr_payload)
+            payload["head"] = self.pr_payload_second_fetch
+            return payload
         return self.pr_payload
 
     async def pull_request_diff(self, app_slug: str, repo: str, pull_number: int) -> str:
@@ -87,6 +106,11 @@ class _StubGitHubAppClient:
         if self.diff_raise is not None:
             raise self.diff_raise
         return self.diff_text
+
+    async def branch_protected(self, app_slug: str, repo: str, branch: str) -> bool:
+        if self._branch_protected_raise is not None:
+            raise self._branch_protected_raise
+        return self._branch_protected_result
 
     async def pull_request_review_threads(
         self, app_slug: str, repo: str, pr: int
@@ -148,7 +172,7 @@ def _codex_thread(
         {
             "databaseId": CODEX_COMMENT_ID,
             "author": {"login": "chatgpt-codex-connector"},
-            "body": "P2: please address this nullable handling.",
+            "body": "**P1** please address this nullable handling.",
             "url": "https://example/c/1",
             "createdAt": "2026-05-11T12:00:00Z",
         }
@@ -198,7 +222,7 @@ def _codex_thread_with_custom_reply(
                 {
                     "databaseId": CODEX_COMMENT_ID,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: please address this nullable handling.",
+                    "body": "**P1** please address this nullable handling.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 },
@@ -246,7 +270,7 @@ def _codex_thread_ordered(
                 {
                     "databaseId": CODEX_COMMENT_ID,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: please address this nullable handling.",
+                    "body": "**P1** please address this nullable handling.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 },
@@ -314,7 +338,7 @@ def _outdated_codex_thread(
                 {
                     "databaseId": codex_comment_id,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: the null dereference on line 10 is not guarded.",
+                    "body": "**P1** the null dereference on line 10 is not guarded.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 }
@@ -341,7 +365,7 @@ def _fresh_codex_thread(
                 {
                     "databaseId": CODEX_COMMENT_ID,
                     "author": {"login": "chatgpt-codex-connector"},
-                    "body": "P2: the null dereference on line 10 is not guarded.",
+                    "body": "**P1** the null dereference on line 10 is not guarded.",
                     "url": "https://example/c/1",
                     "createdAt": "2026-05-11T12:00:00Z",
                 }
@@ -440,6 +464,7 @@ def ctx(tmp_path: Path):
         "automation": None,
         "raised": None,
         "investigator": None,  # Wave 7B-3: set by Given steps for investigator scenarios
+        "captured_logs": [],  # Wave 7C-3: warning/info logs captured during pipeline run
     }
 
 
@@ -565,6 +590,17 @@ def _route_for_pr(pr: int) -> dict[str, Any]:
     }
 
 
+class _CapturingHandler(logging.Handler):
+    """Capture log records at DEBUG and above."""
+
+    def __init__(self, sink: list[logging.LogRecord]) -> None:
+        super().__init__(level=logging.DEBUG)
+        self._sink = sink
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._sink.append(record)
+
+
 def _run_pipeline(ctx, *, dry_run: bool | None = None) -> None:
     from voyager.bots.clearance.pipeline import compute_clearance_automation
 
@@ -573,6 +609,13 @@ def _run_pipeline(ctx, *, dry_run: bool | None = None) -> None:
         os.environ["DRY_RUN"] = "true"
     elif dry_run is False:
         os.environ["DRY_RUN"] = "false"
+
+    log_records: list[logging.LogRecord] = []
+    handler = _CapturingHandler(log_records)
+    pipeline_logger = logging.getLogger("voyager.bots.clearance.pipeline")
+    old_level = pipeline_logger.level
+    pipeline_logger.setLevel(logging.DEBUG)
+    pipeline_logger.addHandler(handler)
     try:
         ctx["automation"] = asyncio.run(
             compute_clearance_automation(
@@ -581,11 +624,15 @@ def _run_pipeline(ctx, *, dry_run: bool | None = None) -> None:
                 repository=REPO,
                 store=ctx["store"],
                 investigator=ctx.get("investigator"),
+                expected_sha=ctx.get("webhook_expected_sha"),
             )
         )
     except Exception as exc:
         ctx["raised"] = exc
     finally:
+        pipeline_logger.removeHandler(handler)
+        pipeline_logger.setLevel(old_level)
+        ctx["captured_logs"] = log_records
         if old is None:
             os.environ.pop("DRY_RUN", None)
         else:
@@ -1128,4 +1175,429 @@ def then_snapshot_evidence_llm_error_contains(ctx, thread_id: str, substring: st
     assert llm_error != "", f"expected evidence.llm_error to be non-empty, got {llm_error!r}"
     assert substring.lower() in llm_error.lower(), (
         f"substring {substring!r} not in evidence.llm_error={llm_error!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 7C-3: severity evaluator wiring — helpers + Given / Then steps
+# ---------------------------------------------------------------------------
+
+# Codex comment body with P1 badge + required_check_coupling cue
+# (contains "required", "check", and "paths-ignore")
+_P1_COUPLING_BODY = (
+    "![P1 Badge](https://img.shields.io/badge/P1-critical-red)\n"
+    "This workflow uses `required` status checks that are excluded via `paths-ignore`.\n"
+    "The `check` runs will be skipped for changes to docs/ and the branch protection\n"
+    "rule requires them — this coupling means a failing check can silently bypass.\n"
+)
+
+# P2 badge, no coupling cue
+_P2_NO_COUPLING_BODY = "**P2**: Nullable dereference on line 42 — guard before calling `.value`.\n"
+
+# No badge at all
+_NO_BADGE_BODY = (
+    "The function does not handle empty input — add an early return for the empty-list case.\n"
+)
+
+
+def _severity_codex_thread(
+    *,
+    thread_id: str = THREAD_ID,
+    comment_body: str,
+    is_resolved: bool = False,
+    is_outdated: bool = False,
+    author_reply_body: str | None = None,
+) -> dict[str, Any]:
+    """Build a Codex thread with a configurable first-comment body for severity extraction."""
+    comments: list[dict[str, Any]] = [
+        {
+            "databaseId": CODEX_COMMENT_ID,
+            "author": {"login": "chatgpt-codex-connector"},
+            "body": comment_body,
+            "url": "https://example/c/1",
+            "createdAt": "2026-05-11T12:00:00Z",
+        }
+    ]
+    if author_reply_body is not None:
+        comments.append(
+            {
+                "databaseId": CODEX_COMMENT_ID + 1,
+                "author": {"login": "ryosaeba1985"},
+                "body": author_reply_body,
+                "url": "https://example/c/2",
+                "createdAt": "2026-05-11T12:30:00Z",
+            }
+        )
+    return {
+        "id": thread_id,
+        "isResolved": is_resolved,
+        "isOutdated": is_outdated,
+        "path": "app.py",
+        "line": 10,
+        "startLine": None,
+        "comments": {"nodes": comments},
+    }
+
+
+@given(
+    'the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with P1 badge and required_check_coupling body'
+)
+def given_p1_coupling_thread(ctx) -> None:
+    ctx["client"].threads = [_severity_codex_thread(comment_body=_P1_COUPLING_BODY)]
+
+
+@given('the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with no severity badge')
+def given_no_badge_thread(ctx) -> None:
+    ctx["client"].threads = [_severity_codex_thread(comment_body=_NO_BADGE_BODY)]
+
+
+@given('the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with P2 badge and no coupling cue')
+def given_p2_no_coupling_thread(ctx) -> None:
+    ctx["client"].threads = [_severity_codex_thread(comment_body=_P2_NO_COUPLING_BODY)]
+
+
+@given(parsers.parse('the base branch is "{branch}"'))
+def given_base_branch(ctx, branch: str) -> None:
+    ctx["client"].pr_payload["base"] = {"ref": branch}
+
+
+@given("the stub branch_protected returns False")
+def given_branch_not_protected(ctx) -> None:
+    ctx["client"]._branch_protected_result = False
+
+
+@given("the stub branch_protected returns True")
+def given_branch_protected(ctx) -> None:
+    ctx["client"]._branch_protected_result = True
+
+
+@given("the stub branch_protected raises a transport error")
+def given_branch_protected_raises(ctx) -> None:
+    import httpx
+
+    ctx["client"]._branch_protected_raise = httpx.HTTPError("simulated transport error")
+
+
+@then(parsers.parse('the thread codex_severity is "{expected}"'))
+def then_thread_codex_severity(ctx, expected: str) -> None:
+    t = _first_thread(ctx)
+    assert t.codex_severity.value == expected, (
+        f"thread.codex_severity={t.codex_severity!r}, expected {expected!r}"
+    )
+
+
+@then(parsers.parse('the thread effective_severity is "{expected}"'))
+def then_thread_effective_severity(ctx, expected: str) -> None:
+    t = _first_thread(ctx)
+    assert t.effective_severity.value == expected, (
+        f"thread.effective_severity={t.effective_severity!r}, expected {expected!r}"
+    )
+
+
+@then(parsers.parse('the thread demotion_reason contains "{substring}"'))
+def then_thread_demotion_reason_contains(ctx, substring: str) -> None:
+    t = _first_thread(ctx)
+    reason = t.demotion_reason or ""
+    assert substring in reason, f"thread.demotion_reason={reason!r} does not contain {substring!r}"
+
+
+@then("the thread demotion_reason is None")
+def then_thread_demotion_reason_none(ctx) -> None:
+    t = _first_thread(ctx)
+    assert t.demotion_reason is None, (
+        f"expected thread.demotion_reason=None, got {t.demotion_reason!r}"
+    )
+
+
+@then("a severity_demoted log was emitted")
+def then_severity_demoted_log(ctx) -> None:
+    records = ctx.get("captured_logs", [])
+    matched = any(
+        "severity_demoted" in (record.getMessage())
+        for record in records
+        if record.levelno >= logging.INFO
+    )
+    assert matched, "No 'severity_demoted' log record found. Records: " + str(
+        [r.getMessage() for r in records]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 7C commit 5: head_sha in automation dict
+# ---------------------------------------------------------------------------
+
+
+@then(parsers.parse('the automation head_sha is "{sha}"'))
+def then_automation_head_sha(ctx, sha: str) -> None:
+    auto = ctx["automation"]
+    assert auto is not None, f"raised={ctx.get('raised')}"
+    assert "head_sha" in auto, f"head_sha absent from automation keys: {list(auto.keys())}"
+    assert auto["head_sha"] == sha, f"automation head_sha={auto['head_sha']!r}, expected {sha!r}"
+
+
+# ---------------------------------------------------------------------------
+# Wave 7C commit 6: stale-verdict guard in dispatch_route_writeback
+# ---------------------------------------------------------------------------
+
+
+@given(parsers.parse('a stub automation with head_sha "{sha}" and status "{status}"'))
+def given_stub_automation_with_head_sha(ctx, sha: str, status: str) -> None:
+    ctx["stub_automation"] = {
+        "enabled": True,
+        "status": status,
+        "head_sha": sha,
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+
+
+@given(parsers.parse('a stub automation with no head_sha and status "{status}"'))
+def given_stub_automation_no_head_sha(ctx, status: str) -> None:
+    ctx["stub_automation"] = {
+        "enabled": True,
+        "status": status,
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+
+
+@given(parsers.parse('the current PR head sha is "{sha}"'))
+def given_current_pr_head_sha(ctx, sha: str) -> None:
+    ctx["client"].pr_payload["head"] = {"sha": sha}
+
+
+@given("the stub client fails on pull_request with an httpx error")
+def given_pull_request_fails_httpx(ctx) -> None:
+    ctx["client"].fail_pull_request_httpx = True
+
+
+def _run_dispatch(ctx, *, dry_run: bool, repo: str, pr: int) -> None:
+    """Invoke dispatch_route_writeback with a monkeypatched compute_clearance_automation.
+
+    The stale-guard in dispatch_route_writeback runs AFTER compute_clearance_automation
+    returns the automation dict. To test the guard in isolation we patch
+    compute_clearance_automation to return ctx["stub_automation"] directly, then
+    also patch enrich_clearance_route so the downstream enrichment path does not
+    attempt real GitHub calls.
+    """
+    import asyncio
+    import importlib
+
+    route = {
+        "agent": "iterwheel-clearance",
+        "kind": "pr",
+        "validation": {"pr_number": pr, "issue_number": pr},
+        "writeback": {"dynamic": "clearance_readiness"},
+    }
+    stub_automation = ctx["stub_automation"]
+
+    async def _fake_compute(
+        client,
+        route,
+        *,
+        repository,
+        store=None,
+        default_profile_name=None,
+        investigator=None,
+        expected_sha=None,
+    ):
+        return stub_automation
+
+    async def _fake_enrich(client, route, *, repository, automation=None):
+        # Return a minimal concrete route so apply_route_writeback can run.
+        return {
+            "agent": route["agent"],
+            "kind": route["kind"],
+            "validation": {**route["validation"]},
+            "writeback": {},
+        }
+
+    pipeline_mod = importlib.import_module("voyager.bots.clearance.pipeline")
+    clearance_pkg = importlib.import_module("voyager.bots.clearance")
+
+    original_compute = getattr(pipeline_mod, "compute_clearance_automation", None)
+    original_enrich = getattr(clearance_pkg, "enrich_clearance_route", None)
+
+    dispatch_log_records: list[logging.LogRecord] = []
+    handler = _CapturingHandler(dispatch_log_records)
+    wb_logger = logging.getLogger("voyager.core.writeback")
+    old_level = wb_logger.level
+    wb_logger.setLevel(logging.DEBUG)
+    wb_logger.addHandler(handler)
+
+    old_env = os.environ.get("DRY_RUN")
+    os.environ["DRY_RUN"] = "false" if not dry_run else "true"
+
+    try:
+        pipeline_mod.compute_clearance_automation = _fake_compute
+        clearance_pkg.enrich_clearance_route = _fake_enrich
+
+        from voyager.core.writeback import dispatch_route_writeback
+
+        ctx["dispatch_result"] = asyncio.run(
+            dispatch_route_writeback(
+                ctx["client"],
+                route,
+                repository=repo,
+                store=object(),  # non-None so the pipeline branch executes
+            )
+        )
+    finally:
+        if original_compute is not None:
+            pipeline_mod.compute_clearance_automation = original_compute
+        if original_enrich is not None:
+            clearance_pkg.enrich_clearance_route = original_enrich
+        wb_logger.removeHandler(handler)
+        wb_logger.setLevel(old_level)
+        if old_env is None:
+            os.environ.pop("DRY_RUN", None)
+        else:
+            os.environ["DRY_RUN"] = old_env
+        ctx["dispatch_logs"] = dispatch_log_records
+
+
+@when(parsers.parse('dispatch_route_writeback runs with DRY_RUN {flag} for PR {pr:d} on "{repo}"'))
+def when_dispatch_stale_guard(ctx, flag: str, pr: int, repo: str) -> None:
+    _run_dispatch(ctx, dry_run=(flag.lower() == "true"), repo=repo, pr=pr)
+
+
+@then("the writeback was not skipped")
+def then_writeback_not_skipped(ctx) -> None:
+    result = ctx.get("dispatch_result")
+    assert result is not None, "dispatch_route_writeback did not return a result"
+    assert result.get("skipped") != "stale_verdict", (
+        f"expected writeback to proceed but got skipped result: {result!r}"
+    )
+
+
+@then("no stale_verdict_skip log was emitted")
+def then_no_stale_verdict_skip_log(ctx) -> None:
+    records = ctx.get("dispatch_logs", [])
+    matched = any("stale_verdict_skip" in r.getMessage() for r in records)
+    assert not matched, "Unexpected stale_verdict_skip log. Records: " + str(
+        [r.getMessage() for r in records]
+    )
+
+
+@then(parsers.parse('the dispatch result is skipped with reason "{reason}"'))
+def then_dispatch_skipped(ctx, reason: str) -> None:
+    result = ctx.get("dispatch_result")
+    assert result is not None, "dispatch_route_writeback did not return a result"
+    assert result.get("ok") is True, f"expected ok=True in skipped result, got: {result!r}"
+    assert result.get("skipped") == reason, (
+        f"expected skipped={reason!r}, got skipped={result.get('skipped')!r}"
+    )
+
+
+@then(parsers.parse('the dispatch automation status is "{status}"'))
+def then_dispatch_automation_status(ctx, status: str) -> None:
+    result = ctx.get("dispatch_result")
+    assert result is not None
+    automation = result.get("automation") or {}
+    assert automation.get("status") == status, (
+        f"expected automation.status={status!r}, got {automation.get('status')!r}"
+    )
+
+
+@then(
+    parsers.parse(
+        'a stale_verdict_skip log was emitted with expected_sha "{expected_sha}" '
+        'and actual_sha "{actual_sha}"'
+    )
+)
+def then_stale_verdict_skip_log(ctx, expected_sha: str, actual_sha: str) -> None:
+    records = ctx.get("dispatch_logs", [])
+    matched = any("stale_verdict_skip" in r.getMessage() for r in records)
+    assert matched, "No stale_verdict_skip log found. Records: " + str(
+        [r.getMessage() for r in records]
+    )
+    log_text = " ".join(r.getMessage() for r in records if "stale_verdict_skip" in r.getMessage())
+    assert expected_sha in log_text, (
+        f"expected_sha={expected_sha!r} not found in stale_verdict_skip log: {log_text!r}"
+    )
+    assert actual_sha in log_text, (
+        f"actual_sha={actual_sha!r} not found in stale_verdict_skip log: {log_text!r}"
+    )
+
+
+@then("a stale_guard_failed_fail_open log was emitted")
+def then_stale_guard_failed_log(ctx) -> None:
+    records = ctx.get("dispatch_logs", [])
+    matched = any("stale_guard_failed_fail_open" in r.getMessage() for r in records)
+    assert matched, "No stale_guard_failed_fail_open log found. Records: " + str(
+        [r.getMessage() for r in records]
+    )
+
+
+@then("a writeback_skipped_stale_verdict log was emitted")
+def then_writeback_skipped_stale_verdict_log(ctx) -> None:
+    records = ctx.get("dispatch_logs", [])
+    matched = any("writeback_skipped_stale_verdict" in r.getMessage() for r in records)
+    assert matched, "No writeback_skipped_stale_verdict log found. Records: " + str(
+        [r.getMessage() for r in records]
+    )
+
+
+@then("pull_request was never called")
+def then_pull_request_never_called(ctx) -> None:
+    count = ctx["client"].pull_request_call_count
+    assert count == 0, f"expected pull_request to be called 0 times, got {count}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 (Codex P2): pre-mutation stale guard inside compute_clearance_automation
+# ---------------------------------------------------------------------------
+
+
+@given(parsers.parse('the webhook expected_sha is "{sha}"'))
+def given_webhook_expected_sha(ctx, sha: str) -> None:
+    ctx["webhook_expected_sha"] = sha
+
+
+@given(parsers.parse('the stub PR current head sha advanced to "{sha}"'))
+def given_stub_pr_head_advanced(ctx, sha: str) -> None:
+    ctx["client"].pr_payload["head"] = {"sha": sha}
+
+
+@given(parsers.parse('the stub PR current head sha is "{sha}"'))
+def given_stub_pr_current_head_sha(ctx, sha: str) -> None:
+    ctx["client"].pr_payload["head"] = {"sha": sha}
+
+
+@given(parsers.parse('the stub PR initial head sha is "{sha}"'))
+def given_stub_pr_initial_head_sha(ctx, sha: str) -> None:
+    ctx["client"].pr_payload["head"] = {"sha": sha}
+
+
+@given(parsers.parse('the stub PR head advances on the second pull_request call to "{sha}"'))
+def given_stub_pr_head_advances_on_second_call(ctx, sha: str) -> None:
+    ctx["client"].pr_payload_second_fetch = {"sha": sha}
+
+
+@given(parsers.parse('the stub PR head is stable at "{sha}" on all fetches'))
+def given_stub_pr_head_stable(ctx, sha: str) -> None:
+    ctx["client"].pr_payload["head"] = {"sha": sha}
+    ctx["client"].pr_payload_second_fetch = None
+
+
+@then(
+    parsers.parse(
+        'a pipeline_stale_verdict_skip log was emitted with expected_sha "{expected_sha}"'
+        ' and actual_sha "{actual_sha}"'
+    )
+)
+def then_pipeline_stale_verdict_skip_log(ctx, expected_sha: str, actual_sha: str) -> None:
+    records = ctx.get("captured_logs", [])
+    matched = any("pipeline_stale_verdict_skip" in r.getMessage() for r in records)
+    assert matched, "No pipeline_stale_verdict_skip log found. Records: " + str(
+        [r.getMessage() for r in records]
+    )
+    log_text = " ".join(
+        r.getMessage() for r in records if "pipeline_stale_verdict_skip" in r.getMessage()
+    )
+    assert expected_sha in log_text, (
+        f"expected_sha={expected_sha!r} not found in pipeline_stale_verdict_skip log: {log_text!r}"
+    )
+    assert actual_sha in log_text, (
+        f"actual_sha={actual_sha!r} not found in pipeline_stale_verdict_skip log: {log_text!r}"
     )

@@ -16,6 +16,7 @@ from voyager.bots.clearance.classify import CodexBodySignal, ThreadState
 
 class Status(StrEnum):
     READY = "ready"
+    READY_WITH_LOW_PRIORITY = "ready_with_low_priority"
     BLOCKED = "blocked"
     PENDING = "pending"
     ERROR = "error"

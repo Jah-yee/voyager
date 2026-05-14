@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -7,6 +8,8 @@ from urllib.parse import quote
 
 import httpx
 import jwt
+
+_log = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
@@ -426,6 +429,38 @@ class GitHubAppClient:
         response = await client.get(url, headers=headers)
         response.raise_for_status()
         return response.text
+
+    async def branch_protected(self, app_slug: str, repo: str, branch: str) -> bool:
+        """Return True if base branch has protection rules.
+
+        Fail-safe: returns True on HTTP error / 404 / timeout (don't demote on
+        uncertainty per VOY-1809 D3).
+        """
+        owner, name = repo.split("/", 1)
+        token = await self.installation_token(app_slug, repository=repo)
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        }
+        # URL-encode the branch name so slashes (e.g. "release/2026.05") don't
+        # become extra path segments, which would 404 → fail-safe-True → silently
+        # disable the demotion path. Codex PR-#12 P2.
+        url = f"{GITHUB_API}/repos/{owner}/{name}/branches/{quote(branch, safe='')}"
+        client = self._async_client()
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return bool((response.json() or {}).get("protected", False))
+        except (httpx.HTTPError, TimeoutError) as exc:
+            _log.warning(
+                "branch_protected: REST call failed for %s/%s branch=%s (fail-safe → True): %s",
+                owner,
+                name,
+                branch,
+                exc,
+            )
+            return True
 
     async def add_labels(
         self, app_slug: str, repo: str, issue_number: int, labels: list[str]

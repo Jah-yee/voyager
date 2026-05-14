@@ -58,6 +58,8 @@ from voyager.bots.clearance.models import (
     Verdict,
     VerdictHistoryEntry,
 )
+from voyager.bots.clearance.severity import evaluate as evaluate_severity
+from voyager.bots.clearance.severity_input import extract_severity_and_kind
 from voyager.bots.clearance.state import StateStore
 from voyager.core.github_app import GitHubAppClient
 from voyager.core.writeback import dry_run_enabled
@@ -77,6 +79,9 @@ async def _process_thread(
     head_sha: str,
     pr_title: str | None,
     now: datetime,
+    base_branch: str,
+    branch_protected_state: bool,
+    client: GitHubAppClient,  # noqa: ARG001 — kept for future per-thread API calls
     pr_author_login: str | None = None,
     investigator: ThreadInvestigator | None = None,
     get_diff: Callable[[], Awaitable[str]] | None = None,
@@ -106,6 +111,40 @@ async def _process_thread(
     followup_body_for_judge = (followup or {}).get("body") if followup_ts > reply_ts else None
 
     author_reply_body = (reply or {}).get("body")
+
+    # Extract codex severity + finding_kind from review body
+    comments_nodes = (thread_dict.get("comments") or {}).get("nodes") or []
+    codex_sev, finding_kind = extract_severity_and_kind(comments_nodes)
+
+    # Evaluate severity demotion using the per-webhook branch_protected_state
+    # (already fetched once in compute_clearance_automation; passed in here)
+    sev_decision = evaluate_severity(
+        codex_severity=codex_sev,
+        finding_kind=finding_kind,
+        branch_protected=branch_protected_state,
+        base_branch=base_branch,
+    )
+
+    # Emit structured log on demotion (Codex MVE P3: include base_branch + finding_kind
+    # so operators can grep by branch + correlate demotions to extractor signal)
+    if sev_decision.effective_severity != sev_decision.codex_severity:
+        _log.info(
+            "severity_demoted: %s",
+            json.dumps(
+                {
+                    "event": "severity_demoted",
+                    "repo": repo,
+                    "pr": pr,
+                    "thread_id": thread_dict.get("id"),
+                    "base_branch": base_branch,
+                    "finding_kind": finding_kind,
+                    "codex_severity": sev_decision.codex_severity.value,
+                    "effective_severity": sev_decision.effective_severity.value,
+                    "reason": sev_decision.reason,
+                }
+            ),
+        )
+
     decision = judge(
         classification=state,
         author_reply_body=author_reply_body,
@@ -223,8 +262,9 @@ async def _process_thread(
         comment_id=comment_id,
         path=path,
         line=line,
-        codex_severity=Severity.P2,
-        effective_severity=Severity.P2,
+        codex_severity=sev_decision.codex_severity,
+        effective_severity=sev_decision.effective_severity,
+        demotion_reason=sev_decision.reason,
         verdict=decision.verdict,
         verdict_reason=decision.reason,
         github_isResolved=bool(thread_dict.get("isResolved")),
@@ -245,8 +285,9 @@ async def _process_thread(
         codex_comment_id=comment_id,
         path=path,
         current_line=line,
-        codex_severity=Severity.P2,
-        effective_severity=Severity.P2,
+        codex_severity=sev_decision.codex_severity,
+        effective_severity=sev_decision.effective_severity,
+        demotion_reason=sev_decision.reason,
         verdict=decision.verdict,
         verdict_history=[
             VerdictHistoryEntry(ts=now, verdict=decision.verdict, reason=decision.reason)
@@ -274,24 +315,43 @@ async def _process_thread(
 def _compute_status(threads: list[Thread]) -> tuple[Status, str]:
     """Aggregate per-thread verdicts into a pipeline-level Status + reason.
 
-    Rules (in precedence order):
-      - No Codex threads → READY
-      - Any OPEN verdict → BLOCKED
-      - Any NEEDS_HUMAN_JUDGMENT verdict → PENDING
-      - Otherwise all RESOLVED → READY
+    β precedence (Wave 7C, VOY-1809):
+      1. No threads → READY
+      2. Any OPEN with effective_severity ∈ {P1, P2} → BLOCKED (count only
+         high-priority OPEN in the reason)
+      3. Any NEEDS_HUMAN_JUDGMENT → PENDING
+      4. Only OPEN P3 remaining (others RESOLVED) → READY with low-priority note
+      5. All RESOLVED → READY
     """
     if not threads:
         return Status.READY, "no Codex review threads on PR"
 
-    open_count = sum(1 for t in threads if t.verdict == Verdict.OPEN)
-    if open_count:
-        noun = "thread" if open_count == 1 else "threads"
-        return Status.BLOCKED, f"{open_count} Codex review {noun} still OPEN"
+    open_high = [
+        t
+        for t in threads
+        if t.verdict == Verdict.OPEN and t.effective_severity in (Severity.P1, Severity.P2)
+    ]
+    if open_high:
+        n = len(open_high)
+        noun = "thread" if n == 1 else "threads"
+        return Status.BLOCKED, f"{n} high-priority {noun} still OPEN"
 
-    nhj_count = sum(1 for t in threads if t.verdict == Verdict.NEEDS_HUMAN_JUDGMENT)
-    if nhj_count:
-        noun = "thread" if nhj_count == 1 else "threads"
-        return Status.PENDING, f"{nhj_count} Codex review {noun} need human judgment"
+    nhj = [t for t in threads if t.verdict == Verdict.NEEDS_HUMAN_JUDGMENT]
+    if nhj:
+        n = len(nhj)
+        noun = "thread" if n == 1 else "threads"
+        verb = "needs" if n == 1 else "need"
+        return Status.PENDING, f"{n} Codex review {noun} {verb} human judgment"
+
+    open_low = [
+        t for t in threads if t.verdict == Verdict.OPEN and t.effective_severity == Severity.P3
+    ]
+    if open_low:
+        n = len(open_low)
+        noun = "thread" if n == 1 else "threads"
+        return Status.READY_WITH_LOW_PRIORITY, (
+            f"all blocking threads RESOLVED; {n} low-priority {noun} still open"
+        )
 
     return Status.READY, "all Codex review threads RESOLVED"
 
@@ -389,6 +449,7 @@ async def compute_clearance_automation(
     store: StateStore,
     investigator: ThreadInvestigator | None = None,
     default_profile_name: str | None = None,
+    expected_sha: str | None = None,
 ) -> dict[str, Any]:
     """Run the SWM-1101 per-thread verdict pipeline for one webhook event.
 
@@ -401,6 +462,11 @@ async def compute_clearance_automation(
     When ``investigator`` is provided, State B threads with ``code_changed=False``
     are routed through the LLM investigator (Wave 7B-3 D1=B AUGMENT). Threads
     on the deterministic fast-path pay zero diff cost (lazy memoized fetch).
+
+    When ``expected_sha`` is provided (the webhook-time PR head SHA), Stage 1.5
+    mutations are skipped if the freshly fetched PR head has advanced past
+    ``expected_sha``. This pre-mutation stale check prevents applying verdicts
+    computed against a now-superseded commit.
 
     Returns a dict with keys: ``enabled``, ``status``, ``reason``,
     ``sync_actions``, ``sync_actions_count``, ``dry_run``.
@@ -427,6 +493,25 @@ async def compute_clearance_automation(
     head_sha = (pr_data.get("head") or {}).get("sha") or ""
     pr_title = pr_data.get("title")
     pr_author_login: str | None = (pr_data.get("user") or {}).get("login") or None
+    base_branch = (pr_data.get("base") or {}).get("ref") or "main"
+
+    # Wave 7C-1 commit 3 + Codex MVE-round P2: hoist branch_protected fetch out of
+    # the per-thread loop. All threads on the same PR share the same base branch,
+    # so calling branch_protected once per webhook (not N times for N threads)
+    # eliminates the N-REST-rate-limit risk Codex flagged. Fail-safe to True on
+    # any exception per VOY-1809 D3 (don't demote on uncertainty).
+    try:
+        branch_protected_state = await client.branch_protected(
+            CLEARANCE_AGENT_SLUG, repository, base_branch
+        )
+    except Exception as exc:
+        _log.warning(
+            "branch_protected fetch failed for %s branch=%s (fail-safe → True): %s",
+            repository,
+            base_branch,
+            exc,
+        )
+        branch_protected_state = True
 
     # Lazy memoized diff fetch — fires GitHub API only when the first
     # State B + code_changed=False thread actually needs it. Gemini's
@@ -453,6 +538,9 @@ async def compute_clearance_automation(
             head_sha=head_sha,
             pr_title=pr_title,
             now=now,
+            base_branch=base_branch,
+            branch_protected_state=branch_protected_state,
+            client=client,
             pr_author_login=pr_author_login,
             investigator=investigator,
             get_diff=get_diff,
@@ -466,6 +554,79 @@ async def compute_clearance_automation(
         snapshots.append(snapshot)
 
     status, reason = _compute_status(threads)
+
+    # Pre-mutation stale guard (first check): if the caller supplied the
+    # webhook-time head SHA and the freshly fetched PR head has already advanced,
+    # skip Stage 1.5 writes so we don't apply verdicts computed against a
+    # superseded commit.
+    if expected_sha and head_sha and head_sha != expected_sha:
+        _log.info(
+            "pipeline_stale_verdict_skip: %s",
+            json.dumps(
+                {
+                    "event": "pipeline_stale_verdict_skip",
+                    "repo": repository,
+                    "pr": pr_number,
+                    "expected_sha": expected_sha,
+                    "actual_sha": head_sha,
+                }
+            ),
+        )
+        return {
+            "enabled": True,
+            "status": "stale_verdict_skip",
+            "reason": f"head advanced from {expected_sha} to {head_sha}; Stage 1.5 skipped",
+            "sync_actions": [],
+            "sync_actions_count": 0,
+            "dry_run": dry_run,
+            "head_sha": head_sha,
+        }
+
+    # Pre-mutation stale guard (second check): re-fetch the PR head right before
+    # Stage 1.5 to close the race window between the initial fetch and the
+    # resolveReviewThread mutations. The investigator and classify steps can take
+    # non-trivial time; the head may have advanced since.
+    #
+    # When expected_sha is provided (pull_request webhook), use it as the
+    # mutation-boundary baseline. When expected_sha is None (check_suite events
+    # or /clearance issue comments), use the initial head_sha fetched at the top
+    # of this function — that initial fetch is the earliest known-good head for
+    # this pipeline run, so any advancement past it still indicates stale verdicts.
+    try:
+        pr_data_fresh = await client.pull_request(CLEARANCE_AGENT_SLUG, repository, pr_number)
+        head_sha_fresh: str | None = (pr_data_fresh.get("head") or {}).get("sha") or ""
+    except Exception as exc:
+        _log.warning(
+            "pre-stage-1.5 stale re-fetch failed (fail-open, proceeding): %s",
+            exc,
+        )
+        head_sha_fresh = None
+    baseline = expected_sha or head_sha
+    if baseline and head_sha_fresh and head_sha_fresh != baseline:
+        _log.info(
+            "pipeline_stale_verdict_skip: %s",
+            json.dumps(
+                {
+                    "event": "pipeline_stale_verdict_skip",
+                    "repo": repository,
+                    "pr": pr_number,
+                    "expected_sha": baseline,
+                    "actual_sha": head_sha_fresh,
+                }
+            ),
+        )
+        return {
+            "enabled": True,
+            "status": "stale_verdict_skip",
+            "reason": (
+                f"head advanced from {baseline} to {head_sha_fresh} "
+                "during processing; Stage 1.5 skipped"
+            ),
+            "sync_actions": [],
+            "sync_actions_count": 0,
+            "dry_run": dry_run,
+            "head_sha": head_sha_fresh,
+        }
 
     sync_actions = await _maybe_sync_stage_15(
         client=client,
@@ -515,6 +676,8 @@ async def compute_clearance_automation(
         "sync_actions": [a.model_dump() for a in sync_actions],
         "sync_actions_count": len(sync_actions),
         "dry_run": dry_run,
+        "head_sha": head_sha,
+        "unresolved_codex_thread_count": sum(1 for t in threads if t.verdict != Verdict.RESOLVED),
     }
     if investigator_failures:
         result_dict["investigator_error_count"] = len(investigator_failures)

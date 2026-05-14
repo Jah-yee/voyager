@@ -297,3 +297,203 @@ Feature: Clearance pipeline — webhook-driven SWM-1101 per-thread verdict orche
     And the stub client raises httpx.HTTPStatusError on pull_request_diff
     When compute_clearance_automation runs with investigator
     Then the snapshot evidence llm_error for thread "PRRT_codex_alpha" contains "500"
+
+  # ---------------------------------------------------------------------------
+  # Wave 7C-3: severity evaluator wiring
+  # ---------------------------------------------------------------------------
+
+  Scenario: S1 — P1 badge + required_check_coupling cue + unprotected base branch demotes to P2
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with P1 badge and required_check_coupling body
+    And the base branch is "main"
+    And the stub branch_protected returns False
+    When compute_clearance_automation runs with DRY_RUN true
+    Then the thread codex_severity is "P1"
+    And the thread effective_severity is "P2"
+    And the thread demotion_reason contains "main has no branch protection"
+    And a severity_demoted log was emitted
+
+  Scenario: S2 — P1 badge + required_check_coupling cue + protected base branch does NOT demote
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with P1 badge and required_check_coupling body
+    And the base branch is "main"
+    And the stub branch_protected returns True
+    When compute_clearance_automation runs with DRY_RUN true
+    Then the thread codex_severity is "P1"
+    And the thread effective_severity is "P1"
+    And the thread demotion_reason is None
+
+  Scenario: S3 — No severity badge → codex_severity P3, effective P3, no demotion
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with no severity badge
+    And the base branch is "main"
+    And the stub branch_protected returns False
+    When compute_clearance_automation runs with DRY_RUN true
+    Then the thread codex_severity is "P3"
+    And the thread effective_severity is "P3"
+    And the thread demotion_reason is None
+
+  Scenario: S4 — P2 badge but no required_check_coupling cue → P2 effective, no demotion
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with P2 badge and no coupling cue
+    And the base branch is "main"
+    And the stub branch_protected returns False
+    When compute_clearance_automation runs with DRY_RUN true
+    Then the thread codex_severity is "P2"
+    And the thread effective_severity is "P2"
+    And the thread demotion_reason is None
+
+  Scenario: S5 — P1 → P2 (single-step demotion) when unprotected + required_check_coupling, ThreadSnapshot also populated
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with P1 badge and required_check_coupling body
+    And the base branch is "main"
+    And the stub branch_protected returns False
+    When compute_clearance_automation runs with DRY_RUN true
+    Then the thread codex_severity is "P1"
+    And the thread effective_severity is "P2"
+    And the thread demotion_reason contains "main has no branch protection"
+
+  Scenario: S6 — branch_protected REST fails → fail-safe protected=True → no demotion
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with P1 badge and required_check_coupling body
+    And the base branch is "main"
+    And the stub branch_protected raises a transport error
+    When compute_clearance_automation runs with DRY_RUN true
+    Then the thread codex_severity is "P1"
+    And the thread effective_severity is "P1"
+    And the thread demotion_reason is None
+
+  # ---------------------------------------------------------------------------
+  # Wave 7C commit 5: head_sha in automation dict
+  # ---------------------------------------------------------------------------
+
+  Scenario: Happy path — automation dict contains head_sha with the PR's head SHA value
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    When compute_clearance_automation runs with DRY_RUN true
+    Then the automation status is "ready"
+    And the automation head_sha is "head-sha-abc1234"
+
+  Scenario: No Codex threads — automation dict still contains head_sha
+    Given the stub PR "iterwheel/sandbox" #49 has no review threads
+    When compute_clearance_automation runs
+    Then the automation status is "ready"
+    And the automation head_sha is "head-sha-abc1234"
+
+  Scenario: No Codex threads (DRY_RUN false) — automation head_sha always emitted
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread already isResolved
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "ready"
+    And the automation head_sha is "head-sha-abc1234"
+
+  # ---------------------------------------------------------------------------
+  # Wave 7C commit 6: stale-verdict guard in dispatch_route_writeback
+  # ---------------------------------------------------------------------------
+
+  Scenario: G1 fresh — automation.head_sha matches current PR head, writeback proceeds
+    Given a stub automation with head_sha "sha-abc" and status "ready"
+    And the current PR head sha is "sha-abc"
+    When dispatch_route_writeback runs with DRY_RUN false for PR 49 on "iterwheel/sandbox"
+    Then the writeback was not skipped
+    And no stale_verdict_skip log was emitted
+
+  Scenario: G2 stale — automation.head_sha differs from current PR head, writeback is skipped
+    Given a stub automation with head_sha "sha-old" and status "ready"
+    And the current PR head sha is "sha-new"
+    When dispatch_route_writeback runs with DRY_RUN false for PR 49 on "iterwheel/sandbox"
+    Then the dispatch result is skipped with reason "stale_verdict"
+    And the dispatch automation status is "stale_verdict_skip"
+    And a stale_verdict_skip log was emitted with expected_sha "sha-old" and actual_sha "sha-new"
+
+  Scenario: G3 fail-open — client.pull_request raises httpx error, writeback proceeds
+    Given a stub automation with head_sha "sha-abc" and status "ready"
+    And the stub client fails on pull_request with an httpx error
+    When dispatch_route_writeback runs with DRY_RUN false for PR 49 on "iterwheel/sandbox"
+    Then the writeback was not skipped
+    And a stale_guard_failed_fail_open log was emitted
+
+  Scenario: G4 legacy payload — automation has no head_sha key, guard short-circuits
+    Given a stub automation with no head_sha and status "ready"
+    And the current PR head sha is "sha-new"
+    When dispatch_route_writeback runs with DRY_RUN false for PR 49 on "iterwheel/sandbox"
+    Then the writeback was not skipped
+    And no stale_verdict_skip log was emitted
+
+  Scenario: G5 dry-run skip — guard short-circuits when DRY_RUN true, no pull_request fetch
+    Given a stub automation with head_sha "sha-old" and status "ready"
+    And the current PR head sha is "sha-new"
+    When dispatch_route_writeback runs with DRY_RUN true for PR 49 on "iterwheel/sandbox"
+    Then the writeback was not skipped
+    And pull_request was never called
+
+  Scenario: G6 pipeline-stale-skip terminal — automation.status already stale_verdict_skip from pipeline, dispatch skips before enrichment even when head_sha would match
+    Given a stub automation with head_sha "sha-current" and status "stale_verdict_skip"
+    And the current PR head sha is "sha-current"
+    When dispatch_route_writeback runs with DRY_RUN false for PR 49 on "iterwheel/sandbox"
+    Then the dispatch result is skipped with reason "stale_verdict"
+    And the dispatch automation status is "stale_verdict_skip"
+    And a writeback_skipped_stale_verdict log was emitted
+
+  # ---------------------------------------------------------------------------
+  # Fix 2 (Codex P2): pre-mutation stale guard inside compute_clearance_automation
+  # ---------------------------------------------------------------------------
+
+  Scenario: P1 pre-mutation stale — expected_sha differs from fresh PR head, Stage 1.5 NOT invoked
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    And the webhook expected_sha is "sha-webhook-old"
+    And the stub PR current head sha advanced to "sha-fresh-new"
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "stale_verdict_skip"
+    And no resolveReviewThread mutation was invoked
+    And no in-thread reply was posted
+    And a pipeline_stale_verdict_skip log was emitted with expected_sha "sha-webhook-old" and actual_sha "sha-fresh-new"
+
+  Scenario: P2 pre-mutation fresh — expected_sha matches fresh PR head, Stage 1.5 runs normally
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    And the webhook expected_sha is "head-sha-abc1234"
+    And the stub PR current head sha is "head-sha-abc1234"
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "ready"
+    And exactly 1 resolveReviewThread mutation was invoked
+
+  Scenario: P3 no expected_sha — pre-mutation guard short-circuits, Stage 1.5 runs normally
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "ready"
+    And exactly 1 resolveReviewThread mutation was invoked
+
+  # ---------------------------------------------------------------------------
+  # R5-P2: second pre-Stage-1.5 stale guard (race window fix)
+  # ---------------------------------------------------------------------------
+
+  Scenario: R5-P2 race — PR head advances between initial fetch and Stage 1.5; second guard fires
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    And the webhook expected_sha is "sha-webhook"
+    And the stub PR initial head sha is "sha-webhook"
+    And the stub PR head advances on the second pull_request call to "sha-advanced"
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "stale_verdict_skip"
+    And no resolveReviewThread mutation was invoked
+    And a pipeline_stale_verdict_skip log was emitted with expected_sha "sha-webhook" and actual_sha "sha-advanced"
+
+  Scenario: R5-P2 no race — PR head is stable on both fetches, Stage 1.5 runs normally
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    And the webhook expected_sha is "sha-webhook"
+    And the stub PR head is stable at "sha-webhook" on all fetches
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "ready"
+    And exactly 1 resolveReviewThread mutation was invoked
+
+  # ---------------------------------------------------------------------------
+  # R7-P2: second pre-Stage-1.5 guard applies even when expected_sha is None
+  # (check_suite events / /clearance issue comments)
+  # ---------------------------------------------------------------------------
+
+  Scenario: R7-P2-A no expected_sha race — head advances between initial fetch and Stage 1.5, second guard fires using initial head_sha as baseline
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    And the stub PR initial head sha is "sha-initial"
+    And the stub PR head advances on the second pull_request call to "sha-advanced-no-webhook"
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "stale_verdict_skip"
+    And no resolveReviewThread mutation was invoked
+    And a pipeline_stale_verdict_skip log was emitted with expected_sha "sha-initial" and actual_sha "sha-advanced-no-webhook"
+
+  Scenario: R7-P2-B no expected_sha no race — head is stable on both fetches, Stage 1.5 runs normally
+    Given the stub PR "iterwheel/sandbox" #49 has 1 Codex thread with substantive author reply and isResolved false
+    And the stub PR head is stable at "sha-initial-stable" on all fetches
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "ready"
+    And exactly 1 resolveReviewThread mutation was invoked

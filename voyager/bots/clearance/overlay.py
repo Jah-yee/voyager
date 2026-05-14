@@ -12,6 +12,7 @@ from .constants import (
     CLEARANCE_CODEX_REACTION_FOLLOW_UP_EVENT,
     CLEARANCE_LABELS,
     CLEARANCE_PENDING_LABEL,
+    CLEARANCE_READY_LABEL,
 )
 from .evaluation import ClearanceEvaluation
 
@@ -22,10 +23,43 @@ def apply_swm_overlay(
     if not automation or not automation.get("enabled"):
         return evaluation
     swm_status = automation.get("status")
-    if swm_status not in {"blocked", "pending", "error"}:
+    if swm_status not in {"blocked", "pending", "error", "ready_with_low_priority"}:
         return evaluation
 
     updated: dict[str, Any] = dict(evaluation)
+
+    if swm_status == "ready_with_low_priority":
+        review_state = evaluation.get("review_state") or {}
+        eval_confidence = evaluation.get("confidence") or {}
+        reasons = eval_confidence.get("reasons") or []
+        unresolved_thread_count = review_state.get("unresolved_thread_count", 0)
+        has_non_thread_blockers = bool(
+            review_state.get("blocking_reviewers")
+            or (evaluation.get("status") == "clearance_pending")
+            or (unresolved_thread_count > 0 and len(reasons) > 1)
+        )
+        if has_non_thread_blockers:
+            return evaluation
+        # Preserve when the live evaluator sees more unresolved threads than the
+        # automation engine counted as unresolved Codex threads — the gap is
+        # non-Codex (human reviewer) threads that β must NOT clear.
+        # Only applies when unresolved_codex_thread_count is present; absent key
+        # means an old automation dict that predates this field — skip the check.
+        if "unresolved_codex_thread_count" in automation:
+            unresolved_count = review_state.get("unresolved_thread_count", 0)
+            if unresolved_count > automation["unresolved_codex_thread_count"]:
+                return evaluation
+        reason = automation.get("reason") or f"Clearance automation status is {swm_status}."
+        updated["status"] = "clearance_ready"
+        updated["conclusion"] = "success"
+        updated["summary"] = reason
+        updated["labels"] = {
+            "add": [CLEARANCE_READY_LABEL],
+            "remove": [item for item in CLEARANCE_LABELS if item != CLEARANCE_READY_LABEL],
+        }
+        updated["reactions"] = {"add": ["+1"], "remove": ["eyes", "rocket"]}
+        return cast(ClearanceEvaluation, updated)
+
     confidence = dict(updated.get("confidence") or {})
     reasons = list(confidence.get("reasons") or [])
     reason = (

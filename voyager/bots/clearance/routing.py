@@ -141,6 +141,7 @@ def build_clearance_route(
 ) -> dict[str, Any]:
     pr_number = target.get("number")
     base_ref = ((target.get("base") or {}).get("ref")) or None
+    webhook_head_sha: str | None = (target.get("head") or {}).get("sha") or None
     return {
         "agent": CLEARANCE_AGENT_SLUG,
         "agent_id": CLEARANCE_AGENT_ID,
@@ -157,6 +158,7 @@ def build_clearance_route(
             "target_kind": "pull_request",
             "classifier": CLEARANCE_CLASSIFIER_VERSION,
             "summary": "Clearance scheduled a current PR review-readiness evaluation.",
+            "webhook_head_sha": webhook_head_sha,
         },
         "writeback": {
             "dynamic": "clearance_readiness",
