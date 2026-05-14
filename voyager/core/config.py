@@ -67,6 +67,7 @@ class VoyagerConfig:
     work_dir: Path
     profiles: dict[str, Profile]
     default_profile: str | None
+    deepseek_api_key: str | None = None
 
 
 def _parse_app(item: dict[str, Any]) -> AppConfig:
@@ -248,8 +249,28 @@ def load_config(path: str | Path | None = None) -> VoyagerConfig:
             f"[profiles.{default_profile}] section exists"
         )
 
+    deepseek_api_key_raw = voyager_section.get("deepseek_api_key")
+    if deepseek_api_key_raw is None:
+        deepseek_api_key: str | None = None
+    else:
+        if not isinstance(deepseek_api_key_raw, str):
+            raise ValueError(
+                f"[voyager].deepseek_api_key must be a string, got "
+                f"{type(deepseek_api_key_raw).__name__}: {deepseek_api_key_raw!r}"
+            )
+        deepseek_api_key = deepseek_api_key_raw.strip() or None
+
+    if deepseek_api_key:
+        # setdefault: explicit env (e.g. shell export) wins over TOML, matching
+        # 12-factor practice. Operators wanting TOML to win must unset the env.
+        os.environ.setdefault("VOYAGER_DEEPSEEK_API_KEY", deepseek_api_key)
+
     return VoyagerConfig(
-        apps=apps, work_dir=work_dir, profiles=profiles, default_profile=default_profile
+        apps=apps,
+        work_dir=work_dir,
+        profiles=profiles,
+        default_profile=default_profile,
+        deepseek_api_key=deepseek_api_key,
     )
 
 

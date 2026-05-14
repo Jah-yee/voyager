@@ -175,3 +175,28 @@ Feature: TOML config loader
     When the config load is attempted
     Then a ValueError is raised mentioning "pro"
     And the error message mentions "must be a TOML table"
+
+  Scenario: [voyager].deepseek_api_key sets VOYAGER_DEEPSEEK_API_KEY env var when unset
+    Given VOYAGER_DEEPSEEK_API_KEY is not set in env
+    And the TOML config file "voyager_section_with_api_key.toml"
+    When the config is loaded
+    Then the config.deepseek_api_key is "sk-toml-fixture-value"
+    And VOYAGER_DEEPSEEK_API_KEY env var equals "sk-toml-fixture-value"
+
+  Scenario: [voyager].deepseek_api_key does not override an existing env var
+    Given VOYAGER_DEEPSEEK_API_KEY is set in env to "sk-env-wins"
+    And the TOML config file "voyager_section_with_api_key.toml"
+    When the config is loaded
+    Then the config.deepseek_api_key is "sk-toml-fixture-value"
+    And VOYAGER_DEEPSEEK_API_KEY env var equals "sk-env-wins"
+
+  Scenario: Config without [voyager].deepseek_api_key leaves field None
+    Given the TOML config file "valid_two_apps.toml"
+    When the config is loaded
+    Then the config.deepseek_api_key is None
+
+  Scenario: [voyager].deepseek_api_key as integer raises ValueError
+    Given the TOML config file "voyager_section_api_key_int.toml"
+    When the config load is attempted
+    Then a ValueError is raised mentioning "deepseek_api_key"
+    And the error message mentions "string"
