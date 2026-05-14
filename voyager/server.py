@@ -108,9 +108,10 @@ def _get_investigator() -> ThreadInvestigator | None:
             cfg = load_config()
             name = cfg.default_profile
             # 12-factor precedence: env wins, TOML fallback. Both empty-string
-            # and unset are treated as "no value" — operators wishing to
-            # intentionally disable the key set the env to empty (or leave
-            # both unset). load_config is pure; consumers combine here.
+            # and unset env are treated as "no value" and fall through to the
+            # TOML field. To fully disable the investigator, clear BOTH (unset
+            # env AND leave cfg.deepseek_api_key absent/empty); setting env to
+            # empty alone is not enough if a TOML key is configured.
             api_key = os.environ.get("VOYAGER_DEEPSEEK_API_KEY") or cfg.deepseek_api_key or ""
             if not name or name not in cfg.profiles or not api_key:
                 _investigator = None
