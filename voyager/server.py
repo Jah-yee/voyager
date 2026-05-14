@@ -105,7 +105,10 @@ def _get_investigator() -> ThreadInvestigator | None:
 
             cfg = load_config()
             name = cfg.default_profile
-            api_key = os.environ.get("VOYAGER_DEEPSEEK_API_KEY", "")
+            # Effective api_key: env wins over TOML (12-factor); fall back to
+            # cfg.deepseek_api_key when env is unset. load_config no longer
+            # mutates os.environ (trinity round 0 P1), so consumers combine here.
+            api_key = os.environ.get("VOYAGER_DEEPSEEK_API_KEY") or cfg.deepseek_api_key or ""
             if not name or name not in cfg.profiles or not api_key:
                 _investigator = None
             else:

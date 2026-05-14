@@ -61,8 +61,15 @@ class Profile:
     min_confidence: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class VoyagerConfig:
+    """Top-level voyager configuration.
+
+    Marked ``kw_only=True`` so future optional fields can be added without
+    breaking existing instantiations on field-order grounds (trinity r0 P1).
+    All current callers already use keyword arguments.
+    """
+
     apps: dict[str, AppConfig]
     work_dir: Path
     profiles: dict[str, Profile]
@@ -258,12 +265,19 @@ def load_config(path: str | Path | None = None) -> VoyagerConfig:
                 f"[voyager].deepseek_api_key must be a string, got "
                 f"{type(deepseek_api_key_raw).__name__}: {deepseek_api_key_raw!r}"
             )
+        # Empty / whitespace-only strings are treated as "field absent" rather
+        # than as an error, matching how operators typically toggle the key
+        # by clearing the value rather than deleting the line.
         deepseek_api_key = deepseek_api_key_raw.strip() or None
 
-    if deepseek_api_key:
-        # setdefault: explicit env (e.g. shell export) wins over TOML, matching
-        # 12-factor practice. Operators wanting TOML to win must unset the env.
-        os.environ.setdefault("VOYAGER_DEEPSEEK_API_KEY", deepseek_api_key)
+    # Pure factory — no os.environ mutation. The previous implementation called
+    # os.environ.setdefault("VOYAGER_DEEPSEEK_API_KEY", ...) here, but trinity
+    # round 0 (4/4 reviewers) flagged it as an SRP violation that also broke
+    # test isolation (direct os.environ writes escape pytest monkeypatch
+    # rollback) and created staleness on repeated load_config calls. Consumers
+    # that need an effective api_key (env winning over config) read
+    # cfg.deepseek_api_key and combine with os.environ themselves — see
+    # voyager/server.py:_get_investigator for the canonical pattern.
 
     return VoyagerConfig(
         apps=apps,

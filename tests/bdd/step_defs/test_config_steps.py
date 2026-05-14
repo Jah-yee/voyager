@@ -180,6 +180,19 @@ def when_load_config_no_path(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+@when(
+    parsers.parse('the config is loaded then loaded again with "{filename}"'),
+    target_fixture="state",
+)
+def when_load_config_twice(state: dict[str, Any], filename: str) -> dict[str, Any]:
+    """Two-shot loader for the 'load twice — second wins, no env mutation' regression."""
+    from voyager.core.config import load_config  # lazy
+
+    state["config"] = load_config(state["config_path"])
+    state["second_config"] = load_config(FIXTURES_DIR / filename)
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Then
 # ---------------------------------------------------------------------------
@@ -354,3 +367,21 @@ def then_deepseek_api_key_none(state: dict[str, Any]) -> None:
 def then_deepseek_env_equals(value: str) -> None:
     actual = os.environ.get("VOYAGER_DEEPSEEK_API_KEY")
     assert actual == value, f"VOYAGER_DEEPSEEK_API_KEY = {actual!r}, expected {value!r}"
+
+
+@then("VOYAGER_DEEPSEEK_API_KEY env var is unset")
+def then_deepseek_env_unset() -> None:
+    actual = os.environ.get("VOYAGER_DEEPSEEK_API_KEY")
+    assert actual is None, (
+        f"VOYAGER_DEEPSEEK_API_KEY = {actual!r}, expected unset — "
+        "load_config must not mutate os.environ (trinity round 0 P1)"
+    )
+
+
+@then("the second config.deepseek_api_key is None")
+def then_second_deepseek_api_key_none(state: dict[str, Any]) -> None:
+    cfg = state.get("second_config")
+    assert cfg is not None, "second_config was not loaded — check the When step"
+    assert cfg.deepseek_api_key is None, (
+        f"second config.deepseek_api_key = {cfg.deepseek_api_key!r}, expected None"
+    )

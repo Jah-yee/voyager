@@ -15,11 +15,20 @@ work_dir = "~/.voyager/state"
 # Optional: default investigator profile name (must match a [profiles.*] key below).
 default_profile = "flash"
 
-# Optional: DeepSeek API key. If set, voyager will export it as the
-# VOYAGER_DEEPSEEK_API_KEY env var on config load. An explicit shell-level
-# VOYAGER_DEEPSEEK_API_KEY takes precedence (12-factor; operators wanting
-# the TOML value to win must unset the env first).
-deepseek_api_key = "sk-REPLACE-ME"
+# Optional: DeepSeek API key. Read by the investigator at request time.
+# Precedence (12-factor): if VOYAGER_DEEPSEEK_API_KEY is exported in the shell,
+# the env wins; otherwise the value here is used. load_config() does NOT
+# mutate os.environ — consumers combine cfg + env explicitly.
+#
+# Replace the placeholder below with a real key. The placeholder is
+# deliberately obviously-invalid (not a 'sk-...' shape) so a forgotten edit
+# fails loudly at request time rather than silently sending requests with a
+# fake key.
+#
+# Note on storage: this file is the plaintext-at-rest tier — chmod 600 the
+# real config.toml. For shared/multi-tenant hosts, prefer the env var and
+# leave this field unset.
+deepseek_api_key = "REPLACE_ME_DEEPSEEK_API_KEY"
 
 
 # --- GitHub Apps ---------------------------------------------------------
