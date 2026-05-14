@@ -175,6 +175,24 @@ async def dispatch_route_writeback(
                     "sync_actions_count": 0,
                 }
 
+        if (automation or {}).get("status") == "stale_verdict_skip":
+            _log.info(
+                "writeback_skipped_stale_verdict: %s",
+                json.dumps(
+                    {
+                        "event": "writeback_skipped_stale_verdict",
+                        "repo": repository,
+                        "pr": pr_number,
+                        "automation_status": "stale_verdict_skip",
+                    }
+                ),
+            )
+            return {
+                "ok": True,
+                "skipped": "stale_verdict",
+                "automation": automation,
+            }
+
         # Wave 7C-2 stale-verdict guard (VOY-1809 commit 6).
         # If the verdict was computed against a head_sha that differs from the
         # PR's CURRENT head, the verdict is stale (a concurrent webhook
