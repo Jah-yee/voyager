@@ -66,8 +66,8 @@ class VoyagerConfig:
     """Top-level voyager configuration.
 
     Marked ``kw_only=True`` so future optional fields can be added without
-    breaking existing instantiations on field-order grounds (trinity r0 P1).
-    All current callers already use keyword arguments.
+    breaking existing instantiations on field-order grounds. All current
+    callers already use keyword arguments.
     """
 
     apps: dict[str, AppConfig]
@@ -270,14 +270,9 @@ def load_config(path: str | Path | None = None) -> VoyagerConfig:
         # by clearing the value rather than deleting the line.
         deepseek_api_key = deepseek_api_key_raw.strip() or None
 
-    # Pure factory — no os.environ mutation. The previous implementation called
-    # os.environ.setdefault("VOYAGER_DEEPSEEK_API_KEY", ...) here, but trinity
-    # round 0 (4/4 reviewers) flagged it as an SRP violation that also broke
-    # test isolation (direct os.environ writes escape pytest monkeypatch
-    # rollback) and created staleness on repeated load_config calls. Consumers
-    # that need an effective api_key (env winning over config) read
-    # cfg.deepseek_api_key and combine with os.environ themselves — see
-    # voyager/server.py:_get_investigator for the canonical pattern.
+    # Pure factory: no os.environ mutation. Consumers that need env-over-config
+    # precedence (12-factor) combine cfg.deepseek_api_key with os.environ at
+    # the call site — see voyager/server.py:_get_investigator.
 
     return VoyagerConfig(
         apps=apps,
