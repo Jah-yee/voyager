@@ -128,23 +128,29 @@ def test_returns_none_when_neither_set(monkeypatch, reset_investigator, captured
     )
 
 
-def test_env_empty_string_falls_through_to_toml(
+def test_env_empty_string_disables_investigator(
     monkeypatch, reset_investigator, captured_api_key
 ) -> None:
-    """env set to empty string → treated as 'no value', cfg fallback used.
+    """Explicit env="" disables the investigator; TOML is NOT consulted.
 
-    Codex r1 advisory: the `or`-chain in server.py treats empty-env identically
-    to unset-env. This is the deliberate semantic (operator-friendly: clearing
-    the env to disable does NOT silently re-enable TOML's stored key... wait,
-    actually it DOES — empty env is falsy, falls through. Lock the semantic
-    in a test so a future refactor doesn't accidentally flip it.
+    Codex GitHub-bot review on commit 9b8df45 raised this as P2: an operator
+    who runs ``export VOYAGER_DEEPSEEK_API_KEY=""`` intends to clear the
+    secret. The previous implementation conflated explicit-empty with unset
+    and silently fell back to the TOML key — re-enabling what the operator
+    explicitly disabled. This test locks the corrected semantic.
     """
     from voyager import server
 
     monkeypatch.setenv("VOYAGER_DEEPSEEK_API_KEY", "")
-    _patch_load_config(monkeypatch, _stub_config(api_key="sk-toml-takes-over"))
+    _patch_load_config(monkeypatch, _stub_config(api_key="sk-toml-should-not-be-used"))
 
     result = server._get_investigator()
 
-    assert result is not None
-    assert captured_api_key["api_key"] == "sk-toml-takes-over"
+    assert result is None, (
+        "explicit env='' must disable the investigator; "
+        "TOML key must NOT be consulted (Codex GH review on 9b8df45)"
+    )
+    assert "api_key" not in captured_api_key, (
+        "build_investigator_from_profile should not be called when env is "
+        "explicitly empty — operator intent to disable must be honored"
+    )
