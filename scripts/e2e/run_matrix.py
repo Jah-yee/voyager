@@ -41,11 +41,20 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import yaml
+
+
+def _utc_now_iso() -> str:
+    """ISO-8601 UTC timestamp used to filter pre-review writebacks (Codex GH-bot
+    PR #15 P1). Matches voyager's `_utc_now` formatter so direct string
+    comparison works (lexicographic == chronological for ISO-8601)."""
+    return datetime.now(UTC).isoformat()
+
 
 # ---------------------------------------------------------------------------
 # Config dataclasses
@@ -214,6 +223,69 @@ def _mint_test_bot_token(app: TestBotApp) -> str:
     return asyncio.run(client.installation_token(cfg.slug))
 
 
+def _force_push_new_content(
+    sandbox_repo: str,
+    branch: str,
+    file_path: str,
+    new_content: str,
+    commit_message: str,
+) -> str:
+    """Update an existing file on the branch via Contents API. Returns the new
+    head SHA. Used by scenarios with `force_push_after_review` to make the
+    PR's head SHA stale relative to the webhook voyager just processed.
+    """
+    # Need the current file's blob SHA to PUT an update.
+    existing = _run_gh(
+        "api",
+        f"repos/{sandbox_repo}/contents/{file_path}",
+        "-q",
+        ".sha",
+        f"--field=ref={branch}",
+        check=False,
+    )
+    existing_sha = existing.stdout.strip().strip('"')
+    content_b64 = base64.b64encode(new_content.encode("utf-8")).decode("ascii")
+    args = [
+        "api",
+        "--method",
+        "PUT",
+        f"repos/{sandbox_repo}/contents/{file_path}",
+        "-f",
+        f"message={commit_message}",
+        "-f",
+        f"content={content_b64}",
+        "-f",
+        f"branch={branch}",
+    ]
+    if existing_sha:
+        args.extend(["-f", f"sha={existing_sha}"])
+    result = _run_gh(*args)
+    return json.loads(result.stdout)["commit"]["sha"]
+
+
+def _post_thread_reply(
+    *,
+    sandbox_repo: str,
+    pr_number: int,
+    comment_id: int,
+    body: str,
+) -> dict[str, Any]:
+    """Post a reply to an existing review-thread comment. Uses the gh CLI's
+    authenticated identity (ryosaeba1985 PAT in our setup) so the reply is
+    attributed to the PR author, not the test bot — which is what voyager's
+    ``latest_author_reply`` filter requires for F-class scenarios.
+    """
+    result = _run_gh(
+        "api",
+        "--method",
+        "POST",
+        f"repos/{sandbox_repo}/pulls/{pr_number}/comments/{comment_id}/replies",
+        "-f",
+        f"body={body}",
+    )
+    return json.loads(result.stdout)
+
+
 def _post_review_thread(
     *,
     sandbox_repo: str,
@@ -330,8 +402,20 @@ def _poll_for_writeback(
     timeout_s: int = 60,
     interval_s: float = 1.5,
     auth_token: str | None = None,
+    event_filter: tuple[str, ...] = ("pull_request_review", "pull_request_review_comment"),
+    since_ts: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Poll voyager's /e2e/recent_writebacks until we see a record for our PR.
+    """Poll voyager's /e2e/recent_writebacks until we see a matching record.
+
+    Filtering layered on top of `pr_number == pr_number`:
+      - ``event_filter`` restricts to records emitted by the post-review
+        webhooks (default: pull_request_review*). Without this, voyager's
+        prior `pull_request opened` writeback can be returned first
+        (Codex GH-bot PR #15 P1) because the deque is in arrival order.
+      - ``since_ts``: ignore records older than this ISO timestamp. The
+        runner captures a timestamp BEFORE posting the review and passes
+        it here so any pre-review writeback is excluded from the match
+        even if it shares the event type (defense-in-depth).
 
     Returns (writeback_dict, error_message). On success, error_message is None.
     On non-transient HTTP errors (404 = endpoint not enabled; 401/403 = auth
@@ -375,8 +459,13 @@ def _poll_for_writeback(
                 return None, f"unexpected HTTP {r.status_code}: {r.text[:200]}"
 
             for wb in r.json().get("writebacks", []):
-                if _extract_pr_number(wb) == pr_number:
-                    return wb, None
+                if _extract_pr_number(wb) != pr_number:
+                    continue
+                if event_filter and wb.get("event") not in event_filter:
+                    continue
+                if since_ts and (wb.get("ts") or "") < since_ts:
+                    continue
+                return wb, None
             time.sleep(interval_s)
 
     suffix = f" (last transient: {last_transient})" if last_transient else ""
@@ -534,12 +623,18 @@ def _run_scenario(
             }
         )
 
-        # 3. Post review threads.
+        # Mark the start-of-review timestamp; the poll filter uses it to
+        # exclude voyager's pre-review `pull_request opened` writeback
+        # (Codex GH-bot PR #15 P1).
+        review_start_ts = _utc_now_iso()
+
+        # 3. Post review threads + collect comment IDs for thread_reply use.
+        posted_review_ids: list[int] = []
         for review in scenario.get("review", []):
             if "thread_reply" in review:
-                # Phase B: thread-reply posting using author PAT.
+                # Wait until after the regular reviews are posted; then reply.
                 continue
-            _post_review_thread(
+            posted = _post_review_thread(
                 sandbox_repo=cfg.sandbox_repo,
                 pr_number=pr_number,
                 commit_sha=head_sha,
@@ -548,14 +643,50 @@ def _run_scenario(
                 body=review["body"],
                 token=token,
             )
+            # POST /reviews returns the review; the inline comments it created
+            # are in `posted["comments"]` if the review was COMMENT-mode.
+            for c in posted.get("comments", []) or []:
+                if "id" in c:
+                    posted_review_ids.append(int(c["id"]))
 
-        # 4. Poll voyager for our PR's writeback.
+        # 3b. Post any thread_reply entries against the parent review comment.
+        for review in scenario.get("review", []):
+            tr = review.get("thread_reply")
+            if not tr:
+                continue
+            idx = tr.get("previous_thread_index", 0)
+            if idx >= len(posted_review_ids):
+                raise RuntimeError(
+                    f"thread_reply references previous_thread_index={idx} but only "
+                    f"{len(posted_review_ids)} reviews were posted earlier"
+                )
+            _post_thread_reply(
+                sandbox_repo=cfg.sandbox_repo,
+                pr_number=pr_number,
+                comment_id=posted_review_ids[idx],
+                body=tr["body"],
+            )
+
+        # 3c. Optional `force_push_after_review` hook for E-class scenarios
+        # (make the head SHA stale after voyager observed the review).
+        fp = setup.get("force_push_after_review")
+        if fp:
+            _force_push_new_content(
+                cfg.sandbox_repo,
+                branch,
+                fp["file_path"],
+                fp["new_content"],
+                commit_message=f"e2e: {sid} force-push to stale the head",
+            )
+
+        # 4. Poll voyager for our PR's writeback (post-review event only).
         writeback, poll_error = _poll_for_writeback(
             voyager_url=cfg.voyager_url,
             pr_number=pr_number,
             timeout_s=cfg.poll_timeout_s,
             interval_s=cfg.poll_interval_s,
             auth_token=cfg.voyager_e2e_token,
+            since_ts=review_start_ts,
         )
         if writeback is None:
             verdict = "failed"

@@ -169,3 +169,57 @@ def test_endpoint_not_in_openapi_schema(client) -> None:
     assert response.status_code == 200
     paths = response.json().get("paths", {})
     assert "/e2e/recent_writebacks" not in paths
+
+
+# ---------------------------------------------------------------------------
+# PR-number extractor from webhook payloads (Codex GH-bot PR #15 P1)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_pr_number_from_pull_request_payload() -> None:
+    from voyager.server import _extract_pr_number_from_payload
+
+    payload = {"pull_request": {"number": 42, "head": {"sha": "abc"}}}
+    assert _extract_pr_number_from_payload(payload) == 42
+
+
+def test_extract_pr_number_from_pull_request_review_payload() -> None:
+    from voyager.server import _extract_pr_number_from_payload
+
+    payload = {
+        "pull_request": {"number": 17},
+        "review": {"id": 99, "user": {"login": "chatgpt-codex-connector[bot]"}},
+    }
+    assert _extract_pr_number_from_payload(payload) == 17
+
+
+def test_extract_pr_number_from_issue_comment_on_pr() -> None:
+    """issue_comment events on PRs put the number under `issue` (PRs are
+    issues internally). The `pull_request` field inside issue marks the
+    issue as belonging to a PR."""
+    from voyager.server import _extract_pr_number_from_payload
+
+    payload = {"issue": {"number": 88, "pull_request": {"url": "..."}}}
+    assert _extract_pr_number_from_payload(payload) == 88
+
+
+def test_extract_pr_number_from_issue_without_pr_marker_returns_none() -> None:
+    """Plain issue (not a PR) — should NOT return its number for our purposes."""
+    from voyager.server import _extract_pr_number_from_payload
+
+    payload = {"issue": {"number": 5}}  # no `pull_request` key
+    assert _extract_pr_number_from_payload(payload) is None
+
+
+def test_extract_pr_number_from_check_suite() -> None:
+    from voyager.server import _extract_pr_number_from_payload
+
+    payload = {"check_suite": {"pull_requests": [{"number": 33}]}}
+    assert _extract_pr_number_from_payload(payload) == 33
+
+
+def test_extract_pr_number_returns_none_for_unrecognized_payload() -> None:
+    from voyager.server import _extract_pr_number_from_payload
+
+    assert _extract_pr_number_from_payload({}) is None
+    assert _extract_pr_number_from_payload({"action": "foo"}) is None

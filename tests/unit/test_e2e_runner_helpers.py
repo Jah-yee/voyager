@@ -204,7 +204,14 @@ def test_poll_returns_writeback_on_first_match(monkeypatch) -> None:
     """Happy path: first poll returns a record for our PR."""
     transport = _mock_transport(
         [
-            (200, {"writebacks": [{"pr_number": 42, "applied": True}]}),
+            (
+                200,
+                {
+                    "writebacks": [
+                        {"pr_number": 42, "event": "pull_request_review", "applied": True}
+                    ]
+                },
+            ),
         ]
     )
     _orig = httpx.Client
@@ -214,14 +221,23 @@ def test_poll_returns_writeback_on_first_match(monkeypatch) -> None:
         voyager_url="http://test", pr_number=42, timeout_s=2, interval_s=0.01
     )
     assert err is None
-    assert wb == {"pr_number": 42, "applied": True}
+    assert wb["pr_number"] == 42
+    assert wb["applied"] is True
 
 
 def test_poll_skips_records_for_other_prs(monkeypatch) -> None:
     """Records for other PRs don't trigger a match."""
     transport = _mock_transport(
         [
-            (200, {"writebacks": [{"pr_number": 7}, {"pr_number": 42, "applied": True}]}),
+            (
+                200,
+                {
+                    "writebacks": [
+                        {"pr_number": 7, "event": "pull_request_review"},
+                        {"pr_number": 42, "event": "pull_request_review", "applied": True},
+                    ]
+                },
+            ),
         ]
     )
     _orig = httpx.Client
@@ -231,7 +247,78 @@ def test_poll_skips_records_for_other_prs(monkeypatch) -> None:
         voyager_url="http://test", pr_number=42, timeout_s=2, interval_s=0.01
     )
     assert err is None
-    assert wb == {"pr_number": 42, "applied": True}
+    assert wb["pr_number"] == 42
+    assert wb["applied"] is True
+
+
+def test_poll_filters_out_pre_review_pull_request_event(monkeypatch) -> None:
+    """Codex GH-bot PR #15 P1: voyager's pre-review `pull_request opened`
+    writeback for our PR must be skipped; only the later
+    `pull_request_review` event matches the default filter."""
+    transport = _mock_transport(
+        [
+            (
+                200,
+                {
+                    "writebacks": [
+                        {"pr_number": 42, "event": "pull_request", "status": "READY"},
+                        {
+                            "pr_number": 42,
+                            "event": "pull_request_review",
+                            "automation": {"status": "BLOCKED"},
+                        },
+                    ]
+                },
+            ),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test", pr_number=42, timeout_s=2, interval_s=0.01
+    )
+    assert err is None
+    assert wb["event"] == "pull_request_review"
+
+
+def test_poll_since_ts_excludes_old_records(monkeypatch) -> None:
+    """`since_ts` defense-in-depth: events older than the marker are skipped."""
+    transport = _mock_transport(
+        [
+            (
+                200,
+                {
+                    "writebacks": [
+                        {
+                            "pr_number": 42,
+                            "event": "pull_request_review",
+                            "ts": "2026-01-01T00:00:00+00:00",
+                            "stale": True,
+                        },
+                        {
+                            "pr_number": 42,
+                            "event": "pull_request_review",
+                            "ts": "2026-05-15T12:00:00+00:00",
+                            "stale": False,
+                        },
+                    ]
+                },
+            ),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-03-01T00:00:00+00:00",
+    )
+    assert err is None
+    assert wb["stale"] is False
 
 
 def test_poll_fail_fast_on_404(monkeypatch) -> None:

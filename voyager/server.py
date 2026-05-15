@@ -189,6 +189,11 @@ async def _process_route_writebacks(
     repository: str | None = (payload.get("repository") or {}).get("full_name")
     default_profile_name = _get_default_profile_name()
     investigator = _get_investigator()
+    # Codex GH-bot PR #15 P1: include pr_number + ts at the top level of every
+    # writeback record so consumers (the e2e harness in particular) can match
+    # records to the PR they created without spelunking through nested route
+    # shapes that vary between apply / stale-skip / error paths.
+    pr_number = _extract_pr_number_from_payload(payload)
     for route in routes:
         try:
             result = await dispatch_route_writeback(
@@ -199,9 +204,39 @@ async def _process_route_writebacks(
                 default_profile_name=default_profile_name,
                 investigator=investigator,
             )
-            _recent_writebacks.append({"delivery_id": delivery_id, "event": event, **result})
+            _recent_writebacks.append(
+                {
+                    "delivery_id": delivery_id,
+                    "event": event,
+                    "pr_number": pr_number,
+                    "ts": _utc_now(),
+                    **result,
+                }
+            )
         except Exception:
             _log.exception("writeback failed for route %r", route.get("agent"))
+
+
+def _extract_pr_number_from_payload(payload: dict[str, Any]) -> int | None:
+    """Best-effort PR number lookup across GitHub webhook payload shapes.
+
+    GitHub puts the PR number in different keys depending on the event type:
+      - pull_request / pull_request_review / pull_request_review_comment:
+        payload["pull_request"]["number"]
+      - issue_comment on a PR: payload["issue"]["number"] (PRs are issues)
+      - check_suite: payload["check_suite"]["pull_requests"][0]["number"]
+    """
+    pr = payload.get("pull_request") or {}
+    if isinstance(pr.get("number"), int):
+        return pr["number"]
+    issue = payload.get("issue") or {}
+    if isinstance(issue.get("number"), int) and issue.get("pull_request"):
+        return issue["number"]
+    check_suite = payload.get("check_suite") or {}
+    prs = check_suite.get("pull_requests") or []
+    if prs and isinstance(prs[0].get("number"), int):
+        return prs[0]["number"]
+    return None
 
 
 @app.get("/")

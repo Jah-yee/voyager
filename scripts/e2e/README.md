@@ -78,17 +78,25 @@ uv run uvicorn scripts.e2e.dashboard:app --host 127.0.0.1 --port 9099
 
 Open http://127.0.0.1:9099 in a browser.
 
-**Terminal 2 — start voyager** (with the test-bot login in env):
+**Terminal 2 — start voyager** (with the test-bot login and the debug endpoint enabled):
 
 ```bash
 cd /Users/frank/Projects/voyager
 export VOYAGER_TEST_BOT_LOGINS="voyager-e2e-bot[bot]"
-export DRY_RUN=true   # voyager won't write labels/merges during testing
+export DRY_RUN=true              # voyager won't write labels/merges during testing
+export VOYAGER_E2E_DEBUG=1       # enables /e2e/recent_writebacks (the runner polls it)
+# Optional defense-in-depth: pair with X-Voyager-E2E-Token header
+# export VOYAGER_E2E_TOKEN="<random-secret>"  # if set, runner reads same env var
 uv run uvicorn voyager.server:app --host 127.0.0.1 --port 8000
 ```
 
 (Make sure cloudflared tunnel points to `:8000`. See top-level docs for the
 sandbox-only swap procedure per Q1(c).)
+
+> Without `VOYAGER_E2E_DEBUG=1` the runner fails fast on the first scenario
+> with "endpoint is gated" (404 from the loopback debug endpoint). The
+> `VOYAGER_E2E_TOKEN` pairing is optional but recommended on multi-tenant
+> hosts.
 
 **Terminal 3 — run the matrix:**
 
@@ -148,18 +156,21 @@ Each scenario has two assertion blocks:
 - ✅ Real branch / file / PR creation via gh CLI
 - ✅ Real test-bot review-thread POST via App installation token
 - ✅ Polling voyager's `/e2e/recent_writebacks` endpoint (no fixed sleep)
+- ✅ Polling filter: event type (`pull_request_review*`) + `since_ts` to
+  exclude voyager's pre-review `pull_request opened` writeback
 - ✅ Comparator: flattened writeback vs `expected` block (PR-level keys)
 - ✅ Cleanup: close PR + delete branch (idempotent, runs in `finally`)
 - ✅ Branch-leak fix: tracks `created_branch` independently of `pr_number`
 - ✅ Endpoint security hardening (env + loopback + optional token)
-- ✅ Unit tests: 17 for the endpoint, 24 for runner helpers
+- ✅ `force_push_after_review` hook (for E1 stale-verdict scenarios)
+- ✅ `thread_reply` posting via PR-author PAT (for F1 investigator scenarios)
+- ✅ Unit tests: 17 endpoint + 24 runner helpers + 11 dashboard = 52 new
 
 ### Phase B (next)
 
-- Implement `force_push_after_review` hook for E1
-- Implement `thread_reply` for F1 (uses PR-author PAT)
 - Extend voyager's writeback record to include per-thread state
   (`compute_clearance_automation` → emit a `threads_summary` array), so the
   `phase_b_expected` blocks become assertable
 - Expand to 30+ scenarios across A / B / C / D / E / F
 - A bundle: 3-5 real-Codex sanity cases to validate bypass == real path
+- Split `run_matrix.py` (~800 LOC) into smaller modules
