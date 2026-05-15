@@ -17,37 +17,42 @@ from .constants import (
 from .evaluation import ClearanceEvaluation
 
 
+def _has_non_thread_reason(reasons: list[Any]) -> bool:
+    """Return true when evaluator reasons include blockers automation cannot clear."""
+    return any("review thread(s) are unresolved." not in str(reason) for reason in reasons)
+
+
 def apply_swm_overlay(
     evaluation: ClearanceEvaluation, automation: dict[str, Any] | None
 ) -> ClearanceEvaluation:
     if not automation or not automation.get("enabled"):
         return evaluation
     swm_status = automation.get("status")
-    if swm_status not in {"blocked", "pending", "error", "ready_with_low_priority"}:
+    if swm_status not in {"blocked", "pending", "error", "ready", "ready_with_low_priority"}:
         return evaluation
 
     updated: dict[str, Any] = dict(evaluation)
 
-    if swm_status == "ready_with_low_priority":
+    if swm_status in {"ready", "ready_with_low_priority"}:
         review_state = evaluation.get("review_state") or {}
         eval_confidence = evaluation.get("confidence") or {}
         reasons = eval_confidence.get("reasons") or []
-        unresolved_thread_count = review_state.get("unresolved_thread_count", 0)
         has_non_thread_blockers = bool(
             review_state.get("blocking_reviewers")
             or (evaluation.get("status") == "clearance_pending")
-            or (unresolved_thread_count > 0 and len(reasons) > 1)
+            or _has_non_thread_reason(reasons)
         )
         if has_non_thread_blockers:
             return evaluation
-        # Preserve when the live evaluator sees more unresolved threads than the
-        # automation engine counted as unresolved Codex threads — the gap is
-        # non-Codex (human reviewer) threads that β must NOT clear.
-        # Only applies when unresolved_codex_thread_count is present; absent key
-        # means an old automation dict that predates this field — skip the check.
+        # Preserve when the live evaluator sees more unresolved threads than
+        # Clearance can account for. The allowance includes unresolved Codex
+        # threads plus Stage 1.5 sync actions that may still be visible in a
+        # dry-run or immediately before GitHub reflects resolveReviewThread.
         if "unresolved_codex_thread_count" in automation:
             unresolved_count = review_state.get("unresolved_thread_count", 0)
-            if unresolved_count > automation["unresolved_codex_thread_count"]:
+            unresolved_codex_count = int(automation.get("unresolved_codex_thread_count") or 0)
+            sync_actions_count = int(automation.get("sync_actions_count") or 0)
+            if unresolved_count > unresolved_codex_count + sync_actions_count:
                 return evaluation
         reason = automation.get("reason") or f"Clearance automation status is {swm_status}."
         updated["status"] = "clearance_ready"

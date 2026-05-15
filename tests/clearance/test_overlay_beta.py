@@ -9,8 +9,8 @@ threads are the sole blocker.
 Fix 2 (Codex P2 on constants.py:24): clearance-ok is not a provisioned GitHub
 label. The β success case now uses clearance-ready instead.
 
-Also verifies that the "all RESOLVED" path (Status.READY plain) still
-no-ops through the overlay (evaluation unchanged).
+Also verifies that the "all RESOLVED" path (Status.READY plain) clears
+thread-only live-evaluator blockers while preserving non-thread blockers.
 """
 
 from __future__ import annotations
@@ -253,24 +253,71 @@ def test_none_automation_no_op() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 3: plain READY (all-resolved path) → evaluation unchanged
+# Scenario 3: plain READY (all-resolved path) → success override
 # ---------------------------------------------------------------------------
 
 
-def test_plain_ready_status_no_op() -> None:
-    """automation.status='ready' (all RESOLVED) → overlay no-ops.
-
-    This is the existing 7B-3 behavior for 'all RESOLVED': the evaluation
-    is already correct (conclusion=success) so the overlay must not override it.
-    """
+def test_plain_ready_status_clears_thread_only_blocker() -> None:
+    """automation.status='ready' clears a Codex thread that Stage 1.5 will sync."""
     automation = {
         "enabled": True,
         "status": "ready",
         "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "thread-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    result = apply_swm_overlay(_blocked_evaluation(), automation)
+    assert result["conclusion"] == "success"
+    assert result["status"] == "clearance_ready"
+    assert CLEARANCE_READY_LABEL in result["labels"]["add"]
+    assert "+1" in result["reactions"]["add"]
+
+
+def test_plain_ready_status_preserves_non_thread_blocker() -> None:
+    """automation.status='ready' must not clear draft / PR-state blockers."""
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "no Codex review threads on PR",
         "sync_actions": [],
         "sync_actions_count": 0,
     }
-    ev = _ready_evaluation()
+    ev = _draft_blocked_evaluation()
+    result = apply_swm_overlay(ev, automation)
+    assert result is ev
+
+
+def test_plain_ready_status_preserves_untracked_human_thread() -> None:
+    """automation.status='ready' must not clear threads outside Clearance automation."""
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "no Codex review threads on PR",
+        "sync_actions": [],
+        "sync_actions_count": 0,
+        "unresolved_codex_thread_count": 0,
+    }
+    ev = _blocked_evaluation()
+    result = apply_swm_overlay(ev, automation)
+    assert result is ev
+
+
+def test_plain_ready_status_preserves_no_approval_reason() -> None:
+    """automation.status='ready' must not clear missing current-head approval."""
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "thread-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    ev = _blocked_evaluation()
+    ev["confidence"]["reasons"] = [
+        "1 review thread(s) are unresolved.",
+        "No approval on the current PR head.",
+    ]
     result = apply_swm_overlay(ev, automation)
     assert result is ev
 
@@ -392,6 +439,25 @@ def test_ready_with_low_priority_exact_match_allows_override() -> None:
     assert result["conclusion"] == "success"
 
 
+def test_ready_with_low_priority_exact_match_preserves_no_approval_reason() -> None:
+    """β: exact Codex-thread match does not clear missing current approval."""
+    automation = {
+        "enabled": True,
+        "status": "ready_with_low_priority",
+        "reason": "all blocking threads RESOLVED; 1 low-priority thread still open",
+        "unresolved_codex_thread_count": 1,
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+    ev = _blocked_evaluation()
+    ev["confidence"]["reasons"] = [
+        "1 review thread(s) are unresolved.",
+        "No approval on the current PR head.",
+    ]
+    result = apply_swm_overlay(ev, automation)
+    assert result is ev
+
+
 def test_ready_with_low_priority_no_codex_count_key_allows_override() -> None:
     """β: missing unresolved_codex_thread_count key (old automation dict) → override still fires.
 
@@ -476,6 +542,17 @@ def _blocked_codex_thread_plus_no_approval() -> dict:
     return ev
 
 
+def _blocked_codex_thread_plus_stale_approval() -> dict:
+    """Evaluation blocked by 1 P3 Codex thread AND only stale approval."""
+    ev = _blocked_evaluation()
+    ev["review_state"]["stale_approvals"] = ["reviewer"]
+    ev["confidence"]["reasons"] = [
+        "1 review thread(s) are unresolved.",
+        "Only stale approval(s) exist: @reviewer.",
+    ]
+    return ev
+
+
 def _blocked_codex_thread_plus_draft() -> dict:
     """Evaluation blocked by 1 P3 Codex thread AND draft PR."""
     ev = _blocked_evaluation()
@@ -497,13 +574,7 @@ def _blocked_codex_thread_plus_not_open() -> dict:
 
 
 def test_r6_p1_codex_thread_plus_no_approval_preserves_evaluation() -> None:
-    """r6-P1: clearance_blocked with P3 Codex thread + no current-head approval → preserved.
-
-    The live evaluator status is clearance_blocked (unresolved threads present).
-    confidence.reasons also carries 'No approval on the current PR head.'  The
-    previous guard only checked status==clearance_pending, so this mixed case
-    slipped through and the overlay wrongly set conclusion=success.
-    """
+    """r6-P1: P3 Codex thread + no current-head approval → preserved."""
     automation = {
         "enabled": True,
         "status": "ready_with_low_priority",
@@ -514,13 +585,11 @@ def test_r6_p1_codex_thread_plus_no_approval_preserves_evaluation() -> None:
     }
     ev = _blocked_codex_thread_plus_no_approval()
     result = apply_swm_overlay(ev, automation)
-    assert result is ev, (
-        "overlay must preserve when clearance_blocked coexists with non-thread blocker"
-    )
+    assert result is ev
 
 
 def test_r6_p1_codex_thread_plus_no_approval_conclusion_unchanged() -> None:
-    """r6-P1: mixed case → conclusion stays failure, not overridden to success."""
+    """r6-P1: missing approval keeps the conclusion as failure."""
     automation = {
         "enabled": True,
         "status": "ready_with_low_priority",
@@ -532,6 +601,21 @@ def test_r6_p1_codex_thread_plus_no_approval_conclusion_unchanged() -> None:
     ev = _blocked_codex_thread_plus_no_approval()
     result = apply_swm_overlay(ev, automation)
     assert result["conclusion"] == "failure"
+
+
+def test_r6_p1_codex_thread_plus_stale_approval_preserves_evaluation() -> None:
+    """r6-P1: P3 Codex thread + only stale approval → preserved."""
+    automation = {
+        "enabled": True,
+        "status": "ready_with_low_priority",
+        "reason": "all blocking threads RESOLVED; 1 low-priority P3 thread still open",
+        "unresolved_codex_thread_count": 1,
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+    ev = _blocked_codex_thread_plus_stale_approval()
+    result = apply_swm_overlay(ev, automation)
+    assert result is ev
 
 
 def test_r6_p1_codex_thread_plus_draft_preserves_evaluation() -> None:
