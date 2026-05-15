@@ -245,5 +245,14 @@ scenarios:
     phase_b_expected:
       codex_severity: "P2"
       effective_severity: "P2"
-      investigator_invoked: true
-      investigator_verdict: "RESOLVED"
+      # NOTE: this Phase-A F1 setup posts a substantive author reply on a
+      # NON-outdated thread → voyager's classify pipeline labels it state C.
+      # `judge()` resolves substantive state-C replies DIRECTLY (no LLM call);
+      # the investigator only runs for state-B/outdated threads. So this
+      # scenario exercises the deterministic resolve path, NOT the investigator.
+      # Phase B will add an F2 scenario whose `force_push_after_review` hook
+      # invalidates the diff anchor (→ state B) so the investigator actually
+      # fires. The fields below are documented as the eventual F2 expectations,
+      # NOT as something the Phase A F1 run will achieve.
+      # (Codex GH-bot PR #15 P2 — "Make F1 actually enter the investigator path")
+      investigator_invoked_PHASE_B_F2_NOTE: "F1 hits judge() directly; F2 will hit investigator"
