@@ -6,14 +6,33 @@
 # asserts voyager's resulting decision matches `expected`.
 #
 # Schema:
-#   id            — unique scenario identifier (category prefix + index + slug)
-#   category      — A / B / C / D / E / F (see top of file or README)
-#   description   — what this scenario tests, in plain English
-#   setup         — PR + branch setup (file content goes into the branch)
-#   review        — review thread(s) the test bot posts
-#   expected      — voyager's decision after processing
-#   wait_for      — termination signal (log marker, dashboard endpoint, etc.)
-#   cleanup       — close PR + delete branch on success
+#   id                 — unique scenario identifier (category prefix + index + slug)
+#   category           — A / B / C / D / E / F (see below)
+#   description        — what this scenario tests, in plain English
+#   setup              — PR + branch setup (file content goes into the branch)
+#   review             — review thread(s) the test bot posts
+#   expected           — PR-level keys the runner CAN assert today (see comparator
+#                        signatures in scripts/e2e/run_matrix.py:_flatten_writeback)
+#   phase_b_expected   — per-thread keys (codex_severity, effective_severity,
+#                        finding_kind, investigator_*) that require voyager-side
+#                        changes to expose thread state in the writeback record.
+#                        Documented here so scenarios stay complete; the runner
+#                        IGNORES this block in Phase A.
+#   cleanup            — close PR + delete branch (best-effort, runs in finally)
+#
+# Available `expected` keys (from _flatten_writeback today):
+#   - status / automation_status   ("BLOCKED" | "PENDING" | "READY" |
+#                                    "READY_WITH_LOW_PRIORITY" | "stale_verdict_skip")
+#   - automation_reason            (free-text reason; use `automation_reason_substring`
+#                                    for partial-match)
+#   - writeback_skipped            (bool — True when skipped=="stale_verdict")
+#   - applied / dry_run            (bool)
+#   - label_present                (first label in planned.add_labels)
+#   - add_labels                   (full list)
+#   - add_reactions                (full list)
+#   - head_sha                     (advancing this is the stale-guard trigger)
+#   - unresolved_codex_thread_count
+#   - sync_actions_count / investigator_error_count
 #
 # Categories:
 #   A — severity extraction (4 marker formats × P1/P2/P3 + edge cases)
@@ -30,7 +49,7 @@ test_bot_env: "VOYAGER_TEST_BOT_LOGINS"   # set this to the test App's bot login
 
 scenarios:
   # ---------------------------------------------------------------------------
-  # A — Severity extraction
+  # A — Severity extraction (PR-level: high-severity → BLOCKED)
   # ---------------------------------------------------------------------------
   - id: A1.severity_bracket_p1
     category: A
@@ -52,16 +71,15 @@ scenarios:
 
           This will crash on `divide(1, 0)`. Add a guard or document the contract.
     expected:
-      codex_severity: "P1"
-      effective_severity: "P1"
       status: "BLOCKED"
       label_present: "clearance-blocked"
-    wait_for:
-      kind: "log_marker"
-      pattern: "severity_demoted"   # absence == no demotion; final status from compute_status
+      unresolved_codex_thread_count: 1
+    phase_b_expected:
+      codex_severity: "P1"
+      effective_severity: "P1"
 
   # ---------------------------------------------------------------------------
-  # B — Severity demotion (required_check_coupling + branch_protected)
+  # B — Severity demotion (PR-level: demoted P2 → P3 → READY_WITH_LOW_PRIORITY)
   # ---------------------------------------------------------------------------
   - id: B1.demotion_required_check_unprotected
     category: B
@@ -90,14 +108,13 @@ scenarios:
           Adding `paths-ignore` to a required-check workflow lets PRs touching
           only ignored paths skip the check entirely, weakening branch protection.
     expected:
-      codex_severity: "P2"
-      effective_severity: "P3"          # demoted because branch is unprotected
-      finding_kind: "required_check_coupling"
       status: "READY_WITH_LOW_PRIORITY"
-      reason_substring: "low-priority"
-    wait_for:
-      kind: "log_marker"
-      pattern: "severity_demoted"
+      automation_reason_substring: "low-priority"
+      unresolved_codex_thread_count: 1
+    phase_b_expected:
+      codex_severity: "P2"
+      effective_severity: "P3"
+      finding_kind: "required_check_coupling"
 
   # ---------------------------------------------------------------------------
   # C — β status aggregation
@@ -122,13 +139,12 @@ scenarios:
 
           Minor style — prefer `f"Hello, {name}"` over string concatenation.
     expected:
-      codex_severity: "P3"
-      effective_severity: "P3"
       status: "READY_WITH_LOW_PRIORITY"
       label_present: "clearance-ready"
-    wait_for:
-      kind: "log_marker"
-      pattern: "compute_status.*READY_WITH_LOW_PRIORITY"
+      unresolved_codex_thread_count: 1
+    phase_b_expected:
+      codex_severity: "P3"
+      effective_severity: "P3"
 
   # ---------------------------------------------------------------------------
   # E — Stale-verdict guard
@@ -145,9 +161,9 @@ scenarios:
       file_content: |
         # Initial content for E1 — will be force-pushed during the scenario.
         x = 1
-      # Special: after creating the PR + posting Codex review, force-push a
-      # new commit before voyager processes. Harness handles this via the
-      # `force_push_after_review` hook.
+      # Phase B hook: after creating the PR + posting the review, the harness
+      # will force-push a new commit before voyager processes. The runner
+      # doesn't implement force_push_after_review yet — Phase B work.
       force_push_after_review:
         file_path: "samples/e1.py"
         new_content: |
@@ -163,9 +179,6 @@ scenarios:
     expected:
       automation_status: "stale_verdict_skip"
       writeback_skipped: true
-    wait_for:
-      kind: "log_marker"
-      pattern: "stale_verdict_skip"
 
   # ---------------------------------------------------------------------------
   # F — Investigator path regression
@@ -190,19 +203,19 @@ scenarios:
           [P2] No error handling on int parse
 
           Raises ValueError on non-numeric input; either catch or document.
-      # Author posts a reply (will be done by the harness's PR-author identity,
-      # not the test-bot identity, so latest_author_reply picks it up):
+      # Phase B: thread-reply posting will use the PR-author PAT (ryosaeba1985),
+      # distinct from the test-bot identity, so `latest_author_reply` recognizes it.
+      # The runner skips `thread_reply` entries in Phase A.
       - thread_reply:
           previous_thread_index: 0
           body: |
             Fixed in commit XXXX — wrapped in try/except returning None on bad input.
     expected:
+      status: "READY"
+      label_present: "clearance-ready"
+      unresolved_codex_thread_count: 0
+    phase_b_expected:
       codex_severity: "P2"
       effective_severity: "P2"
       investigator_invoked: true
       investigator_verdict: "RESOLVED"
-      status: "READY"
-      label_present: "clearance-ready"
-    wait_for:
-      kind: "log_marker"
-      pattern: "investigator_decision.*RESOLVED"

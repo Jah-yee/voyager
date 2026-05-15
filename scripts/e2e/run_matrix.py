@@ -32,6 +32,10 @@ against real sandbox runs.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import base64
+import contextlib
+import json
 import os
 import subprocess
 import sys
@@ -65,11 +69,12 @@ class RunnerConfig:
     voyager_url: str
     sandbox_repo: str
     base_branch: str
-    test_bot: TestBotApp
+    test_bot: TestBotApp | None
     scenario_filter: list[str]  # only run scenarios whose id startswith any of these
     dry_run_sandbox: bool  # if True, log actions instead of hitting GitHub
     poll_timeout_s: int = 60
     poll_interval_s: float = 1.5
+    voyager_e2e_token: str | None = None  # paired with VOYAGER_E2E_TOKEN on the server
 
 
 # ---------------------------------------------------------------------------
@@ -122,17 +127,25 @@ def _create_branch_with_file(
 ) -> str:
     """Create a new branch in sandbox with the given file, return the head sha.
 
-    Implementation uses the GitHub Contents API via `gh api` — we don't need
-    a local clone. For now this is happy-path only; existing-branch handling
-    is a follow-up.
+    Implementation uses the GitHub Contents API via ``gh api`` (no local clone).
+    Handles existing-branch state by deleting + recreating the ref so repeated
+    runs of the same scenario are idempotent (Codex/Gemini/GLM r1 P2).
     """
     # 1. Get the base branch's head sha.
     base_ref = _run_gh("api", f"repos/{sandbox_repo}/git/refs/heads/{base_branch}")
-    import json as _json
+    base_sha = json.loads(base_ref.stdout)["object"]["sha"]
 
-    base_sha = _json.loads(base_ref.stdout)["object"]["sha"]
+    # 2. Delete any pre-existing branch with the same name (idempotency).
+    with contextlib.suppress(subprocess.CalledProcessError):
+        _run_gh(
+            "api",
+            "--method",
+            "DELETE",
+            f"repos/{sandbox_repo}/git/refs/heads/{branch}",
+            check=False,
+        )
 
-    # 2. Create the new branch ref.
+    # 3. Create the new branch ref.
     _run_gh(
         "api",
         "--method",
@@ -144,10 +157,8 @@ def _create_branch_with_file(
         f"sha={base_sha}",
     )
 
-    # 3. PUT the file via Contents API on the new branch.
-    import base64 as _b64
-
-    content_b64 = _b64.b64encode(file_content.encode("utf-8")).decode("ascii")
+    # 4. PUT the file via Contents API on the new branch.
+    content_b64 = base64.b64encode(file_content.encode("utf-8")).decode("ascii")
     result = _run_gh(
         "api",
         "--method",
@@ -160,7 +171,7 @@ def _create_branch_with_file(
         "-f",
         f"branch={branch}",
     )
-    head_sha = _json.loads(result.stdout)["commit"]["sha"]
+    head_sha = json.loads(result.stdout)["commit"]["sha"]
     return head_sha
 
 
@@ -180,16 +191,14 @@ def _open_pr(sandbox_repo: str, branch: str, base: str, title: str, body: str) -
         "-f",
         f"body={body}",
     )
-    import json as _json
-
-    return _json.loads(result.stdout)
+    return json.loads(result.stdout)
 
 
 def _mint_test_bot_token(app: TestBotApp) -> str:
     """Mint an installation token for the test GitHub App.
 
-    Uses voyager's GitHubAppClient JWT logic by importing it directly — same
-    auth as voyager itself uses for the iterwheel-clearance App.
+    Uses voyager.core.github_app.GitHubAppClient.installation_token (public
+    API) — same auth path voyager itself uses for iterwheel-clearance.
     """
     from voyager.core.config import AppConfig
     from voyager.core.github_app import GitHubAppClient
@@ -202,12 +211,7 @@ def _mint_test_bot_token(app: TestBotApp) -> str:
         installations={},
     )
     client = GitHubAppClient({cfg.slug: cfg})
-    # Use the client's internal token-fetch path. (Sync wrapper around the
-    # async installation-token endpoint.)
-    import asyncio as _asyncio
-
-    token = _asyncio.run(client._installation_token(cfg.slug, app.installation_id))
-    return token
+    return asyncio.run(client.installation_token(cfg.slug))
 
 
 def _post_review_thread(
@@ -268,43 +272,115 @@ def _extract_pr_number(writeback: dict[str, Any]) -> int | None:
 
 
 def _flatten_writeback(writeback: dict[str, Any]) -> dict[str, Any]:
-    """Pluck the fields we care about into a flat dict for easier comparison."""
-    route = writeback.get("route") or {}
-    validation = route.get("validation") or {}
-    automation = route.get("automation") or writeback.get("automation") or {}
+    """Pluck the fields we care about into a flat dict for easier comparison.
+
+    The writeback record voyager emits is one of three shapes (see
+    voyager/core/writeback.py:dispatch_route_writeback):
+      1. Apply path:   {applied, dry_run, planned, comment_url}
+      2. Stale skip:   {ok, skipped, automation}
+      3. Error:        {applied: False, reason}
+
+    Plus the top-level wrap adds {delivery_id, event}.
+
+    Per-thread severity/finding_kind/investigator_verdict are NOT in the
+    writeback today — they live inside the pipeline's thread state which the
+    writeback record doesn't include. Exposing them is a Phase B task (likely
+    a voyager-side change to ``compute_clearance_automation`` to include a
+    ``threads_summary`` array). For Phase A, scenarios assert PR-level
+    aggregated state (status / automation_status / writeback_skipped /
+    label_present) which IS available here.
+    """
+    automation = writeback.get("automation") or {}
+    planned = writeback.get("planned") or {}
+    add_labels = planned.get("add_labels") or []
     return {
+        # Top-level envelope (added in server._process_route_writebacks)
         "event": writeback.get("event"),
         "delivery_id": writeback.get("delivery_id"),
+        # Apply-path fields
         "applied": writeback.get("applied"),
         "dry_run": writeback.get("dry_run"),
-        "status": validation.get("status"),
-        "conclusion": validation.get("conclusion"),
+        "reason": writeback.get("reason"),
+        "comment_url": writeback.get("comment_url"),
+        # Stale-skip fields
+        "ok": writeback.get("ok"),
+        "skipped": writeback.get("skipped"),
+        "writeback_skipped": writeback.get("skipped") == "stale_verdict",
+        # Automation summary (from compute_clearance_automation)
+        "status": automation.get("status"),
         "automation_status": automation.get("status"),
+        "automation_reason": automation.get("reason"),
         "head_sha": automation.get("head_sha"),
-        "label_present": (writeback.get("planned") or {}).get("label_applied")
-        or validation.get("label_applied"),
+        "unresolved_codex_thread_count": automation.get("unresolved_codex_thread_count"),
+        "sync_actions_count": automation.get("sync_actions_count"),
+        "investigator_error_count": automation.get("investigator_error_count"),
+        # Planned label / reaction summary (apply path)
+        "add_labels": add_labels,
+        "label_present": add_labels[0] if add_labels else None,
+        "add_reactions": planned.get("add_reactions") or [],
+        # Raw record for debugging in failing scenarios
         "_raw": writeback,
     }
 
 
 def _poll_for_writeback(
-    *, voyager_url: str, pr_number: int, timeout_s: int = 60, interval_s: float = 1.5
-) -> dict[str, Any] | None:
-    """Poll voyager's /e2e/recent_writebacks until we see a record for our PR."""
+    *,
+    voyager_url: str,
+    pr_number: int,
+    timeout_s: int = 60,
+    interval_s: float = 1.5,
+    auth_token: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Poll voyager's /e2e/recent_writebacks until we see a record for our PR.
+
+    Returns (writeback_dict, error_message). On success, error_message is None.
+    On non-transient HTTP errors (404 = endpoint not enabled; 401/403 = auth
+    failure), returns (None, "fail-fast reason") without retrying. Transient
+    errors (network, 5xx) are retried until deadline; if deadline hits without
+    a matching record, returns (None, "timed out").
+    """
     deadline = time.time() + timeout_s
     url = f"{voyager_url.rstrip('/')}/e2e/recent_writebacks"
+    headers: dict[str, str] = {}
+    if auth_token:
+        headers["X-Voyager-E2E-Token"] = auth_token
+
+    last_transient: str | None = None
     with httpx.Client(timeout=5.0) as c:
         while time.time() < deadline:
             try:
-                r = c.get(url)
-                if r.status_code == 200:
-                    for wb in r.json().get("writebacks", []):
-                        if _extract_pr_number(wb) == pr_number:
-                            return wb
-            except Exception:
-                pass
+                r = c.get(url, headers=headers)
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as exc:
+                # Transient — retry until deadline.
+                last_transient = f"{type(exc).__name__}: {exc}"
+                time.sleep(interval_s)
+                continue
+
+            if r.status_code in (401, 403):
+                return None, (
+                    f"voyager auth rejected ({r.status_code}): the e2e endpoint "
+                    f"requires VOYAGER_E2E_DEBUG=1 and a matching X-Voyager-E2E-Token "
+                    f"header if VOYAGER_E2E_TOKEN is set."
+                )
+            if r.status_code == 404:
+                return None, (
+                    "voyager returned 404 for /e2e/recent_writebacks — endpoint is "
+                    "gated by VOYAGER_E2E_DEBUG=1; start voyager with that env set."
+                )
+            if r.status_code >= 500:
+                last_transient = f"voyager 5xx: HTTP {r.status_code}"
+                time.sleep(interval_s)
+                continue
+            if r.status_code != 200:
+                return None, f"unexpected HTTP {r.status_code}: {r.text[:200]}"
+
+            for wb in r.json().get("writebacks", []):
+                if _extract_pr_number(wb) == pr_number:
+                    return wb, None
             time.sleep(interval_s)
-    return None
+
+    suffix = f" (last transient: {last_transient})" if last_transient else ""
+    return None, f"timed out after {timeout_s}s waiting for PR #{pr_number}{suffix}"
 
 
 def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
@@ -313,13 +389,23 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     Each expected key is looked up in the flattened actual; mismatches are
     reported in 'key: expected X, got Y' form. Unknown expected keys (not in
     actual) are reported as 'key: not surfaced by voyager (actual missing)'.
+
+    Keys with the ``_substring`` suffix do a partial-match against the base
+    key's value. Treats ``None`` in actual as "no value" — substring check on
+    None never matches (avoids the ``"None" in "NoneType"`` false-positive).
     """
     mismatches: list[str] = []
     for k, exp in expected.items():
         if k.endswith("_substring"):
             # e.g. expected: reason_substring: "low-priority"
             base = k.removesuffix("_substring")
-            got = str(actual.get(base, ""))
+            raw = actual.get(base)
+            if raw is None:
+                mismatches.append(
+                    f"{base}: not surfaced by voyager (cannot do substring match on None)"
+                )
+                continue
+            got = str(raw)
             if exp not in got:
                 mismatches.append(f"{base}: expected substring {exp!r}, got {got!r}")
             continue
@@ -332,28 +418,29 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     return mismatches
 
 
-def _cleanup_pr(sandbox_repo: str, pr_number: int, branch: str) -> None:
-    """Best-effort close PR + delete branch."""
-    import contextlib
-
-    with contextlib.suppress(Exception):
-        _run_gh(
-            "api",
-            "--method",
-            "PATCH",
-            f"repos/{sandbox_repo}/pulls/{pr_number}",
-            "-f",
-            "state=closed",
-            check=False,
-        )
-    with contextlib.suppress(Exception):
-        _run_gh(
-            "api",
-            "--method",
-            "DELETE",
-            f"repos/{sandbox_repo}/git/refs/heads/{branch}",
-            check=False,
-        )
+def _cleanup_pr(sandbox_repo: str, pr_number: int | None, branch: str | None) -> None:
+    """Best-effort close PR + delete branch. Either may be None (partial setup
+    that failed before the resource was created)."""
+    if pr_number is not None:
+        with contextlib.suppress(Exception):
+            _run_gh(
+                "api",
+                "--method",
+                "PATCH",
+                f"repos/{sandbox_repo}/pulls/{pr_number}",
+                "-f",
+                "state=closed",
+                check=False,
+            )
+    if branch:
+        with contextlib.suppress(Exception):
+            _run_gh(
+                "api",
+                "--method",
+                "DELETE",
+                f"repos/{sandbox_repo}/git/refs/heads/{branch}",
+                check=False,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +498,10 @@ def _run_scenario(
 
     pr_number: int | None = None
     pr_url: str | None = None
+    created_branch: str | None = None  # set once the branch ref exists; cleanup uses this
     error: str | None = None
     actual: dict[str, Any] = {}
+    verdict = "failed"
 
     try:
         # 1. Create branch + file.
@@ -420,6 +509,8 @@ def _run_scenario(
         head_sha = _create_branch_with_file(
             cfg.sandbox_repo, cfg.base_branch, branch, file_path, file_content, commit_msg
         )
+        created_branch = branch  # branch now exists; tracked separately for cleanup
+
         # 2. Open PR.
         pr = _open_pr(
             cfg.sandbox_repo,
@@ -430,7 +521,6 @@ def _run_scenario(
         )
         pr_number = pr["number"]
         pr_url = pr["html_url"]
-        actual["pr_number"] = pr_number
         dashboard.update(
             {
                 "id": sid,
@@ -447,7 +537,7 @@ def _run_scenario(
         # 3. Post review threads.
         for review in scenario.get("review", []):
             if "thread_reply" in review:
-                # TODO Phase B: implement thread-reply posting using author PAT.
+                # Phase B: thread-reply posting using author PAT.
                 continue
             _post_review_thread(
                 sandbox_repo=cfg.sandbox_repo,
@@ -459,21 +549,21 @@ def _run_scenario(
                 token=token,
             )
 
-        # 4. Poll voyager's /e2e/recent_writebacks endpoint for our PR's writeback.
-        writeback = _poll_for_writeback(
+        # 4. Poll voyager for our PR's writeback.
+        writeback, poll_error = _poll_for_writeback(
             voyager_url=cfg.voyager_url,
             pr_number=pr_number,
             timeout_s=cfg.poll_timeout_s,
+            interval_s=cfg.poll_interval_s,
+            auth_token=cfg.voyager_e2e_token,
         )
         if writeback is None:
             verdict = "failed"
-            error = (
-                f"timed out after {cfg.poll_timeout_s}s waiting for voyager "
-                f"to process PR #{pr_number} (no matching writeback record)"
-            )
+            error = poll_error or f"no matching writeback record for PR #{pr_number}"
         else:
             actual = _flatten_writeback(writeback)
-            # 5. Compare expected keys against the flattened actual.
+            # Preserve the PR identity in the dashboard payload (DeepSeek r1 P1).
+            actual["pr_number"] = pr_number
             mismatches = _compare(expected, actual)
             if mismatches:
                 verdict = "failed"
@@ -482,18 +572,17 @@ def _run_scenario(
                 verdict = "passed"
                 error = None
 
-        # 6. Cleanup: close PR + delete branch (best-effort).
-        _cleanup_pr(cfg.sandbox_repo, pr_number, branch)
-
     except Exception as exc:
         verdict = "error"
         error = f"{type(exc).__name__}: {exc}"
-        # Best-effort cleanup even on error so we don't leave PR turds.
-        if pr_number is not None:
-            import contextlib
 
-            with contextlib.suppress(Exception):
-                _cleanup_pr(cfg.sandbox_repo, pr_number, branch)
+    finally:
+        # Single cleanup pass — runs once for both success and error paths.
+        # Tracks `created_branch` independently of `pr_number` so an orphan
+        # branch (PR creation failed after branch creation) still gets cleaned
+        # (Codex/Gemini r1 P2 branch-leak).
+        with contextlib.suppress(Exception):
+            _cleanup_pr(cfg.sandbox_repo, pr_number, created_branch)
 
     dashboard.update(
         {
@@ -510,8 +599,6 @@ def _run_scenario(
             "error": error,
         }
     )
-
-    # TODO Phase B: cleanup branch + close PR after assertion.
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +711,11 @@ def main() -> int:
 
     token = ""
     if not dry_run_sandbox:
-        assert test_bot is not None  # nosec
+        if test_bot is None:
+            raise RuntimeError(
+                "test_bot must be configured when not in --dry-run-sandbox mode; "
+                "see scripts/e2e/README.md for setup."
+            )
         token = _mint_test_bot_token(test_bot)
 
     cfg = RunnerConfig(
@@ -633,11 +724,12 @@ def main() -> int:
         voyager_url=args.voyager,
         sandbox_repo=matrix["sandbox_repo"],
         base_branch=matrix["base_branch"],
-        test_bot=test_bot,  # type: ignore[arg-type]
+        test_bot=test_bot,
         scenario_filter=args.filter,
         dry_run_sandbox=dry_run_sandbox,
         poll_timeout_s=args.poll_timeout,
         poll_interval_s=args.poll_interval,
+        voyager_e2e_token=os.environ.get("VOYAGER_E2E_TOKEN") or None,
     )
 
     for s in scenarios:

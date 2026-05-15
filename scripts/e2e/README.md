@@ -106,28 +106,60 @@ To rehearse without touching GitHub:
 uv run python scripts/e2e/run_matrix.py --dry-run-sandbox
 ```
 
+## Voyager debug endpoint security
+
+The harness reads voyager's decisions from `GET /e2e/recent_writebacks`,
+which is layered behind:
+
+1. **`VOYAGER_E2E_DEBUG=1`** required — 404 otherwise (doesn't leak endpoint
+   existence)
+2. **Loopback-only by default** — non-127.0.0.1 / non-::1 clients get 404.
+   Override with `VOYAGER_E2E_ALLOW_NON_LOOPBACK=1` for bastion / split-host
+   setups (you almost certainly don't want this).
+3. **Optional shared-secret token** — if `VOYAGER_E2E_TOKEN` is set on the
+   voyager side, requests must carry `X-Voyager-E2E-Token: <value>`. The
+   runner reads the same env var to send the header automatically.
+4. **`Cache-Control: no-store`** on the response.
+
+Production never sets `VOYAGER_E2E_DEBUG`; the `E2E` in the var name + the
+404-when-disabled behavior together signal intent.
+
 ## Phase A scope
 
-5 scenarios across the 6 categories — A / B / C / E / F. D (β overlay
-preservation, 4 conditions) deferred to Phase B since it requires more
-nuanced multi-thread PR setups.
+5 scenarios across categories A / B / C / E / F. D (β overlay preservation,
+4 conditions) deferred to Phase B since it requires multi-thread PR setups.
 
-Phase A status:
+Each scenario has two assertion blocks:
+
+- **`expected`** — PR-level keys the comparator can assert from the
+  writeback record voyager emits today (status, automation_status,
+  writeback_skipped, label_present, etc.). See the schema comment at the
+  top of `matrix.yaml` for the full list.
+- **`phase_b_expected`** — per-thread keys (`codex_severity`,
+  `effective_severity`, `finding_kind`, `investigator_invoked`,
+  `investigator_verdict`) that would need voyager-side changes to surface
+  thread state in the writeback record. The runner **ignores** this block
+  in Phase A; it's documented in the matrix to keep scenarios complete.
+
+### Phase A status
+
 - ✅ Scaffold structure + dashboard + UI
-- ✅ matrix.yaml schema
+- ✅ matrix.yaml schema + 5 scenarios
 - ✅ Real branch / file / PR creation via gh CLI
 - ✅ Real test-bot review-thread POST via App installation token
-- ⏳ Waiting on voyager's webhook processing (sleeps 8s — replace with poll-for-marker)
-- ⏳ Comparator: actual-vs-expected deep-eq (currently always fails as "TODO")
-- ⏳ Cleanup: close PR + delete branch after assertion
+- ✅ Polling voyager's `/e2e/recent_writebacks` endpoint (no fixed sleep)
+- ✅ Comparator: flattened writeback vs `expected` block (PR-level keys)
+- ✅ Cleanup: close PR + delete branch (idempotent, runs in `finally`)
+- ✅ Branch-leak fix: tracks `created_branch` independently of `pr_number`
+- ✅ Endpoint security hardening (env + loopback + optional token)
+- ✅ Unit tests: 17 for the endpoint, 24 for runner helpers
 
-## Phase B (next)
+### Phase B (next)
 
-- Wire actual-vs-expected comparator (read voyager's writeback log)
-- Implement `wait_for: log_marker` poll
-- Cleanup hooks (close PR + delete branch on success)
-- Implement `force_push_after_review` for E1
-- Implement `thread_reply` for F1
+- Implement `force_push_after_review` hook for E1
+- Implement `thread_reply` for F1 (uses PR-author PAT)
+- Extend voyager's writeback record to include per-thread state
+  (`compute_clearance_automation` → emit a `threads_summary` array), so the
+  `phase_b_expected` blocks become assertable
 - Expand to 30+ scenarios across A / B / C / D / E / F
-- A bundle: real Codex on 3-5 sanity PRs to validate the bypass path matches
-  the real path
+- A bundle: 3-5 real-Codex sanity cases to validate bypass == real path

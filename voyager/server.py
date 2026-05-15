@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from voyager.bots.clearance.investigator import ThreadInvestigator
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from voyager.bots.blueprint import route_blueprint_event
 from voyager.bots.clearance import route_clearance_event
@@ -218,26 +219,63 @@ async def healthz() -> dict[str, Any]:
     }
 
 
-@app.get("/e2e/recent_writebacks")
-async def e2e_recent_writebacks() -> dict[str, Any]:
-    """Debug endpoint for the e2e test harness — returns the in-memory
-    writeback deque. Gated behind ``VOYAGER_E2E_DEBUG=1`` so it cannot be
-    accidentally enabled in production.
+def _truthy(s: str | None) -> bool:
+    return (s or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
-    Useful for the sandbox e2e runner to observe voyager's decisions in
-    DRY_RUN=true mode (where no labels are written). Pair with the test
-    harness in ``scripts/e2e/run_matrix.py``.
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+@app.get("/e2e/recent_writebacks", include_in_schema=False)
+async def e2e_recent_writebacks(
+    request: Request,
+    x_voyager_e2e_token: str | None = Header(default=None),
+) -> JSONResponse:
+    """Debug endpoint for the e2e test harness — returns the in-memory
+    writeback deque. Layered defense-in-depth (trinity round-1 P1):
+
+      1. ``VOYAGER_E2E_DEBUG=1`` env required (404 otherwise — doesn't leak
+         the endpoint's existence)
+      2. Request client must be loopback (127.0.0.1 / ::1 / localhost). A
+         tunnel or LAN client gets 404. Operators wanting non-loopback access
+         must opt in with VOYAGER_E2E_ALLOW_NON_LOOPBACK=1.
+      3. If ``VOYAGER_E2E_TOKEN`` env is set, the request must carry the
+         matching ``X-Voyager-E2E-Token`` header. Constant-time compare via
+         secrets.compare_digest to avoid timing oracle.
+      4. ``Cache-Control: no-store, max-age=0`` on the response so the
+         writeback record isn't cached by intermediaries.
+
+    Pair with ``scripts/e2e/run_matrix.py``.
     """
     if not _truthy(os.environ.get("VOYAGER_E2E_DEBUG")):
         raise HTTPException(status_code=404, detail="Not found")
-    return {
-        "count": len(_recent_writebacks),
-        "writebacks": list(_recent_writebacks),
-    }
 
+    if not _truthy(os.environ.get("VOYAGER_E2E_ALLOW_NON_LOOPBACK")):
+        client_host = (request.client.host if request.client else "") or ""
+        if client_host not in _LOOPBACK_HOSTS:
+            _log.warning(
+                "e2e endpoint rejected non-loopback client %r (set "
+                "VOYAGER_E2E_ALLOW_NON_LOOPBACK=1 to override)",
+                client_host,
+            )
+            raise HTTPException(status_code=404, detail="Not found")
 
-def _truthy(s: str | None) -> bool:
-    return (s or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    expected_token = os.environ.get("VOYAGER_E2E_TOKEN")
+    if expected_token:
+        import secrets as _secrets
+
+        if not x_voyager_e2e_token or not _secrets.compare_digest(
+            expected_token, x_voyager_e2e_token
+        ):
+            raise HTTPException(status_code=401, detail="missing or invalid e2e token")
+
+    return JSONResponse(
+        content={
+            "count": len(_recent_writebacks),
+            "writebacks": list(_recent_writebacks),
+        },
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @app.post("/github/webhook")
