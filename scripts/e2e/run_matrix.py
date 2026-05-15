@@ -5,13 +5,14 @@ against ``iterwheel/voyager-sandbox``:
 
   1. Create a branch + file via gh CLI (PR-author identity = ryosaeba1985)
   2. Open a PR
-  3. POST review threads using the test GitHub App's installation token
+  3. Optionally submit a current-head approval with the test GitHub App
+  4. POST review threads using the test GitHub App's installation token
      (the App's bot login is listed in ``VOYAGER_TEST_BOT_LOGINS`` so
      voyager treats it as Codex-equivalent)
-  4. Wait for voyager to receive the webhook + process
-  5. Read voyager's decision from its log file (or /healthz / writeback log)
-  6. Compare against the scenario's ``expected`` block
-  7. POST status updates to the dashboard server throughout
+  5. Wait for voyager to receive the webhook + process
+  6. Read voyager's decision from its log file (or /healthz / writeback log)
+  7. Compare against the scenario's ``expected`` block
+  8. POST status updates to the dashboard server throughout
 
 Run:
     # 1. Start dashboard:
@@ -433,6 +434,31 @@ def _post_review_thread(
         return r.json()
 
 
+def _post_approval_review(
+    *,
+    sandbox_repo: str,
+    pr_number: int,
+    commit_sha: str,
+    token: str,
+) -> dict[str, Any]:
+    """Submit a current-head approval using the test bot installation token."""
+    with httpx.Client(timeout=15.0) as c:
+        r = c.post(
+            f"https://api.github.com/repos/{sandbox_repo}/pulls/{pr_number}/reviews",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={
+                "commit_id": commit_sha,
+                "event": "APPROVE",
+                "body": "E2E current-head approval for Clearance readiness.",
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+
 # ---------------------------------------------------------------------------
 # Voyager polling + comparator
 # ---------------------------------------------------------------------------
@@ -753,6 +779,14 @@ def _run_scenario(
                 "expected": expected,
             }
         )
+
+        if setup.get("current_approval"):
+            _post_approval_review(
+                sandbox_repo=cfg.sandbox_repo,
+                pr_number=pr_number,
+                commit_sha=head_sha,
+                token=token,
+            )
 
         # Mark the start-of-review timestamp; the poll filter uses it to
         # exclude voyager's pre-review `pull_request opened` writeback

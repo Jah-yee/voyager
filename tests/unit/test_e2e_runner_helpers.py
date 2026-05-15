@@ -8,6 +8,7 @@ pins their behavior.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from scripts.e2e.run_matrix import (  # noqa: E402
     _extract_pr_number,
     _flatten_writeback,
     _poll_for_writeback,
+    _post_approval_review,
 )
 
 # ---------------------------------------------------------------------------
@@ -387,3 +389,32 @@ def test_poll_sends_auth_token_header(monkeypatch) -> None:
         auth_token="secret-abc",
     )
     assert captured["token"] == "secret-abc"
+
+
+def test_post_approval_review_posts_current_head_approval(monkeypatch) -> None:
+    """current_approval setup uses the test bot token and pins the head SHA."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": 123, "state": "APPROVED"})
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: original(transport=transport, **kw))
+
+    result = _post_approval_review(
+        sandbox_repo="iterwheel/voyager-sandbox",
+        pr_number=42,
+        commit_sha="abc123",
+        token="installation-token",
+    )
+
+    assert result["state"] == "APPROVED"
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.path == "/repos/iterwheel/voyager-sandbox/pulls/42/reviews"
+    assert request.headers["Authorization"] == "token installation-token"
+    payload = json.loads(request.content)
+    assert payload["commit_id"] == "abc123"
+    assert payload["event"] == "APPROVE"
