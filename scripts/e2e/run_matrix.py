@@ -517,6 +517,7 @@ def _poll_for_writeback(
     auth_token: str | None = None,
     event_filter: tuple[str, ...] = ("pull_request_review", "pull_request_review_comment"),
     since_ts: str | None = None,
+    repository: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Poll voyager's /e2e/recent_writebacks until we see a matching record.
 
@@ -582,6 +583,11 @@ def _poll_for_writeback(
             candidates: list[dict[str, Any]] = []
             for wb in r.json().get("writebacks", []):
                 if _extract_pr_number(wb) != pr_number:
+                    continue
+                # Repository scoping — PR numbers are only unique within a
+                # repo, and voyager may handle multiple repos in the same
+                # process (Codex GH-bot PR #15 P2 #6).
+                if repository and wb.get("repository") and wb["repository"] != repository:
                     continue
                 if event_filter and wb.get("event") not in event_filter:
                     continue
@@ -827,6 +833,7 @@ def _run_scenario(
             interval_s=cfg.poll_interval_s,
             auth_token=cfg.voyager_e2e_token,
             since_ts=review_start_ts,
+            repository=cfg.sandbox_repo,
         )
         if writeback is None:
             verdict = "failed"

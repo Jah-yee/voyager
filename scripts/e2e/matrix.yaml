@@ -26,8 +26,9 @@
 #   cleanup            — close PR + delete branch (best-effort, runs in finally)
 #
 # Available `expected` keys (from _flatten_writeback today):
-#   - status / automation_status   ("BLOCKED" | "PENDING" | "READY" |
-#                                    "READY_WITH_LOW_PRIORITY" | "stale_verdict_skip")
+#   - status / automation_status   (LOWERCASE: "blocked" | "pending" | "ready" |
+#                                    "ready_with_low_priority" | "stale_verdict_skip" —
+#                                    voyager emits Status enum `.value` which is lowercase)
 #   - automation_reason            (free-text reason; use `automation_reason_substring`
 #                                    for partial-match)
 #   - writeback_skipped            (bool — True when skipped=="stale_verdict")
@@ -76,7 +77,7 @@ scenarios:
 
           This will crash on `divide(1, 0)`. Add a guard or document the contract.
     expected:
-      status: "BLOCKED"
+      status: "blocked"
       label_present: "clearance-blocked"
       unresolved_codex_thread_count: 1
     phase_b_expected:
@@ -113,7 +114,7 @@ scenarios:
           Adding `paths-ignore` to a required-check workflow lets PRs touching
           only ignored paths skip the check entirely, weakening branch protection.
     expected:
-      status: "READY_WITH_LOW_PRIORITY"
+      status: "ready_with_low_priority"
       automation_reason_substring: "low-priority"
       unresolved_codex_thread_count: 1
     phase_b_expected:
@@ -144,9 +145,9 @@ scenarios:
 
           Minor style — prefer `f"Hello, {name}"` over string concatenation.
     expected:
-      status: "READY_WITH_LOW_PRIORITY"
+      status: "ready_with_low_priority"
       label_present: "clearance-ready"
-      unresolved_codex_thread_count: 1
+      unresolved_codex_thread_count: 1   # status "ready_with_low_priority" still has 1 P3 OPEN
     phase_b_expected:
       codex_severity: "P3"
       effective_severity: "P3"
@@ -223,15 +224,22 @@ scenarios:
           [P2] No error handling on int parse
 
           Raises ValueError on non-numeric input; either catch or document.
-      # Phase B: thread-reply posting will use the PR-author PAT (ryosaeba1985),
-      # distinct from the test-bot identity, so `latest_author_reply` recognizes it.
-      # The runner skips `thread_reply` entries in Phase A.
+      # Thread-reply posting uses the PR-author PAT (ryosaeba1985), distinct
+      # from the test-bot identity, so voyager's `latest_author_reply` filter
+      # accepts it. The body must satisfy `is_substantive_reply` in
+      # voyager/bots/clearance/judge.py — needs ≥50 chars AND a concrete
+      # identifier (a 7-40 hex SHA, a recognized filename, or a code symbol).
+      # The literal "XXXX" doesn't match the SHA regex; use a real-shaped SHA
+      # + filename so the thread reaches state-C-substantive and the
+      # investigator runs (Codex GH-bot PR #15 P2 #5).
       - thread_reply:
           previous_thread_index: 0
           body: |
-            Fixed in commit XXXX — wrapped in try/except returning None on bad input.
+            Fixed in commit 3f978c6dd8 — `samples/f1.py` now wraps `int(s)`
+            in a try/except returning None on ValueError so callers get a
+            sentinel instead of an exception on bad input.
     expected:
-      status: "READY"
+      status: "ready"
       label_present: "clearance-ready"
       unresolved_codex_thread_count: 0
     phase_b_expected:

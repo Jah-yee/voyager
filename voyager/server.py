@@ -208,6 +208,7 @@ async def _process_route_writebacks(
                 {
                     "delivery_id": delivery_id,
                     "event": event,
+                    "repository": repository,
                     "pr_number": pr_number,
                     "ts": _utc_now(),
                     **result,
