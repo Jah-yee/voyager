@@ -723,12 +723,6 @@ def _run_scenario(
                 )
 
         # 3b. Post any thread_reply entries against the parent review comment.
-        # Codex r4 P2: F1's polling would match the pre-reply pull_request_review
-        # writeback before the post-reply pull_request_review_comment one. We
-        # advance ``review_start_ts`` AFTER any post-review state change (reply
-        # or force-push) so the poll only sees writebacks emitted in response
-        # to the final state.
-        posted_any_reply = False
         for review in scenario.get("review", []):
             tr = review.get("thread_reply")
             if not tr:
@@ -745,12 +739,10 @@ def _run_scenario(
                 comment_id=posted_review_ids[idx],
                 body=tr["body"],
             )
-            posted_any_reply = True
 
         # 3c. Optional `force_push_after_review` hook for E-class scenarios
         # (make the head SHA stale after voyager observed the review).
         fp = setup.get("force_push_after_review")
-        force_pushed = False
         if fp:
             _force_push_new_content(
                 cfg.sandbox_repo,
@@ -759,14 +751,18 @@ def _run_scenario(
                 fp["new_content"],
                 commit_message=f"e2e: {sid} force-push to stale the head",
             )
-            force_pushed = True
 
-        # 3d. Advance the polling marker so post-state-change writebacks are
-        # the only ones the comparator sees (Codex r4 P2). Includes a small
-        # buffer (~50ms) so GitHub has time to fire the post-state webhook.
-        if posted_any_reply or force_pushed:
-            time.sleep(0.05)
-            review_start_ts = _utc_now_iso()
+        # The previous code advanced `review_start_ts` AFTER posting the reply /
+        # force-push to filter out earlier writebacks. Codex r6 P2 caught the
+        # race window: voyager could emit the desired writeback DURING the
+        # 50ms sleep with `ts < new_marker`, then since_ts would drop it.
+        # We rely on:
+        #   - the initial marker (captured pre-state-change) to exclude
+        #     voyager's pre-review `pull_request opened` writeback
+        #   - event_filter to require pull_request_review* event type
+        #   - newest-ts wins in `_poll_for_writeback` to pick the latest
+        #     post-state writeback among multiple
+        # No timing assumptions needed.
 
         # 4. Poll voyager for our PR's writeback (post-review event only).
         writeback, poll_error = _poll_for_writeback(
