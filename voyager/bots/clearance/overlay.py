@@ -32,11 +32,11 @@ def apply_swm_overlay(
         review_state = evaluation.get("review_state") or {}
         eval_confidence = evaluation.get("confidence") or {}
         reasons = eval_confidence.get("reasons") or []
-        unresolved_thread_count = review_state.get("unresolved_thread_count", 0)
+        non_thread_reason_markers = ("PR is still draft.", "PR is not open.")
         has_non_thread_blockers = bool(
             review_state.get("blocking_reviewers")
             or (evaluation.get("status") == "clearance_pending")
-            or (unresolved_thread_count > 0 and len(reasons) > 1)
+            or any(marker in reasons for marker in non_thread_reason_markers)
         )
         if has_non_thread_blockers:
             return evaluation
