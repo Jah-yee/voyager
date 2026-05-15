@@ -227,15 +227,19 @@ def _extract_pr_number_from_payload(payload: dict[str, Any]) -> int | None:
       - check_suite: payload["check_suite"]["pull_requests"][0]["number"]
     """
     pr = payload.get("pull_request") or {}
-    if isinstance(pr.get("number"), int):
-        return pr["number"]
+    pr_num = pr.get("number")
+    if isinstance(pr_num, int):
+        return pr_num
     issue = payload.get("issue") or {}
-    if isinstance(issue.get("number"), int) and issue.get("pull_request"):
-        return issue["number"]
+    issue_num = issue.get("number")
+    if isinstance(issue_num, int) and issue.get("pull_request"):
+        return issue_num
     check_suite = payload.get("check_suite") or {}
     prs = check_suite.get("pull_requests") or []
-    if prs and isinstance(prs[0].get("number"), int):
-        return prs[0]["number"]
+    if prs:
+        first_num = prs[0].get("number")
+        if isinstance(first_num, int):
+            return first_num
     return None
 
 
