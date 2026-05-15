@@ -10,7 +10,12 @@
 #   category           — A / B / C / D / E / F (see below)
 #   description        — what this scenario tests, in plain English
 #   setup              — PR + branch setup (file content goes into the branch)
-#   review             — review thread(s) the test bot posts
+#   review             — review thread(s) the test bot posts. Each list entry
+#                        is EITHER a single inline-comment review (path/line/body)
+#                        OR a thread_reply spec (no path/line; refers to a prior
+#                        entry by previous_thread_index). One review item → one
+#                        posted comment — multi-comment items would break the
+#                        flat-list indexing used by thread_reply (DeepSeek r4 P3).
 #   expected           — PR-level keys the runner CAN assert today (see comparator
 #                        signatures in scripts/e2e/run_matrix.py:_flatten_writeback)
 #   phase_b_expected   — per-thread keys (codex_severity, effective_severity,
