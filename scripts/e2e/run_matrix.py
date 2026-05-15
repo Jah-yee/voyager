@@ -223,6 +223,31 @@ def _mint_test_bot_token(app: TestBotApp) -> str:
     return asyncio.run(client.installation_token(cfg.slug))
 
 
+def _get_file_blob_sha(sandbox_repo: str, branch: str, file_path: str) -> str | None:
+    """Return the current blob SHA for ``file_path`` on ``branch``, or None
+    when the file doesn't exist.
+
+    Gemini r4 P1: ``gh api ... -q .sha`` against a 404 emits the literal
+    string ``null`` to stdout (jq's representation of a missing field on
+    the error body). Naive ``if existing_sha:`` then passes ``sha=null``
+    to the PUT and the server rejects the schema. We avoid jq and check
+    the raw JSON response for the presence of an actual SHA string.
+    """
+    result = _run_gh(
+        "api",
+        f"repos/{sandbox_repo}/contents/{file_path}?ref={branch}",
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    sha = payload.get("sha")
+    return sha if isinstance(sha, str) and sha else None
+
+
 def _force_push_new_content(
     sandbox_repo: str,
     branch: str,
@@ -230,20 +255,10 @@ def _force_push_new_content(
     new_content: str,
     commit_message: str,
 ) -> str:
-    """Update an existing file on the branch via Contents API. Returns the new
+    """Update / create a file on the branch via Contents API. Returns the new
     head SHA. Used by scenarios with `force_push_after_review` to make the
     PR's head SHA stale relative to the webhook voyager just processed.
     """
-    # Need the current file's blob SHA to PUT an update.
-    existing = _run_gh(
-        "api",
-        f"repos/{sandbox_repo}/contents/{file_path}",
-        "-q",
-        ".sha",
-        f"--field=ref={branch}",
-        check=False,
-    )
-    existing_sha = existing.stdout.strip().strip('"')
     content_b64 = base64.b64encode(new_content.encode("utf-8")).decode("ascii")
     args = [
         "api",
@@ -257,10 +272,37 @@ def _force_push_new_content(
         "-f",
         f"branch={branch}",
     ]
+    existing_sha = _get_file_blob_sha(sandbox_repo, branch, file_path)
     if existing_sha:
+        # Required by GitHub API when updating an existing file.
         args.extend(["-f", f"sha={existing_sha}"])
     result = _run_gh(*args)
     return json.loads(result.stdout)["commit"]["sha"]
+
+
+def _review_inline_comment_ids(sandbox_repo: str, pr_number: int, review_id: int) -> list[int]:
+    """Fetch the inline comment IDs of a posted review.
+
+    Gemini r4 P1: ``POST /pulls/{n}/reviews`` returns the Review object only,
+    NOT the inline comments it created. To get them we must call
+    ``GET /pulls/{n}/reviews/{review_id}/comments`` after creation. Without
+    this round-trip, ``thread_reply`` scenarios always fail with
+    "0 reviews posted" because the parent comment IDs were never collected.
+    """
+    result = _run_gh(
+        "api",
+        f"repos/{sandbox_repo}/pulls/{pr_number}/reviews/{review_id}/comments",
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [int(c["id"]) for c in payload if isinstance(c.get("id"), int)]
 
 
 def _post_thread_reply(
@@ -628,7 +670,10 @@ def _run_scenario(
         # (Codex GH-bot PR #15 P1).
         review_start_ts = _utc_now_iso()
 
-        # 3. Post review threads + collect comment IDs for thread_reply use.
+        # 3. Post review threads + collect inline-comment IDs for thread_reply use.
+        # POST /pulls/{n}/reviews returns only the Review object (no comments
+        # array) — Gemini r4 P1. To get the inline-comment IDs we created, we
+        # GET /pulls/{n}/reviews/{review_id}/comments after each post.
         posted_review_ids: list[int] = []
         for review in scenario.get("review", []):
             if "thread_reply" in review:
@@ -643,11 +688,11 @@ def _run_scenario(
                 body=review["body"],
                 token=token,
             )
-            # POST /reviews returns the review; the inline comments it created
-            # are in `posted["comments"]` if the review was COMMENT-mode.
-            for c in posted.get("comments", []) or []:
-                if "id" in c:
-                    posted_review_ids.append(int(c["id"]))
+            review_id = posted.get("id")
+            if isinstance(review_id, int):
+                posted_review_ids.extend(
+                    _review_inline_comment_ids(cfg.sandbox_repo, pr_number, review_id)
+                )
 
         # 3b. Post any thread_reply entries against the parent review comment.
         for review in scenario.get("review", []):
