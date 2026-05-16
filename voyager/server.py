@@ -195,7 +195,9 @@ def _repository_pattern_matches(pattern: str, repository: str) -> bool:
     if pattern == "*":
         return True
     if pattern.endswith("/*"):
-        return repository.startswith(pattern[:-1])
+        owner = pattern[:-2]
+        repo_owner, separator, repo_name = repository.partition("/")
+        return repo_owner == owner and separator == "/" and bool(repo_name) and "/" not in repo_name
     return pattern == repository
 
 
