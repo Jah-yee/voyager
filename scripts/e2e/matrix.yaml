@@ -249,6 +249,7 @@ scenarios:
       status: "ready"
       label_present: "clearance-ready"
       unresolved_codex_thread_count: 0
+      sync_actions_count: 1
     phase_b_expected:
       codex_severity: "P2"
       effective_severity: "P2"

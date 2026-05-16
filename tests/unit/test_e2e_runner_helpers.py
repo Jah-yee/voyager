@@ -22,6 +22,7 @@ from scripts.e2e.run_matrix import (  # noqa: E402
     _compare,
     _extract_pr_number,
     _flatten_writeback,
+    _has_review_thread_signal,
     _poll_for_writeback,
     _post_approval_review,
 )
@@ -323,6 +324,61 @@ def test_poll_since_ts_excludes_old_records(monkeypatch) -> None:
     assert wb["stale"] is False
 
 
+def test_poll_review_thread_signal_skips_late_setup_approval(monkeypatch) -> None:
+    """current_approval creates an approval webhook that can arrive after the marker.
+
+    When a scenario posts Codex-shaped review threads, the runner must ignore
+    setup-only approval writebacks even if they are newer than the real
+    thread-derived writeback.
+    """
+    transport = _mock_transport(
+        [
+            (
+                200,
+                {
+                    "writebacks": [
+                        {
+                            "pr_number": 42,
+                            "event": "pull_request_review_comment",
+                            "ts": "2026-05-15T12:00:02+00:00",
+                            "source": "codex-thread",
+                            "automation": {
+                                "status": "ready",
+                                "unresolved_codex_thread_count": 0,
+                                "sync_actions_count": 1,
+                            },
+                        },
+                        {
+                            "pr_number": 42,
+                            "event": "pull_request_review",
+                            "ts": "2026-05-15T12:00:03+00:00",
+                            "source": "setup-approval",
+                            "automation": {
+                                "status": "ready",
+                                "unresolved_codex_thread_count": 0,
+                                "sync_actions_count": 0,
+                            },
+                        },
+                    ]
+                },
+            ),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        require_review_thread_signal=True,
+    )
+    assert err is None
+    assert wb["source"] == "codex-thread"
+
+
 def test_poll_fail_fast_on_404(monkeypatch) -> None:
     """404 = endpoint not enabled — fail fast, don't retry until timeout."""
     transport = _mock_transport([(404, {"detail": "Not found"})])
@@ -418,3 +474,15 @@ def test_post_approval_review_posts_current_head_approval(monkeypatch) -> None:
     payload = json.loads(request.content)
     assert payload["commit_id"] == "abc123"
     assert payload["event"] == "APPROVE"
+
+
+def test_has_review_thread_signal_accepts_unresolved_or_sync_counts() -> None:
+    assert _has_review_thread_signal(
+        {"automation": {"unresolved_codex_thread_count": 1, "sync_actions_count": 0}}
+    )
+    assert _has_review_thread_signal(
+        {"automation": {"unresolved_codex_thread_count": 0, "sync_actions_count": "1"}}
+    )
+    assert not _has_review_thread_signal(
+        {"automation": {"unresolved_codex_thread_count": 0, "sync_actions_count": 0}}
+    )

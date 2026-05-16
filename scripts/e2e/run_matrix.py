@@ -534,6 +534,32 @@ def _flatten_writeback(writeback: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _positive_count(value: Any) -> int:
+    """Coerce voyager count fields defensively for poll-time filtering."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _has_review_thread_signal(writeback: dict[str, Any]) -> bool:
+    """Return True when a writeback includes Codex-thread-derived work.
+
+    Setup-only approval reviews share the ``pull_request_review`` event type
+    with Codex review webhooks. They do not carry unresolved Codex threads or
+    sync actions, so these automation counts distinguish the real scenario
+    verdict from a delayed setup approval webhook.
+    """
+    automation = writeback.get("automation") or {}
+    return (
+        _positive_count(automation.get("unresolved_codex_thread_count")) > 0
+        or _positive_count(automation.get("sync_actions_count")) > 0
+    )
+
+
 def _poll_for_writeback(
     *,
     voyager_url: str,
@@ -544,6 +570,7 @@ def _poll_for_writeback(
     event_filter: tuple[str, ...] = ("pull_request_review", "pull_request_review_comment"),
     since_ts: str | None = None,
     repository: str | None = None,
+    require_review_thread_signal: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Poll voyager's /e2e/recent_writebacks until we see a matching record.
 
@@ -556,6 +583,9 @@ def _poll_for_writeback(
         runner captures a timestamp BEFORE posting the review and passes
         it here so any pre-review writeback is excluded from the match
         even if it shares the event type (defense-in-depth).
+      - ``require_review_thread_signal``: ignore setup-only approval reviews
+        by requiring voyager's automation summary to include either unresolved
+        Codex threads or thread sync actions.
 
     Returns (writeback_dict, error_message). On success, error_message is None.
     On non-transient HTTP errors (404 = endpoint not enabled; 401/403 = auth
@@ -619,6 +649,8 @@ def _poll_for_writeback(
                     continue
                 if since_ts and (wb.get("ts") or "") < since_ts:
                     continue
+                if require_review_thread_signal and not _has_review_thread_signal(wb):
+                    continue
                 candidates.append(wb)
             if candidates:
                 candidates.sort(key=lambda w: w.get("ts") or "")
@@ -626,7 +658,8 @@ def _poll_for_writeback(
             time.sleep(interval_s)
 
     suffix = f" (last transient: {last_transient})" if last_transient else ""
-    return None, f"timed out after {timeout_s}s waiting for PR #{pr_number}{suffix}"
+    signal_note = " with review-thread signal" if require_review_thread_signal else ""
+    return None, f"timed out after {timeout_s}s waiting for PR #{pr_number}{signal_note}{suffix}"
 
 
 def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
@@ -860,6 +893,9 @@ def _run_scenario(
         # No timing assumptions needed.
 
         # 4. Poll voyager for our PR's writeback (post-review event only).
+        require_review_thread_signal = any(
+            "thread_reply" not in review for review in scenario.get("review", [])
+        )
         writeback, poll_error = _poll_for_writeback(
             voyager_url=cfg.voyager_url,
             pr_number=pr_number,
@@ -868,6 +904,7 @@ def _run_scenario(
             auth_token=cfg.voyager_e2e_token,
             since_ts=review_start_ts,
             repository=cfg.sandbox_repo,
+            require_review_thread_signal=require_review_thread_signal,
         )
         if writeback is None:
             verdict = "failed"
