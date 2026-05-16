@@ -901,3 +901,72 @@ def test_swm_ready_with_case_mismatched_configured_approver_clears_to_ready(
     )
     assert CLEARANCE_READY_LABEL in result["labels"]["add"]
     assert CLEARANCE_READY_FOR_APPROVAL_LABEL not in result["labels"]["add"]
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap routing: SWM ready + env set + no current approvals →
+# clearance_ready_for_approval (not clearance_ready, not clearance_pending).
+#
+# This test is RED until the overlay's _has_non_thread_reason guard is fixed:
+# "No approval on the current PR head." must NOT be treated as a non-thread
+# blocker when env is set; instead it should be lifted to ready_for_approval.
+# ---------------------------------------------------------------------------
+
+
+def test_swm_ready_with_env_set_and_no_approvals_routes_to_ready_for_approval(
+    monkeypatch,
+) -> None:
+    """SWM automation status=ready + env=frankyxhl + empty current_approvals → clearance_ready_for_approval.
+
+    The base evaluation is clearance_pending (because no approval exists yet and
+    the evaluator's elif-reasons branch fires). The overlay receives this pending
+    evaluation with automation status=ready. With env set and no configured-user
+    approval present, the desired output is clearance_ready_for_approval.
+
+    Currently FAILS because _has_non_thread_reason returns True for the
+    "No approval on the current PR head." reason, causing the overlay to
+    pass-through the base clearance_pending evaluation unchanged.
+    """
+    from voyager.bots.clearance.constants import (
+        CLEARANCE_READY_FOR_APPROVAL_LABEL,
+        reset_review_request_users_cache,
+    )
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "frankyxhl")
+    reset_review_request_users_cache()
+
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "t-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    # Build a base evaluation that looks like what evaluate_clearance_snapshot
+    # produces when env is set but no current-head approval exists yet:
+    # status=clearance_pending, reason includes "No approval on the current PR head."
+    ev = _blocked_evaluation()
+    ev["status"] = "clearance_pending"
+    ev["conclusion"] = "neutral"
+    ev["review_state"]["unresolved_thread_count"] = 0
+    ev["review_state"]["current_approvals"] = []
+    ev["confidence"]["reasons"] = ["No approval on the current PR head."]
+    ev["labels"] = {
+        "add": ["clearance-1-pending"],
+        "remove": [
+            "clearance-2-blocked",
+            "clearance-3-ready-for-approval",
+            "clearance-4-ready-for-merge",
+        ],
+    }
+
+    result = apply_swm_overlay(ev, automation)
+
+    assert result["status"] == "clearance_ready_for_approval", (
+        f"Expected clearance_ready_for_approval but got {result['status']!r}; "
+        f"labels.add={result['labels']['add']!r}"
+    )
+    assert result["labels"]["add"] == [CLEARANCE_READY_FOR_APPROVAL_LABEL], (
+        f"Expected [{CLEARANCE_READY_FOR_APPROVAL_LABEL!r}] but got {result['labels']['add']!r}"
+    )

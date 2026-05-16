@@ -152,8 +152,17 @@ async def test_no_dispatch_when_status_is_clearance_pending(monkeypatch) -> None
     monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "required-approver")
     reset_review_request_users_cache()
 
-    # No approvals → clearance_pending → no review request dispatch
-    client = _StubClient(reviews=[])
+    # Draft PR + env set + no approvals → clearance_pending → no review request dispatch
+    pr_data = {
+        "number": 77,
+        "state": "open",
+        "draft": True,
+        "html_url": "https://github.test/pull/77",
+        "head": {"sha": "sha-abc"},
+        "user": {"login": "pr-author"},
+        "requested_reviewers": [],
+    }
+    client = _StubClient(pull_request_data=pr_data, reviews=[])
     result = await _run_enrich(client, _base_route())
     assert client._request_reviewers_calls == []
     assert result["validation"]["status"] == "clearance_pending"

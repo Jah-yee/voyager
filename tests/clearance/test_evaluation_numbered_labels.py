@@ -384,23 +384,6 @@ def test_env_set_with_blocking_reviewer_gives_clearance_blocked(monkeypatch) -> 
     assert ev["status"] == "clearance_blocked"
 
 
-def test_env_set_no_approval_gives_clearance_pending_not_ready_for_approval(monkeypatch) -> None:
-    from voyager.bots.clearance.constants import reset_review_request_users_cache
-
-    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "required-approver")
-    reset_review_request_users_cache()
-
-    ev = _evaluate(
-        {
-            "pull_request": _open_pr(),
-            "reviews": [],
-            "review_threads": [],
-        }
-    )
-    # No approval at all → still clearance_pending (not ready_for_approval)
-    assert ev["status"] == "clearance_pending"
-
-
 # ---------------------------------------------------------------------------
 # Case-insensitive configured-approver match (Trinity round-2 findings)
 # ---------------------------------------------------------------------------
@@ -440,3 +423,121 @@ def test_configured_approver_reverse_case(monkeypatch) -> None:
     )
     assert ev["status"] == "clearance_ready"
     assert ev["labels"]["add"] == ["clearance-4-ready-for-merge"]
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap routing: env set + no approvals yet → clearance_ready_for_approval
+# These tests are RED until the evaluation.py branch-chain is fixed so that
+# "No approval on the current PR head." does NOT fire the `elif reasons:` branch
+# when env is set and the PR is open with no blockers.
+# ---------------------------------------------------------------------------
+
+
+def test_ready_for_approval_when_env_set_and_no_approvals(monkeypatch) -> None:
+    """Open PR, env set, no reviews at all → clearance_ready_for_approval (not clearance_pending)."""
+    from voyager.bots.clearance.constants import reset_review_request_users_cache
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "frankyxhl")
+    reset_review_request_users_cache()
+
+    ev = _evaluate(
+        {
+            "pull_request": _open_pr(),
+            "reviews": [],
+            "review_threads": [],
+        }
+    )
+    assert ev["status"] == "clearance_ready_for_approval", (
+        f"Expected clearance_ready_for_approval but got {ev['status']!r}"
+    )
+    assert ev["labels"]["add"] == ["clearance-3-ready-for-approval"], (
+        f"Expected ['clearance-3-ready-for-approval'] but got {ev['labels']['add']!r}"
+    )
+
+
+def test_ready_for_approval_when_env_set_and_stale_approval_only(monkeypatch) -> None:
+    """Open PR, env set, one stale approval only → clearance_ready_for_approval (not clearance_pending)."""
+    from voyager.bots.clearance.constants import reset_review_request_users_cache
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "frankyxhl")
+    reset_review_request_users_cache()
+
+    ev = _evaluate(
+        {
+            "pull_request": _open_pr(),
+            "reviews": [_approval(commit_id="stale-sha", login="alice")],
+            "review_threads": [],
+        }
+    )
+    assert ev["status"] == "clearance_ready_for_approval", (
+        f"Expected clearance_ready_for_approval but got {ev['status']!r}"
+    )
+    assert ev["labels"]["add"] == ["clearance-3-ready-for-approval"], (
+        f"Expected ['clearance-3-ready-for-approval'] but got {ev['labels']['add']!r}"
+    )
+
+
+def test_pending_when_env_set_but_pr_draft(monkeypatch) -> None:
+    """Draft PR + env set + no approvals → clearance_pending (draft is a hard preempt)."""
+    from voyager.bots.clearance.constants import reset_review_request_users_cache
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "frankyxhl")
+    reset_review_request_users_cache()
+
+    ev = _evaluate(
+        {
+            "pull_request": _open_pr(draft=True),
+            "reviews": [],
+            "review_threads": [],
+        }
+    )
+    assert ev["status"] == "clearance_pending", (
+        f"Expected clearance_pending for draft PR but got {ev['status']!r}"
+    )
+    assert ev["labels"]["add"] == ["clearance-1-pending"], (
+        f"Expected ['clearance-1-pending'] but got {ev['labels']['add']!r}"
+    )
+
+
+def test_pending_when_env_set_but_pr_closed(monkeypatch) -> None:
+    """Closed PR + env set + no approvals → clearance_pending (closed is a hard preempt)."""
+    from voyager.bots.clearance.constants import reset_review_request_users_cache
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "frankyxhl")
+    reset_review_request_users_cache()
+
+    ev = _evaluate(
+        {
+            "pull_request": _open_pr(state="closed"),
+            "reviews": [],
+            "review_threads": [],
+        }
+    )
+    assert ev["status"] == "clearance_pending", (
+        f"Expected clearance_pending for closed PR but got {ev['status']!r}"
+    )
+    assert ev["labels"]["add"] == ["clearance-1-pending"], (
+        f"Expected ['clearance-1-pending'] but got {ev['labels']['add']!r}"
+    )
+
+
+def test_blocked_still_wins_over_ready_for_approval(monkeypatch) -> None:
+    """Open PR, env set, no current approvals, but one unresolved thread → clearance_blocked."""
+    from voyager.bots.clearance.constants import reset_review_request_users_cache
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "frankyxhl")
+    reset_review_request_users_cache()
+
+    ev = _evaluate(
+        {
+            "pull_request": _open_pr(),
+            "reviews": [],
+            "review_threads": [{"isResolved": False, "comments": {"nodes": []}}],
+        }
+    )
+    assert ev["status"] == "clearance_blocked", (
+        f"Expected clearance_blocked but got {ev['status']!r}"
+    )
+    assert ev["labels"]["add"] == ["clearance-2-blocked"], (
+        f"Expected ['clearance-2-blocked'] but got {ev['labels']['add']!r}"
+    )

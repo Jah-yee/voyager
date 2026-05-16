@@ -164,15 +164,25 @@ def evaluate_clearance_snapshot(snapshot: dict[str, Any]) -> ClearanceEvaluation
         user.lower() in current_approvals_lc for user in configured
     )
 
+    # Hard preempts that override env-routing semantics.
+    is_draft_or_closed = bool(pull_request.get("draft")) or pull_request.get("state") != "open"
+
     if blocking_reviewers or unresolved_threads:
         status = "clearance_blocked"
         conclusion = "failure"
         label = CLEARANCE_BLOCKED_LABEL
-    elif reasons:
+    elif is_draft_or_closed:
+        # Draft / closed is always pending regardless of env config — the operator
+        # action is "ready the PR for review", not "find a reviewer".
         status = "clearance_pending"
         conclusion = "neutral"
         label = CLEARANCE_PENDING_LABEL
     elif configured and not configured_approval_present:
+        # Env-driven routing: automation is green AND named human(s) have not
+        # approved current head. This is precisely clearance_ready_for_approval —
+        # the gate the dispatcher fires against. Codex-bot PR #26 review P1:
+        # was previously unreachable because the preceding `elif reasons:`
+        # branch caught "No approval on the current PR head." first.
         status = "clearance_ready_for_approval"
         conclusion = "neutral"
         label = CLEARANCE_READY_FOR_APPROVAL_LABEL
@@ -181,6 +191,12 @@ def evaluate_clearance_snapshot(snapshot: dict[str, Any]) -> ClearanceEvaluation
             + ", ".join("@" + user for user in configured)
             + "."
         )
+    elif reasons:
+        # Env unset and some reason exists (e.g. no current-head approval) →
+        # pre-#25 legacy semantics: pending.
+        status = "clearance_pending"
+        conclusion = "neutral"
+        label = CLEARANCE_PENDING_LABEL
     else:
         status = "clearance_ready"
         conclusion = "success"

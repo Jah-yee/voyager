@@ -24,6 +24,26 @@ def _has_non_thread_reason(reasons: list[Any]) -> bool:
     return any("review thread(s) are unresolved." not in str(reason) for reason in reasons)
 
 
+_PREEMPTING_REASON_PREFIXES = (
+    "PR is still draft.",
+    "PR is not open.",
+    "Changes requested by:",
+)
+
+
+def _has_preempting_reason(reasons: list[Any]) -> bool:
+    """True if reasons include a blocker the overlay must always preserve.
+
+    Unlike `_has_non_thread_reason`, this excludes approval-state reasons
+    ("No approval on the current PR head.", "Only stale approval(s)..."),
+    because when env is configured those are precisely the ready_for_approval
+    state's domain — the overlay must lift them, not preserve them.
+    """
+    return any(
+        any(str(r).startswith(prefix) for prefix in _PREEMPTING_REASON_PREFIXES) for r in reasons
+    )
+
+
 def apply_swm_overlay(
     evaluation: ClearanceEvaluation, automation: dict[str, Any] | None
 ) -> ClearanceEvaluation:
@@ -39,12 +59,19 @@ def apply_swm_overlay(
         review_state = evaluation.get("review_state") or {}
         eval_confidence = evaluation.get("confidence") or {}
         reasons = eval_confidence.get("reasons") or []
-        has_non_thread_blockers = bool(
-            review_state.get("blocking_reviewers")
-            or (evaluation.get("status") == "clearance_pending")
-            or _has_non_thread_reason(reasons)
+        configured = configured_review_request_users()
+        has_preempting_blockers = bool(
+            review_state.get("blocking_reviewers") or _has_preempting_reason(reasons)
         )
-        if has_non_thread_blockers:
+        if has_preempting_blockers:
+            return evaluation
+        # When env is UNSET, apply the legacy guard: any non-thread reason
+        # (including approval-state reasons) preserves the base evaluation.
+        # When env is SET, approval-state reasons are the ready_for_approval
+        # domain — the overlay must lift them, not preserve them.
+        if not configured and (
+            evaluation.get("status") == "clearance_pending" or _has_non_thread_reason(reasons)
+        ):
             return evaluation
         # Preserve when the live evaluator sees more unresolved threads than
         # Clearance can account for. The allowance includes unresolved Codex
@@ -59,7 +86,6 @@ def apply_swm_overlay(
         reason = automation.get("reason") or f"Clearance automation status is {swm_status}."
         # Configured-approver gate: if a human approver is required and hasn't approved yet,
         # produce ready_for_approval instead of ready.
-        configured = configured_review_request_users()
         review_state = evaluation.get("review_state") or {}
         current_approvals = review_state.get("current_approvals") or []
         current_approvals_lc = {u.lower() for u in current_approvals}
