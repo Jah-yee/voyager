@@ -10,6 +10,9 @@
 #   category           — A / B / C / D / E / F (see below)
 #   description        — what this scenario tests, in plain English
 #   setup              — PR + branch setup (file content goes into the branch)
+#                        current_approval: true submits an APPROVE review from
+#                        the test GitHub App on the current head before the
+#                        Codex-shaped review thread is posted.
 #   review             — review thread(s) the test bot posts. Each list entry
 #                        is EITHER a single inline-comment review (path/line/body)
 #                        OR a thread_reply spec (no path/line; refers to a prior
@@ -96,6 +99,7 @@ scenarios:
     setup:
       branch: "e2e/b1-demotion-unprotected"
       file_path: ".github/workflows/ci.yml"
+      current_approval: true
       file_content: |
         name: ci
         on:
@@ -115,6 +119,7 @@ scenarios:
           only ignored paths skip the check entirely, weakening branch protection.
     expected:
       status: "ready_with_low_priority"
+      label_present: "clearance-ready"
       automation_reason_substring: "low-priority"
       unresolved_codex_thread_count: 1
     phase_b_expected:
@@ -133,6 +138,7 @@ scenarios:
     setup:
       branch: "e2e/c1-beta-p3-only"
       file_path: "samples/c1.py"
+      current_approval: true
       file_content: |
         # Sample file for E2E case C1.
         def greet(name):
@@ -213,6 +219,7 @@ scenarios:
     setup:
       branch: "e2e/f1-investigator-resolved"
       file_path: "samples/f1.py"
+      current_approval: true
       file_content: |
         # Sample file for E2E case F1.
         def parse_int(s):
@@ -242,6 +249,7 @@ scenarios:
       status: "ready"
       label_present: "clearance-ready"
       unresolved_codex_thread_count: 0
+      sync_actions_count: 1
     phase_b_expected:
       codex_severity: "P2"
       effective_severity: "P2"

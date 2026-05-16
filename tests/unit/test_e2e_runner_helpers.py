@@ -8,6 +8,7 @@ pins their behavior.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -21,7 +22,9 @@ from scripts.e2e.run_matrix import (  # noqa: E402
     _compare,
     _extract_pr_number,
     _flatten_writeback,
+    _matches_allowed_webhook_ids,
     _poll_for_writeback,
+    _post_approval_review,
 )
 
 # ---------------------------------------------------------------------------
@@ -321,6 +324,278 @@ def test_poll_since_ts_excludes_old_records(monkeypatch) -> None:
     assert wb["stale"] is False
 
 
+def test_poll_allowed_webhook_ids_skip_matching_setup_approval(monkeypatch) -> None:
+    """A delayed approval can match live state but must not match provenance."""
+    transport = _mock_transport(
+        [
+            (
+                200,
+                {
+                    "writebacks": [
+                        {
+                            "pr_number": 42,
+                            "event": "pull_request_review",
+                            "ts": "2026-05-15T12:00:02+00:00",
+                            "source": "codex-thread",
+                            "webhook": {"review_id": 200},
+                            "planned": {"add_labels": ["clearance-ready"]},
+                            "automation": {
+                                "status": "ready_with_low_priority",
+                                "unresolved_codex_thread_count": 1,
+                                "sync_actions_count": 0,
+                            },
+                        },
+                        {
+                            "pr_number": 42,
+                            "event": "pull_request_review",
+                            "ts": "2026-05-15T12:00:03+00:00",
+                            "source": "setup-approval",
+                            "webhook": {"review_id": 100},
+                            "planned": {"add_labels": ["clearance-ready"]},
+                            "automation": {
+                                "status": "ready_with_low_priority",
+                                "unresolved_codex_thread_count": 1,
+                                "sync_actions_count": 0,
+                            },
+                        },
+                    ]
+                },
+            ),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        allowed_review_ids=(200,),
+        expected_actual={
+            "status": "ready_with_low_priority",
+            "label_present": "clearance-ready",
+            "unresolved_codex_thread_count": 1,
+        },
+    )
+    assert err is None
+    assert wb["source"] == "codex-thread"
+
+
+def test_poll_expected_actual_waits_past_pre_reply_verdict(monkeypatch) -> None:
+    """F-class scenarios must not stop on the pre-reply blocked writeback."""
+    pre_reply = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:02+00:00",
+        "source": "pre-reply",
+        "webhook": {"review_comment_id": 900},
+        "planned": {"add_labels": ["clearance-blocked"]},
+        "automation": {
+            "status": "blocked",
+            "unresolved_codex_thread_count": 1,
+            "sync_actions_count": 0,
+        },
+    }
+    final_reply = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:04+00:00",
+        "source": "final-reply",
+        "webhook": {"review_comment_id": 901},
+        "planned": {"add_labels": ["clearance-ready"]},
+        "automation": {
+            "status": "ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    }
+    transport = _mock_transport(
+        [
+            (200, {"writebacks": [pre_reply]}),
+            (200, {"writebacks": [pre_reply, final_reply]}),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        allowed_review_comment_ids=(900, 901),
+        expected_actual={
+            "status": "ready",
+            "label_present": "clearance-ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    )
+    assert err is None
+    assert wb["source"] == "final-reply"
+
+
+def test_poll_reply_scenario_review_id_matches_only_review_webhook(monkeypatch) -> None:
+    """A shared review id must not let a delayed comment delivery match."""
+    delayed_original = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:02+00:00",
+        "source": "delayed-original-review-comment",
+        "webhook": {"review_id": 300, "review_comment_id": 900},
+        "planned": {"add_labels": ["clearance-ready"]},
+        "automation": {
+            "status": "ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    }
+    reply = {
+        "pr_number": 42,
+        "event": "pull_request_review",
+        "ts": "2026-05-15T12:00:04+00:00",
+        "source": "reply-review",
+        "webhook": {"review_id": 300},
+        "planned": {"add_labels": ["clearance-ready"]},
+        "automation": {
+            "status": "ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    }
+    transport = _mock_transport(
+        [
+            (200, {"writebacks": [delayed_original]}),
+            (200, {"writebacks": [delayed_original, reply]}),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        allowed_review_ids=(300,),
+        allowed_review_comment_ids=(901,),
+        expected_actual={
+            "status": "ready",
+            "label_present": "clearance-ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    )
+    assert err is None
+    assert wb["source"] == "reply-review"
+
+
+def test_poll_expected_actual_uses_newest_candidate_not_older_match(monkeypatch) -> None:
+    """A newer mismatch must block returning an older matching writeback."""
+    older_ready = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:02+00:00",
+        "source": "older-ready",
+        "webhook": {"review_comment_id": 900},
+        "planned": {"add_labels": ["clearance-ready"]},
+        "automation": {
+            "status": "ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    }
+    newer_blocked = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:04+00:00",
+        "source": "newer-blocked",
+        "webhook": {"review_comment_id": 901},
+        "planned": {"add_labels": ["clearance-blocked"]},
+        "automation": {
+            "status": "blocked",
+            "unresolved_codex_thread_count": 1,
+            "sync_actions_count": 0,
+        },
+    }
+    newest_ready = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:06+00:00",
+        "source": "newest-ready",
+        "webhook": {"review_comment_id": 902},
+        "planned": {"add_labels": ["clearance-ready"]},
+        "automation": {
+            "status": "ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    }
+    transport = _mock_transport(
+        [
+            (200, {"writebacks": [older_ready, newer_blocked]}),
+            (200, {"writebacks": [older_ready, newer_blocked, newest_ready]}),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        allowed_review_comment_ids=(900, 901, 902),
+        expected_actual={
+            "status": "ready",
+            "label_present": "clearance-ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    )
+    assert err is None
+    assert wb["source"] == "newest-ready"
+
+
+def test_poll_expected_actual_allows_stale_skip_without_current_approval(monkeypatch) -> None:
+    """E-class stale-skip writebacks do not have review-thread signal counts."""
+    stale_skip = {
+        "pr_number": 42,
+        "event": "pull_request_review",
+        "ts": "2026-05-15T12:00:02+00:00",
+        "webhook": {"review_id": 500},
+        "skipped": "stale_verdict",
+        "automation": {
+            "status": "stale_verdict_skip",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 0,
+        },
+    }
+    transport = _mock_transport([(200, {"writebacks": [stale_skip]})])
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        allowed_review_ids=(500,),
+        expected_actual={
+            "automation_status": "stale_verdict_skip",
+            "writeback_skipped": True,
+        },
+    )
+    assert err is None
+    assert wb["skipped"] == "stale_verdict"
+
+
 def test_poll_fail_fast_on_404(monkeypatch) -> None:
     """404 = endpoint not enabled — fail fast, don't retry until timeout."""
     transport = _mock_transport([(404, {"detail": "Not found"})])
@@ -387,3 +662,55 @@ def test_poll_sends_auth_token_header(monkeypatch) -> None:
         auth_token="secret-abc",
     )
     assert captured["token"] == "secret-abc"
+
+
+def test_post_approval_review_posts_current_head_approval(monkeypatch) -> None:
+    """current_approval setup uses the test bot token and pins the head SHA."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": 123, "state": "APPROVED"})
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: original(transport=transport, **kw))
+
+    result = _post_approval_review(
+        sandbox_repo="iterwheel/voyager-sandbox",
+        pr_number=42,
+        commit_sha="abc123",
+        token="installation-token",
+    )
+
+    assert result["state"] == "APPROVED"
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.path == "/repos/iterwheel/voyager-sandbox/pulls/42/reviews"
+    assert request.headers["Authorization"] == "token installation-token"
+    payload = json.loads(request.content)
+    assert payload["commit_id"] == "abc123"
+    assert payload["event"] == "APPROVE"
+
+
+def test_matches_allowed_webhook_ids_accepts_review_or_comment_ids() -> None:
+    assert _matches_allowed_webhook_ids(
+        {"event": "pull_request_review", "webhook": {"review_id": 200}},
+        allowed_review_ids=(200,),
+    )
+    assert _matches_allowed_webhook_ids(
+        {"event": "pull_request_review_comment", "webhook": {"review_comment_id": 901}},
+        allowed_review_comment_ids=(901,),
+    )
+    assert not _matches_allowed_webhook_ids(
+        {"event": "pull_request_review", "webhook": {"review_id": 100}},
+        allowed_review_ids=(200,),
+    )
+    assert not _matches_allowed_webhook_ids(
+        {"event": "pull_request_review_comment", "webhook": {"review_id": 200}},
+        allowed_review_ids=(200,),
+    )
+    assert not _matches_allowed_webhook_ids(
+        {"event": "pull_request_review", "webhook": {"review_comment_id": 901}},
+        allowed_review_comment_ids=(901,),
+    )
