@@ -41,11 +41,11 @@ Current `iterwheel` sandbox registration:
 - App slug: `voyager-e2e-bot`
 - App ID: `3723890`
 - Webhook: inactive
-- Install target: `iterwheel` only; install on `iterwheel/voyager-sandbox`
+- Installation ID: `132608801`
+- Install target: `iterwheel` only; currently installed only on
+  `iterwheel/voyager-sandbox`
 - Private key location: `~/.voyager/secrets/voyager-e2e-bot.pem` (never commit
   the PEM)
-- Installation ID: capture from the GitHub installation URL after installing
-  the App, then export it as `VOYAGER_E2E_TEST_BOT_INSTALLATION_ID`
 
 ### 2. Wire it into voyager's config
 
