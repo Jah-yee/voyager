@@ -6,13 +6,15 @@ from typing import Any, cast
 
 from .classify import CodexBodySignal
 from .constants import (
+    ALL_CLEARANCE_LABELS,
     CLEARANCE_AGENT_SLUG,
     CLEARANCE_BLOCKED_LABEL,
     CLEARANCE_CODEX_REACTION_FOLLOW_UP_ACTION,
     CLEARANCE_CODEX_REACTION_FOLLOW_UP_EVENT,
-    CLEARANCE_LABELS,
     CLEARANCE_PENDING_LABEL,
+    CLEARANCE_READY_FOR_APPROVAL_LABEL,
     CLEARANCE_READY_LABEL,
+    configured_review_request_users,
 )
 from .evaluation import ClearanceEvaluation
 
@@ -20,6 +22,26 @@ from .evaluation import ClearanceEvaluation
 def _has_non_thread_reason(reasons: list[Any]) -> bool:
     """Return true when evaluator reasons include blockers automation cannot clear."""
     return any("review thread(s) are unresolved." not in str(reason) for reason in reasons)
+
+
+_PREEMPTING_REASON_PREFIXES = (
+    "PR is still draft.",
+    "PR is not open.",
+    "Changes requested by:",
+)
+
+
+def _has_preempting_reason(reasons: list[Any]) -> bool:
+    """True if reasons include a blocker the overlay must always preserve.
+
+    Unlike `_has_non_thread_reason`, this excludes approval-state reasons
+    ("No approval on the current PR head.", "Only stale approval(s)..."),
+    because when env is configured those are precisely the ready_for_approval
+    state's domain — the overlay must lift them, not preserve them.
+    """
+    return any(
+        any(str(r).startswith(prefix) for prefix in _PREEMPTING_REASON_PREFIXES) for r in reasons
+    )
 
 
 def apply_swm_overlay(
@@ -37,12 +59,19 @@ def apply_swm_overlay(
         review_state = evaluation.get("review_state") or {}
         eval_confidence = evaluation.get("confidence") or {}
         reasons = eval_confidence.get("reasons") or []
-        has_non_thread_blockers = bool(
-            review_state.get("blocking_reviewers")
-            or (evaluation.get("status") == "clearance_pending")
-            or _has_non_thread_reason(reasons)
+        configured = configured_review_request_users()
+        has_preempting_blockers = bool(
+            review_state.get("blocking_reviewers") or _has_preempting_reason(reasons)
         )
-        if has_non_thread_blockers:
+        if has_preempting_blockers:
+            return evaluation
+        # When env is UNSET, apply the legacy guard: any non-thread reason
+        # (including approval-state reasons) preserves the base evaluation.
+        # When env is SET, approval-state reasons are the ready_for_approval
+        # domain — the overlay must lift them, not preserve them.
+        if not configured and (
+            evaluation.get("status") == "clearance_pending" or _has_non_thread_reason(reasons)
+        ):
             return evaluation
         # Preserve when the live evaluator sees more unresolved threads than
         # Clearance can account for. The allowance includes unresolved Codex
@@ -55,12 +84,34 @@ def apply_swm_overlay(
             if unresolved_count > unresolved_codex_count + sync_actions_count:
                 return evaluation
         reason = automation.get("reason") or f"Clearance automation status is {swm_status}."
+        # Configured-approver gate: if a human approver is required and hasn't approved yet,
+        # produce ready_for_approval instead of ready.
+        review_state = evaluation.get("review_state") or {}
+        current_approvals = review_state.get("current_approvals") or []
+        current_approvals_lc = {u.lower() for u in current_approvals}
+        configured_approval_present = bool(configured) and any(
+            user.lower() in current_approvals_lc for user in configured
+        )
+        if configured and not configured_approval_present:
+            updated["status"] = "clearance_ready_for_approval"
+            updated["conclusion"] = "neutral"
+            updated["summary"] = "Clearance is ready for human approval."
+            updated["labels"] = {
+                "add": [CLEARANCE_READY_FOR_APPROVAL_LABEL],
+                "remove": [
+                    item
+                    for item in ALL_CLEARANCE_LABELS
+                    if item != CLEARANCE_READY_FOR_APPROVAL_LABEL
+                ],
+            }
+            updated["reactions"] = {"add": ["eyes"], "remove": ["+1", "rocket"]}
+            return cast(ClearanceEvaluation, updated)
         updated["status"] = "clearance_ready"
         updated["conclusion"] = "success"
         updated["summary"] = reason
         updated["labels"] = {
             "add": [CLEARANCE_READY_LABEL],
-            "remove": [item for item in CLEARANCE_LABELS if item != CLEARANCE_READY_LABEL],
+            "remove": [item for item in ALL_CLEARANCE_LABELS if item != CLEARANCE_READY_LABEL],
         }
         updated["reactions"] = {"add": ["+1"], "remove": ["eyes", "rocket"]}
         return cast(ClearanceEvaluation, updated)
@@ -89,7 +140,7 @@ def apply_swm_overlay(
 
     updated["labels"] = {
         "add": [label],
-        "remove": [item for item in CLEARANCE_LABELS if item != label],
+        "remove": [item for item in ALL_CLEARANCE_LABELS if item != label],
     }
     updated["reactions"] = {"add": ["eyes"], "remove": ["+1", "rocket"]}
     return cast(ClearanceEvaluation, updated)

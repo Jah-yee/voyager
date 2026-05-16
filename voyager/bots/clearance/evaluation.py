@@ -6,11 +6,13 @@ from datetime import UTC, datetime
 from typing import Any, TypedDict
 
 from .constants import (
+    ALL_CLEARANCE_LABELS,
     CLEARANCE_BLOCKED_LABEL,
     CLEARANCE_CLASSIFIER_VERSION,
-    CLEARANCE_LABELS,
     CLEARANCE_PENDING_LABEL,
+    CLEARANCE_READY_FOR_APPROVAL_LABEL,
     CLEARANCE_READY_LABEL,
+    configured_review_request_users,
 )
 
 
@@ -49,7 +51,7 @@ class ClearanceEvaluation(TypedDict):
     """Clearance readiness evaluation with GitHub-actionable metadata.
 
     All fields are always present:
-    - status: one of clearance_ready | clearance_pending | clearance_blocked
+    - status: one of clearance_ready | clearance_pending | clearance_blocked | clearance_ready_for_approval
     - conclusion: one of success | neutral | failure
     - issue_number: PR number (duplicated from pr_number for compatibility)
     - pr_number: GitHub PR number
@@ -156,11 +158,42 @@ def evaluate_clearance_snapshot(snapshot: dict[str, Any]) -> ClearanceEvaluation
         else:
             reasons.append("No approval on the current PR head.")
 
+    configured = configured_review_request_users()
+    current_approvals_lc = {u.lower() for u in current_approvals}
+    configured_approval_present = bool(configured) and any(
+        user.lower() in current_approvals_lc for user in configured
+    )
+
+    # Hard preempts that override env-routing semantics.
+    is_draft_or_closed = bool(pull_request.get("draft")) or pull_request.get("state") != "open"
+
     if blocking_reviewers or unresolved_threads:
         status = "clearance_blocked"
         conclusion = "failure"
         label = CLEARANCE_BLOCKED_LABEL
+    elif is_draft_or_closed:
+        # Draft / closed is always pending regardless of env config — the operator
+        # action is "ready the PR for review", not "find a reviewer".
+        status = "clearance_pending"
+        conclusion = "neutral"
+        label = CLEARANCE_PENDING_LABEL
+    elif configured and not configured_approval_present:
+        # Env-driven routing: automation is green AND named human(s) have not
+        # approved current head. This is precisely clearance_ready_for_approval —
+        # the gate the dispatcher fires against. Codex-bot PR #26 review P1:
+        # was previously unreachable because the preceding `elif reasons:`
+        # branch caught "No approval on the current PR head." first.
+        status = "clearance_ready_for_approval"
+        conclusion = "neutral"
+        label = CLEARANCE_READY_FOR_APPROVAL_LABEL
+        reasons.append(
+            "Awaiting approval from configured reviewer(s): "
+            + ", ".join("@" + user for user in configured)
+            + "."
+        )
     elif reasons:
+        # Env unset and some reason exists (e.g. no current-head approval) →
+        # pre-#25 legacy semantics: pending.
         status = "clearance_pending"
         conclusion = "neutral"
         label = CLEARANCE_PENDING_LABEL
@@ -171,7 +204,7 @@ def evaluate_clearance_snapshot(snapshot: dict[str, Any]) -> ClearanceEvaluation
 
     labels: LabelsDict = {
         "add": [label],
-        "remove": [item for item in CLEARANCE_LABELS if item != label],
+        "remove": [item for item in ALL_CLEARANCE_LABELS if item != label],
     }
     reactions: ReactionsDict = (
         {"add": ["+1"], "remove": ["eyes", "rocket"]}
@@ -208,6 +241,8 @@ def evaluate_clearance_snapshot(snapshot: dict[str, Any]) -> ClearanceEvaluation
         "summary": (
             "Clearance is ready for Countdown."
             if status == "clearance_ready"
+            else "Clearance is ready for human approval."
+            if status == "clearance_ready_for_approval"
             else "Clearance is not ready yet."
         ),
     }

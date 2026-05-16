@@ -15,6 +15,8 @@ thread-only live-evaluator blockers while preserving non-thread blockers.
 
 from __future__ import annotations
 
+import pytest
+
 from voyager.bots.clearance.constants import (
     CLEARANCE_LABELS,
     CLEARANCE_READY_LABEL,
@@ -666,3 +668,305 @@ def test_r6_p1_thread_only_still_overrides() -> None:
     ev = _blocked_evaluation()  # 1 reason: "1 review thread(s) are unresolved."
     result = apply_swm_overlay(ev, automation)
     assert result["conclusion"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# Issue #25: SWM overlay with configured-approver gate
+# ---------------------------------------------------------------------------
+
+
+def _ready_for_approval_evaluation() -> dict:
+    """Minimal clearance_ready_for_approval evaluation (new state from issue #25)."""
+    from voyager.bots.clearance.constants import (
+        ALL_CLEARANCE_LABELS,
+        CLEARANCE_READY_FOR_APPROVAL_LABEL,
+    )
+
+    return {
+        "status": "clearance_ready_for_approval",
+        "conclusion": "neutral",
+        "issue_number": 42,
+        "pr_number": 42,
+        "classifier": "clearance-v1",
+        "summary": "Clearance is ready for human approval.",
+        "review_state": {
+            "current_approvals": ["someone-else"],
+            "stale_approvals": [],
+            "blocking_reviewers": [],
+            "unresolved_thread_count": 0,
+        },
+        "confidence": {
+            "reasons": ["Awaiting approval from configured reviewer(s): @required-approver"],
+            "semantic_fix_verified": False,
+            "semantic_fix_note": "",
+        },
+        "labels": {
+            "add": [CLEARANCE_READY_FOR_APPROVAL_LABEL],
+            "remove": [
+                label
+                for label in ALL_CLEARANCE_LABELS
+                if label != CLEARANCE_READY_FOR_APPROVAL_LABEL
+            ],
+        },
+        "reactions": {"add": ["eyes"], "remove": ["+1", "rocket"]},
+        "pr_url": "https://github.com/example/repo/pull/42",
+        "head_sha": "abc123",
+        "target_kind": "pull_request",
+    }
+
+
+@pytest.fixture(autouse=True)
+def reset_cache(monkeypatch):
+    monkeypatch.delenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", raising=False)
+    from voyager.bots.clearance.constants import reset_review_request_users_cache
+
+    reset_review_request_users_cache()
+    yield
+    reset_review_request_users_cache()
+
+
+def test_swm_ready_with_configured_user_not_approved_produces_ready_for_approval(
+    monkeypatch,
+) -> None:
+    """SWM ready + configured user hasn't approved → clearance_ready_for_approval, NOT clearance_ready."""
+    from voyager.bots.clearance.constants import (
+        CLEARANCE_READY_FOR_APPROVAL_LABEL,
+        reset_review_request_users_cache,
+    )
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "required-approver")
+    reset_review_request_users_cache()
+
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "t-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    ev = _blocked_evaluation()
+    result = apply_swm_overlay(ev, automation)
+    # With configured approver not approved, overlay must produce ready_for_approval
+    assert result["status"] == "clearance_ready_for_approval"
+    assert result["labels"]["add"] == [CLEARANCE_READY_FOR_APPROVAL_LABEL]
+
+
+def test_swm_ready_with_low_priority_configured_user_not_approved(monkeypatch) -> None:
+    """SWM ready_with_low_priority + configured user hasn't approved → ready_for_approval."""
+    from voyager.bots.clearance.constants import (
+        CLEARANCE_READY_FOR_APPROVAL_LABEL,
+        reset_review_request_users_cache,
+    )
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "required-approver")
+    reset_review_request_users_cache()
+
+    automation = {
+        "enabled": True,
+        "status": "ready_with_low_priority",
+        "reason": "all blocking threads RESOLVED; 1 low-priority thread still open",
+        "unresolved_codex_thread_count": 1,
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+    ev = _blocked_evaluation()
+    result = apply_swm_overlay(ev, automation)
+    assert result["status"] == "clearance_ready_for_approval"
+    assert result["labels"]["add"] == [CLEARANCE_READY_FOR_APPROVAL_LABEL]
+
+
+def test_swm_overlay_ready_for_approval_label_remove_includes_legacy(monkeypatch) -> None:
+    """SWM overlay ready_for_approval result includes ALL legacy labels in remove."""
+    from voyager.bots.clearance.constants import (
+        LEGACY_CLEARANCE_LABELS,
+        reset_review_request_users_cache,
+    )
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "required-approver")
+    reset_review_request_users_cache()
+
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "t-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    ev = _blocked_evaluation()
+    result = apply_swm_overlay(ev, automation)
+    remove = result["labels"]["remove"]
+    for label in LEGACY_CLEARANCE_LABELS:
+        assert label in remove, f"Legacy label {label!r} should be in labels['remove']"
+
+
+def test_swm_blocked_branch_remove_includes_legacy_labels() -> None:
+    """SWM blocked overlay includes ALL_CLEARANCE_LABELS (legacy) in labels.remove."""
+    from voyager.bots.clearance.constants import LEGACY_CLEARANCE_LABELS
+
+    automation = {
+        "enabled": True,
+        "status": "blocked",
+        "reason": "high-priority thread open",
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+    result = apply_swm_overlay(_ready_evaluation(), automation)
+    remove = result["labels"]["remove"]
+    for label in LEGACY_CLEARANCE_LABELS:
+        assert label in remove, f"Legacy label {label!r} must be in remove for migration"
+
+
+def test_swm_pending_branch_remove_includes_legacy_labels() -> None:
+    """SWM pending overlay includes legacy labels in labels.remove."""
+    from voyager.bots.clearance.constants import LEGACY_CLEARANCE_LABELS
+
+    automation = {
+        "enabled": True,
+        "status": "pending",
+        "reason": "waiting on SWM tick",
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+    result = apply_swm_overlay(_ready_evaluation(), automation)
+    remove = result["labels"]["remove"]
+    for label in LEGACY_CLEARANCE_LABELS:
+        assert label in remove, f"Legacy label {label!r} must be in remove for migration"
+
+
+def test_swm_error_branch_remove_includes_legacy_labels() -> None:
+    """SWM error overlay includes legacy labels in labels.remove."""
+    from voyager.bots.clearance.constants import LEGACY_CLEARANCE_LABELS
+
+    automation = {
+        "enabled": True,
+        "status": "error",
+        "error": "fetch timeout",
+        "sync_actions": [],
+        "sync_actions_count": 0,
+    }
+    result = apply_swm_overlay(_ready_evaluation(), automation)
+    remove = result["labels"]["remove"]
+    for label in LEGACY_CLEARANCE_LABELS:
+        assert label in remove, f"Legacy label {label!r} must be in remove for migration"
+
+
+def test_swm_ready_no_env_configured_gives_clearance_ready_not_for_approval() -> None:
+    """When env is empty, SWM ready overlay falls back to clearance_ready (legacy behavior)."""
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "t-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    ev = _blocked_evaluation()
+    result = apply_swm_overlay(ev, automation)
+    assert result["status"] == "clearance_ready"
+    assert result["labels"]["add"] == [CLEARANCE_READY_LABEL]
+
+
+def test_swm_ready_with_case_mismatched_configured_approver_clears_to_ready(
+    monkeypatch,
+) -> None:
+    """SWM ready + env 'Frankyxhl' + approval by 'frankyxhl' → clearance_ready (case-insensitive)."""
+    from voyager.bots.clearance.constants import (
+        CLEARANCE_READY_FOR_APPROVAL_LABEL,
+        reset_review_request_users_cache,
+    )
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "Frankyxhl")
+    reset_review_request_users_cache()
+
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "t-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    # Build a blocked evaluation that has 'frankyxhl' in current_approvals (lowercase)
+    ev = _blocked_evaluation()
+    ev["review_state"]["current_approvals"] = ["frankyxhl"]
+
+    result = apply_swm_overlay(ev, automation)
+    # Case-insensitive match: env 'Frankyxhl' matches approval by 'frankyxhl'
+    # → configured approver HAS approved → clearance_ready, NOT clearance_ready_for_approval
+    assert result["status"] == "clearance_ready", (
+        f"Expected clearance_ready but got {result['status']!r}; "
+        f"labels.add={result['labels']['add']!r}"
+    )
+    assert CLEARANCE_READY_LABEL in result["labels"]["add"]
+    assert CLEARANCE_READY_FOR_APPROVAL_LABEL not in result["labels"]["add"]
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap routing: SWM ready + env set + no current approvals →
+# clearance_ready_for_approval (not clearance_ready, not clearance_pending).
+#
+# This test is RED until the overlay's _has_non_thread_reason guard is fixed:
+# "No approval on the current PR head." must NOT be treated as a non-thread
+# blocker when env is set; instead it should be lifted to ready_for_approval.
+# ---------------------------------------------------------------------------
+
+
+def test_swm_ready_with_env_set_and_no_approvals_routes_to_ready_for_approval(
+    monkeypatch,
+) -> None:
+    """SWM automation status=ready + env=frankyxhl + empty current_approvals → clearance_ready_for_approval.
+
+    The base evaluation is clearance_pending (because no approval exists yet and
+    the evaluator's elif-reasons branch fires). The overlay receives this pending
+    evaluation with automation status=ready. With env set and no configured-user
+    approval present, the desired output is clearance_ready_for_approval.
+
+    Currently FAILS because _has_non_thread_reason returns True for the
+    "No approval on the current PR head." reason, causing the overlay to
+    pass-through the base clearance_pending evaluation unchanged.
+    """
+    from voyager.bots.clearance.constants import (
+        CLEARANCE_READY_FOR_APPROVAL_LABEL,
+        reset_review_request_users_cache,
+    )
+
+    monkeypatch.setenv("VOYAGER_CLEARANCE_REVIEW_REQUEST_USERS", "frankyxhl")
+    reset_review_request_users_cache()
+
+    automation = {
+        "enabled": True,
+        "status": "ready",
+        "reason": "all Codex review threads RESOLVED",
+        "sync_actions": [{"mutation": "resolve_review_thread", "threadId": "t-1"}],
+        "sync_actions_count": 1,
+        "unresolved_codex_thread_count": 0,
+    }
+    # Build a base evaluation that looks like what evaluate_clearance_snapshot
+    # produces when env is set but no current-head approval exists yet:
+    # status=clearance_pending, reason includes "No approval on the current PR head."
+    ev = _blocked_evaluation()
+    ev["status"] = "clearance_pending"
+    ev["conclusion"] = "neutral"
+    ev["review_state"]["unresolved_thread_count"] = 0
+    ev["review_state"]["current_approvals"] = []
+    ev["confidence"]["reasons"] = ["No approval on the current PR head."]
+    ev["labels"] = {
+        "add": ["clearance-1-pending"],
+        "remove": [
+            "clearance-2-blocked",
+            "clearance-3-ready-for-approval",
+            "clearance-4-ready-for-merge",
+        ],
+    }
+
+    result = apply_swm_overlay(ev, automation)
+
+    assert result["status"] == "clearance_ready_for_approval", (
+        f"Expected clearance_ready_for_approval but got {result['status']!r}; "
+        f"labels.add={result['labels']['add']!r}"
+    )
+    assert result["labels"]["add"] == [CLEARANCE_READY_FOR_APPROVAL_LABEL], (
+        f"Expected [{CLEARANCE_READY_FOR_APPROVAL_LABEL!r}] but got {result['labels']['add']!r}"
+    )
