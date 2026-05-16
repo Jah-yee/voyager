@@ -560,6 +560,11 @@ def _has_review_thread_signal(writeback: dict[str, Any]) -> bool:
     )
 
 
+def _requires_review_thread_signal(setup: dict[str, Any], reviews: list[dict[str, Any]]) -> bool:
+    """Only current-approval setup can produce the approval-only review race."""
+    return bool(setup.get("current_approval")) and any("thread_reply" not in review for review in reviews)
+
+
 def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     """Soft comparator — return list of mismatch messages (empty == pass).
 
@@ -914,9 +919,8 @@ def _run_scenario(
         # No timing assumptions needed.
 
         # 4. Poll voyager for our PR's writeback (post-review event only).
-        require_review_thread_signal = any(
-            "thread_reply" not in review for review in scenario.get("review", [])
-        )
+        reviews = scenario.get("review", [])
+        require_review_thread_signal = _requires_review_thread_signal(setup, reviews)
         writeback, poll_error = _poll_for_writeback(
             voyager_url=cfg.voyager_url,
             pr_number=pr_number,

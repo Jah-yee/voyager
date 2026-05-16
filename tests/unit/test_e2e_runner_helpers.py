@@ -25,6 +25,7 @@ from scripts.e2e.run_matrix import (  # noqa: E402
     _has_review_thread_signal,
     _poll_for_writeback,
     _post_approval_review,
+    _requires_review_thread_signal,
 )
 
 # ---------------------------------------------------------------------------
@@ -432,6 +433,39 @@ def test_poll_expected_actual_waits_past_pre_reply_verdict(monkeypatch) -> None:
     assert wb["source"] == "final-reply"
 
 
+def test_poll_expected_actual_allows_stale_skip_without_current_approval(monkeypatch) -> None:
+    """E-class stale-skip writebacks do not have review-thread signal counts."""
+    stale_skip = {
+        "pr_number": 42,
+        "event": "pull_request_review",
+        "ts": "2026-05-15T12:00:02+00:00",
+        "skipped": "stale_verdict",
+        "automation": {
+            "status": "stale_verdict_skip",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 0,
+        },
+    }
+    transport = _mock_transport([(200, {"writebacks": [stale_skip]})])
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        require_review_thread_signal=False,
+        expected_actual={
+            "automation_status": "stale_verdict_skip",
+            "writeback_skipped": True,
+        },
+    )
+    assert err is None
+    assert wb["skipped"] == "stale_verdict"
+
+
 def test_poll_fail_fast_on_404(monkeypatch) -> None:
     """404 = endpoint not enabled — fail fast, don't retry until timeout."""
     transport = _mock_transport([(404, {"detail": "Not found"})])
@@ -538,4 +572,14 @@ def test_has_review_thread_signal_accepts_unresolved_or_sync_counts() -> None:
     )
     assert not _has_review_thread_signal(
         {"automation": {"unresolved_codex_thread_count": 0, "sync_actions_count": 0}}
+    )
+
+
+def test_requires_review_thread_signal_only_for_current_approval_setup() -> None:
+    reviews = [{"path": "sample.py", "line": 1, "body": "[P2] finding"}]
+    assert _requires_review_thread_signal({"current_approval": True}, reviews)
+    assert not _requires_review_thread_signal({}, reviews)
+    assert not _requires_review_thread_signal(
+        {"current_approval": True},
+        [{"thread_reply": {"previous_thread_index": 0, "body": "fixed"}}],
     )
