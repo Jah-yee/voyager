@@ -292,6 +292,17 @@ def test_repository_allowlist_agent_specific_overrides_global(monkeypatch) -> No
     assert not _repository_allowed_for_agent("iterwheel/voyager-sandbox", "iterwheel-clearance")
 
 
+def test_repository_allowlist_blank_agent_specific_falls_back_to_global(monkeypatch) -> None:
+    from voyager.server import _repository_allowed_for_agent
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("BRIDGE_ALLOWED_REPOSITORIES", "iterwheel/voyager-sandbox")
+    monkeypatch.setenv("BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CLEARANCE", "   ")
+
+    assert _repository_allowed_for_agent("iterwheel/voyager-sandbox", "iterwheel-clearance")
+    assert not _repository_allowed_for_agent("frankyxhl/trinity", "iterwheel-clearance")
+
+
 def test_repository_allowlist_supports_owner_wildcard(monkeypatch) -> None:
     from voyager.server import _repository_allowed_for_agent
 

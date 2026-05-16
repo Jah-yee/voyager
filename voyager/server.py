@@ -207,7 +207,9 @@ def _repository_allowed_for_agent(repository: str | None, agent_slug: str) -> bo
     dry-runs do not need allow-list env setup.
     """
     specific = os.environ.get(_allowed_repositories_env_key(agent_slug))
-    raw = specific if specific is not None else os.environ.get("BRIDGE_ALLOWED_REPOSITORIES")
+    raw = (
+        specific if specific and specific.strip() else os.environ.get("BRIDGE_ALLOWED_REPOSITORIES")
+    )
     allowed = _parse_allowed_repositories(raw)
     if not allowed:
         return dry_run_enabled()
