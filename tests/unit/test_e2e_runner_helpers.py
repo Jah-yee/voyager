@@ -379,6 +379,59 @@ def test_poll_review_thread_signal_skips_late_setup_approval(monkeypatch) -> Non
     assert wb["source"] == "codex-thread"
 
 
+def test_poll_expected_actual_waits_past_pre_reply_verdict(monkeypatch) -> None:
+    """F-class scenarios must not stop on the pre-reply blocked writeback."""
+    pre_reply = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:02+00:00",
+        "source": "pre-reply",
+        "planned": {"add_labels": ["clearance-blocked"]},
+        "automation": {
+            "status": "blocked",
+            "unresolved_codex_thread_count": 1,
+            "sync_actions_count": 0,
+        },
+    }
+    final_reply = {
+        "pr_number": 42,
+        "event": "pull_request_review_comment",
+        "ts": "2026-05-15T12:00:04+00:00",
+        "source": "final-reply",
+        "planned": {"add_labels": ["clearance-ready"]},
+        "automation": {
+            "status": "ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    }
+    transport = _mock_transport(
+        [
+            (200, {"writebacks": [pre_reply]}),
+            (200, {"writebacks": [pre_reply, final_reply]}),
+        ]
+    )
+    _orig = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _orig(transport=transport, **kw))
+
+    wb, err = _poll_for_writeback(
+        voyager_url="http://test",
+        pr_number=42,
+        timeout_s=2,
+        interval_s=0.01,
+        since_ts="2026-05-15T12:00:00+00:00",
+        require_review_thread_signal=True,
+        expected_actual={
+            "status": "ready",
+            "label_present": "clearance-ready",
+            "unresolved_codex_thread_count": 0,
+            "sync_actions_count": 1,
+        },
+    )
+    assert err is None
+    assert wb["source"] == "final-reply"
+
+
 def test_poll_fail_fast_on_404(monkeypatch) -> None:
     """404 = endpoint not enabled — fail fast, don't retry until timeout."""
     transport = _mock_transport([(404, {"detail": "Not found"})])

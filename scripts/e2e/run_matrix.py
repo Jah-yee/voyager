@@ -560,108 +560,6 @@ def _has_review_thread_signal(writeback: dict[str, Any]) -> bool:
     )
 
 
-def _poll_for_writeback(
-    *,
-    voyager_url: str,
-    pr_number: int,
-    timeout_s: int = 60,
-    interval_s: float = 1.5,
-    auth_token: str | None = None,
-    event_filter: tuple[str, ...] = ("pull_request_review", "pull_request_review_comment"),
-    since_ts: str | None = None,
-    repository: str | None = None,
-    require_review_thread_signal: bool = False,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Poll voyager's /e2e/recent_writebacks until we see a matching record.
-
-    Filtering layered on top of `pr_number == pr_number`:
-      - ``event_filter`` restricts to records emitted by the post-review
-        webhooks (default: pull_request_review*). Without this, voyager's
-        prior `pull_request opened` writeback can be returned first
-        (Codex GH-bot PR #15 P1) because the deque is in arrival order.
-      - ``since_ts``: ignore records older than this ISO timestamp. The
-        runner captures a timestamp BEFORE posting the review and passes
-        it here so any pre-review writeback is excluded from the match
-        even if it shares the event type (defense-in-depth).
-      - ``require_review_thread_signal``: ignore setup-only approval reviews
-        by requiring voyager's automation summary to include either unresolved
-        Codex threads or thread sync actions.
-
-    Returns (writeback_dict, error_message). On success, error_message is None.
-    On non-transient HTTP errors (404 = endpoint not enabled; 401/403 = auth
-    failure), returns (None, "fail-fast reason") without retrying. Transient
-    errors (network, 5xx) are retried until deadline; if deadline hits without
-    a matching record, returns (None, "timed out").
-    """
-    deadline = time.time() + timeout_s
-    url = f"{voyager_url.rstrip('/')}/e2e/recent_writebacks"
-    headers: dict[str, str] = {}
-    if auth_token:
-        headers["X-Voyager-E2E-Token"] = auth_token
-
-    last_transient: str | None = None
-    with httpx.Client(timeout=5.0) as c:
-        while time.time() < deadline:
-            try:
-                r = c.get(url, headers=headers)
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as exc:
-                # Transient — retry until deadline.
-                last_transient = f"{type(exc).__name__}: {exc}"
-                time.sleep(interval_s)
-                continue
-
-            if r.status_code in (401, 403):
-                return None, (
-                    f"voyager auth rejected ({r.status_code}): the e2e endpoint "
-                    f"requires VOYAGER_E2E_DEBUG=1 and a matching X-Voyager-E2E-Token "
-                    f"header if VOYAGER_E2E_TOKEN is set."
-                )
-            if r.status_code == 404:
-                return None, (
-                    "voyager returned 404 for /e2e/recent_writebacks — endpoint is "
-                    "gated by VOYAGER_E2E_DEBUG=1; start voyager with that env set."
-                )
-            if r.status_code >= 500:
-                last_transient = f"voyager 5xx: HTTP {r.status_code}"
-                time.sleep(interval_s)
-                continue
-            if r.status_code != 200:
-                return None, f"unexpected HTTP {r.status_code}: {r.text[:200]}"
-
-            # Scan all candidates and return the NEWEST matching record
-            # (Codex r5 P2: the prior "filter + take first" semantic raced
-            # with the marker-advance window — a writeback emitted while
-            # the runner was capturing review_start_ts could be filtered
-            # out as too-old). Newest-wins sidesteps the timing race
-            # entirely: even if the marker is slightly ahead of the
-            # desired writeback's ts, that writeback is just one of N
-            # matches; we sort by ts and return the latest.
-            candidates: list[dict[str, Any]] = []
-            for wb in r.json().get("writebacks", []):
-                if _extract_pr_number(wb) != pr_number:
-                    continue
-                # Repository scoping — PR numbers are only unique within a
-                # repo, and voyager may handle multiple repos in the same
-                # process (Codex GH-bot PR #15 P2 #6).
-                if repository and wb.get("repository") and wb["repository"] != repository:
-                    continue
-                if event_filter and wb.get("event") not in event_filter:
-                    continue
-                if since_ts and (wb.get("ts") or "") < since_ts:
-                    continue
-                if require_review_thread_signal and not _has_review_thread_signal(wb):
-                    continue
-                candidates.append(wb)
-            if candidates:
-                candidates.sort(key=lambda w: w.get("ts") or "")
-                return candidates[-1], None
-            time.sleep(interval_s)
-
-    suffix = f" (last transient: {last_transient})" if last_transient else ""
-    signal_note = " with review-thread signal" if require_review_thread_signal else ""
-    return None, f"timed out after {timeout_s}s waiting for PR #{pr_number}{signal_note}{suffix}"
-
-
 def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
     """Soft comparator — return list of mismatch messages (empty == pass).
 
@@ -695,6 +593,129 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
         if got != exp:
             mismatches.append(f"{k}: expected {exp!r}, got {got!r}")
     return mismatches
+
+
+def _poll_for_writeback(
+    *,
+    voyager_url: str,
+    pr_number: int,
+    timeout_s: int = 60,
+    interval_s: float = 1.5,
+    auth_token: str | None = None,
+    event_filter: tuple[str, ...] = ("pull_request_review", "pull_request_review_comment"),
+    since_ts: str | None = None,
+    repository: str | None = None,
+    require_review_thread_signal: bool = False,
+    expected_actual: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Poll voyager's /e2e/recent_writebacks until we see a matching record.
+
+    Filtering layered on top of `pr_number == pr_number`:
+      - ``event_filter`` restricts to records emitted by the post-review
+        webhooks (default: pull_request_review*). Without this, voyager's
+        prior `pull_request opened` writeback can be returned first
+        (Codex GH-bot PR #15 P1) because the deque is in arrival order.
+      - ``since_ts``: ignore records older than this ISO timestamp. The
+        runner captures a timestamp BEFORE posting the review and passes
+        it here so any pre-review writeback is excluded from the match
+        even if it shares the event type (defense-in-depth).
+      - ``require_review_thread_signal``: ignore setup-only approval reviews
+        by requiring voyager's automation summary to include either unresolved
+        Codex threads or thread sync actions.
+      - ``expected_actual``: when supplied, keep polling past intermediate
+        writebacks until the flattened record satisfies the scenario's expected
+        assertions. This avoids returning F-class pre-reply verdicts before the
+        final ``thread_reply`` webhook is processed.
+
+    Returns (writeback_dict, error_message). On success, error_message is None.
+    On non-transient HTTP errors (404 = endpoint not enabled; 401/403 = auth
+    failure), returns (None, "fail-fast reason") without retrying. Transient
+    errors (network, 5xx) are retried until deadline; if deadline hits without
+    a matching record, returns (None, "timed out").
+    """
+    deadline = time.time() + timeout_s
+    url = f"{voyager_url.rstrip('/')}/e2e/recent_writebacks"
+    headers: dict[str, str] = {}
+    if auth_token:
+        headers["X-Voyager-E2E-Token"] = auth_token
+
+    last_transient: str | None = None
+    last_candidate_mismatch: str | None = None
+    with httpx.Client(timeout=5.0) as c:
+        while time.time() < deadline:
+            try:
+                r = c.get(url, headers=headers)
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as exc:
+                # Transient — retry until deadline.
+                last_transient = f"{type(exc).__name__}: {exc}"
+                time.sleep(interval_s)
+                continue
+
+            if r.status_code in (401, 403):
+                return None, (
+                    f"voyager auth rejected ({r.status_code}): the e2e endpoint "
+                    f"requires VOYAGER_E2E_DEBUG=1 and a matching X-Voyager-E2E-Token "
+                    f"header if VOYAGER_E2E_TOKEN is set."
+                )
+            if r.status_code == 404:
+                return None, (
+                    "voyager returned 404 for /e2e/recent_writebacks — endpoint is "
+                    "gated by VOYAGER_E2E_DEBUG=1; start voyager with that env set."
+                )
+            if r.status_code >= 500:
+                last_transient = f"voyager 5xx: HTTP {r.status_code}"
+                time.sleep(interval_s)
+                continue
+            if r.status_code != 200:
+                return None, f"unexpected HTTP {r.status_code}: {r.text[:200]}"
+
+            # Scan all candidates and return the NEWEST matching record that
+            # also satisfies scenario expectations when provided.
+            # (Codex r5 P2: the prior "filter + take first" semantic raced
+            # with the marker-advance window — a writeback emitted while
+            # the runner was capturing review_start_ts could be filtered
+            # out as too-old). Newest-wins sidesteps the timing race
+            # entirely: even if the marker is slightly ahead of the
+            # desired writeback's ts, that writeback is just one of N
+            # matches; we sort by ts and return the latest.
+            candidates: list[dict[str, Any]] = []
+            for wb in r.json().get("writebacks", []):
+                if _extract_pr_number(wb) != pr_number:
+                    continue
+                # Repository scoping — PR numbers are only unique within a
+                # repo, and voyager may handle multiple repos in the same
+                # process (Codex GH-bot PR #15 P2 #6).
+                if repository and wb.get("repository") and wb["repository"] != repository:
+                    continue
+                if event_filter and wb.get("event") not in event_filter:
+                    continue
+                if since_ts and (wb.get("ts") or "") < since_ts:
+                    continue
+                if require_review_thread_signal and not _has_review_thread_signal(wb):
+                    continue
+                if expected_actual:
+                    mismatches = _compare(expected_actual, _flatten_writeback(wb))
+                    if mismatches:
+                        last_candidate_mismatch = "; ".join(mismatches)
+                        continue
+                candidates.append(wb)
+            if candidates:
+                candidates.sort(key=lambda w: w.get("ts") or "")
+                return candidates[-1], None
+            time.sleep(interval_s)
+
+    suffix = f" (last transient: {last_transient})" if last_transient else ""
+    signal_note = " with review-thread signal" if require_review_thread_signal else ""
+    mismatch_note = (
+        f"; latest matching-filter record mismatched expected: {last_candidate_mismatch}"
+        if last_candidate_mismatch
+        else ""
+    )
+    return (
+        None,
+        f"timed out after {timeout_s}s waiting for PR #{pr_number}"
+        f"{signal_note}{mismatch_note}{suffix}",
+    )
 
 
 def _cleanup_pr(sandbox_repo: str, pr_number: int | None, branch: str | None) -> None:
@@ -905,6 +926,7 @@ def _run_scenario(
             since_ts=review_start_ts,
             repository=cfg.sandbox_repo,
             require_review_thread_signal=require_review_thread_signal,
+            expected_actual=expected,
         )
         if writeback is None:
             verdict = "failed"
