@@ -81,7 +81,7 @@ scenarios:
           This will crash on `divide(1, 0)`. Add a guard or document the contract.
     expected:
       status: "blocked"
-      label_present: "clearance-blocked"
+      label_present: "clearance-2-blocked"
       unresolved_codex_thread_count: 1
     phase_b_expected:
       codex_severity: "P1"
@@ -119,7 +119,7 @@ scenarios:
           only ignored paths skip the check entirely, weakening branch protection.
     expected:
       status: "ready_with_low_priority"
-      label_present: "clearance-ready"
+      label_present: "clearance-4-ready-for-merge"
       automation_reason_substring: "low-priority"
       unresolved_codex_thread_count: 1
     phase_b_expected:
@@ -152,7 +152,7 @@ scenarios:
           Minor style — prefer `f"Hello, {name}"` over string concatenation.
     expected:
       status: "ready_with_low_priority"
-      label_present: "clearance-ready"
+      label_present: "clearance-4-ready-for-merge"
       unresolved_codex_thread_count: 1   # status "ready_with_low_priority" still has 1 P3 OPEN
     phase_b_expected:
       codex_severity: "P3"
@@ -247,7 +247,7 @@ scenarios:
             sentinel instead of an exception on bad input.
     expected:
       status: "ready"
-      label_present: "clearance-ready"
+      label_present: "clearance-4-ready-for-merge"
       unresolved_codex_thread_count: 0
       sync_actions_count: 1
     phase_b_expected:
