@@ -562,7 +562,9 @@ def _has_review_thread_signal(writeback: dict[str, Any]) -> bool:
 
 def _requires_review_thread_signal(setup: dict[str, Any], reviews: list[dict[str, Any]]) -> bool:
     """Only current-approval setup can produce the approval-only review race."""
-    return bool(setup.get("current_approval")) and any("thread_reply" not in review for review in reviews)
+    return bool(setup.get("current_approval")) and any(
+        "thread_reply" not in review for review in reviews
+    )
 
 
 def _compare(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
