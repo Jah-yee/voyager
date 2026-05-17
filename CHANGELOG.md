@@ -8,6 +8,16 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+### Added — Multi-agent loop configuration ([#32](https://github.com/iterwheel/voyager/issues/32))
+
+- Added `VOY-1811`, Voyager's project-local COR-1622 parameter
+  instantiation for the COR-1617 multi-agent workflow loop, covering
+  repository identity, fork PR topology, panel providers, worker dispatch,
+  bot actors, runtime profile, invocation variants, adoption status, and
+  known schema limitations.
+- Updated `VOY-1807` to reflect that Clearance readiness panels now run on
+  `iterwheel/voyager`, matching the `VOY-1811` bot-actor configuration.
+
 ### Changed — Clearance author-only reviewer deadlock warning ([#28](https://github.com/iterwheel/voyager/issues/28))
 
 - Clearance now surfaces an explicit readiness-panel warning when the only
