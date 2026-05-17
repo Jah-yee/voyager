@@ -306,7 +306,7 @@ gh api graphql -F owner="iterwheel" -F repo="voyager" -F pr=<pr_number> \
             nodes {
               isResolved
               path
-              comments(first:1) { nodes { body } }
+              comments(first:100) { nodes { body } }
             }
           }
         }
@@ -322,13 +322,15 @@ gh pr view {pr_number} --json body,comments
 > resolved via the GitHub UI (Resolve button) may have zero replies. Use check
 > #3 (GraphQL `isResolved`) as the authoritative resolution gate.
 >
-> **Pagination:** GitHub GraphQL caps `first`/`last` at 100. For any PR with
-> more than 100 review threads, the agent MUST paginate through
-> `pageInfo.hasNextPage` and `endCursor` to ensure every thread is inspected
-> before declaring completion. Voyager's `voyager/core/github_app.py` already
-> implements this pattern for `reviewThreads`; the check above uses `first:100`
-> as a reasonable default but must be extended with cursor-based pagination
-> when the PR's thread count is unknown.
+> **Pagination:** GitHub GraphQL caps `first`/`last` at 100. Both check #1
+> (`timelineItems`, capped at 50 here) and check #3 (`reviewThreads`, capped
+> at 100) return paged connections. For any issue with more cross-references
+> or any PR with more review threads than the page size, the agent MUST
+> paginate through `pageInfo.hasNextPage` and `endCursor` to ensure every
+> entry is inspected before declaring completion. Voyager's
+> `voyager/core/github_app.py` already implements cursor-based pagination for
+> `reviewThreads`; the checks above use fixed page sizes as reasonable defaults
+> but must be extended when the total count is unknown.
 
 If a runtime cannot execute these checks (e.g., no GitHub CLI access), the
 agent MUST explicitly record the limitation and report it as an open
