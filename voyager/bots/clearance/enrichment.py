@@ -131,7 +131,11 @@ def _approval_status_line(
     if status == "clearance_ready":
         return f"✅ Approval: current from {format_user_list(current_approvals)}"
     if status == "clearance_ready_for_approval":
-        targets = _review_request_users(review_request) or list(configured_review_request_users())
+        targets = (
+            _review_request_users(review_request)
+            if review_request is not None
+            else list(configured_review_request_users())
+        )
         if targets:
             return f"⏳ Approval: waiting for {format_user_list(targets)}"
         return "⏳ Approval: waiting for eligible reviewer"
@@ -164,7 +168,11 @@ def _next_action(evaluation: ClearanceEvaluation, review_request: dict[str, Any]
     if status == "clearance_ready":
         return "Next: merge when the repository's normal merge gates are satisfied."
     if status == "clearance_ready_for_approval":
-        targets = _review_request_users(review_request) or list(configured_review_request_users())
+        targets = (
+            _review_request_users(review_request)
+            if review_request is not None
+            else list(configured_review_request_users())
+        )
         if not targets:
             return (
                 "Next: request review from an eligible non-author reviewer. After approval, "
