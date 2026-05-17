@@ -259,7 +259,7 @@ Phase 11 completion requires **both** conditions to be true:
 | Condition | Check |
 |-----------|-------|
 | **Target issue closure** | All target issues are closed, OR a linked PR with closing keywords is merged. |
-| **Review-thread closure** | For every PR in the Related PR Set, zero unresolved actionable P0/P1/P2 threads remain. Non-actionable threads are documented with rationale. |
+| **Review-thread closure** | For every PR in the Related PR Set, zero unresolved actionable threads remain. Non-actionable threads are documented with rationale. |
 
 The agent MUST NOT report completion when target issues are closed but
 actionable review threads exist on any PR in the Related PR Set.
@@ -320,6 +320,14 @@ gh pr view {pr_number} --json body,comments
 > resolution state. A thread with replies may still be unresolved, and a thread
 > resolved via the GitHub UI (Resolve button) may have zero replies. Use check
 > #3 (GraphQL `isResolved`) as the authoritative resolution gate.
+>
+> **Pagination:** GitHub GraphQL caps `first`/`last` at 100. For any PR with
+> more than 100 review threads, the agent MUST paginate through
+> `pageInfo.hasNextPage` and `endCursor` to ensure every thread is inspected
+> before declaring completion. Voyager's `voyager/core/github_app.py` already
+> implements this pattern for `reviewThreads`; the check above uses `first:100`
+> as a reasonable default but must be extended with cursor-based pagination
+> when the PR's thread count is unknown.
 
 If a runtime cannot execute these checks (e.g., no GitHub CLI access), the
 agent MUST explicitly record the limitation and report it as an open
