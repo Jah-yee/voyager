@@ -8,6 +8,41 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+### Added — Wukong launchd bridge runbook ([#44](https://github.com/iterwheel/voyager/issues/44))
+
+- Added a repo-safe launchd plist template, Wukong env-file template, and
+  `VOY-1814` operator SOP for managing the Voyager bridge on
+  `127.0.0.1:8787`.
+- Documented private file locations, start/stop/restart/status/log-tail
+  commands, healthchecks, and rollback to a previous git tag while preserving
+  `DRY_RUN=false` plus app-specific repository allow-lists.
+
+### Changed — Clearance DeepSeek profile policy ([#46](https://github.com/iterwheel/voyager/issues/46))
+
+- Documented Flash, Flash no-thinking, Pro, and Pro max investigator
+  profiles with separate confidence thresholds and production-use guidance.
+- Made Flash/unknown-model startup warnings actionable while preserving the
+  current Flash no-thinking canary behavior until an operator changes
+  `[voyager].default_profile`.
+- Treats moving public aliases such as `deepseek-chat` as unknown until a
+  rollout document pins them to a Voyager policy tier.
+
+### Added — Stack metadata issue template ([#47](https://github.com/iterwheel/voyager/issues/47))
+
+- Added a structured GitHub issue template with optional `Stack Type` and
+  `Stack Area` fields plus allowed-value guidance for authors.
+- Added Blueprint and Stack regression coverage showing optional Stack
+  metadata remains Blueprint-ready and overrides noisy weighted signals when
+  provided.
+
+### Added — Managed repository canary expansion plan ([#48](https://github.com/iterwheel/voyager/issues/48))
+
+- Added `VOY-1816`, a staged canary expansion SOP that orders
+  `frankyxhl/babs` before `frankyxhl/screen-harness`, excludes
+  `frankyxhl/sweeping-monk`, and requires one repository per validation cycle.
+- Documented preflight checks, per-bot enablement, validation records, and
+  allow-list rollback steps without expanding Wukong production scope.
+
 ### Fixed — Clearance writeback failure visibility ([#45](https://github.com/iterwheel/voyager/issues/45))
 
 - Clearance now captures GitHub writeback failures, including
