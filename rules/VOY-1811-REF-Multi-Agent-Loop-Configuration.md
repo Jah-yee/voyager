@@ -112,6 +112,7 @@ Voyager treats runtime as an explicit local convention because COR-1622 has no
 | Runtime | Status for Voyager | Invocation | Panel dispatch | Wakeup primitive |
 |---------|--------------------|------------|----------------|------------------|
 | Claude Code | Primary documented runtime today | `follow VOY-1811...` in the Claude Code session | Trinity skill / `trinity review` with `<panel-providers>` | `ScheduleWakeup` when available; otherwise the runtime's documented loop primitive |
+| DeepSeek TUI | Verified (2026-05-18) | `follow VOY-1811` in the DeepSeek TUI session | Trinity skill / `trinity review` with `<panel-providers>`; sub-agent dispatch via `agent_open` | `task_shell_start` with shell poll loop (`while sleep N; do gh pr view/gh api ...; done`) in bounded-poll mode; no autonomous `ScheduleWakeup` |
 | Codex CLI | Supported operator runtime | Codex session prompt using the same invocation phrases | Local shell `trinity review` and `gh` commands | No durable native wakeup assumed; use bounded `sleep`/poll in-session or an external scheduler |
 | Droid | Worker/runtime alternative | `droid exec` or `droid exec --mission` with explicit model and cwd | Provider CLIs through Droid or Trinity provider wrappers | External scheduler or Droid/factory session re-entry; do not assume `ScheduleWakeup` |
 | Gemini CLI | Reviewer/runtime alternative | `gemini -p` review prompts or project wrapper | Direct Gemini CLI for escalation review | External scheduler/manual re-entry |
@@ -354,5 +355,6 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-05-18 | Added DeepSeek TUI row to Runtime Profile (verified via issue #56 loop). Wakeup uses `task_shell_start` with shell poll loop in bounded-poll mode. | DeepSeek (via VOY-1811) |
 | 2026-05-18 | Added Completion Gate (COR-1617 Phase 11 Binding): Related PR Set, review-thread sweep, actionable classification, delayed-review sweep, completion criteria with distinct issue/thread closure, and concrete `gh` checks. Motivated by PR #49 P2 thread missed during VOY-1811 open-issue batch. | DeepSeek (via VOY-1811) |
 | 2026-05-17 | Initial Voyager instantiation of COR-1622 for the COR-1617 multi-agent workflow loop. Uses VOY-1811 because VOY-1810 is already the Release Process SOP. | Codex |
