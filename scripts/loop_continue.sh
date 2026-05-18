@@ -68,8 +68,20 @@ acquire_lock() {
             log "Lock held by another instance (age=${lock_age}s < ${LOOP_INTERVAL}s). Exiting."
             exit 1
         fi
-        log_err "Stale lock detected (age=${lock_age}s >= ${LOOP_INTERVAL}s). Removing lock."
+        # Lock appears stale by age — but the original process may still be
+        # alive (e.g. a long-running loop). Verify the stored PID before
+        # removing the lock to avoid defeating the concurrency guard.
+        local lock_pid=""
+        [[ -f "$LOCK_DIR/pid" ]] && lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+        if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+            log "Stale-aged lock (age=${lock_age}s) but PID $lock_pid is still alive. Exiting."
+            exit 1
+        fi
+        # PID is dead or missing — safe to reap the lock
+        log_err "Stale lock detected (age=${lock_age}s >= ${LOOP_INTERVAL}s, PID ${lock_pid:-unknown} not alive). Removing lock."
+        rm -f "$LOCK_DIR/pid"
         rmdir "$LOCK_DIR" 2>/dev/null || rm -rf "$LOCK_DIR"
+        # Exit 5 so the operator can investigate why a lock outlived the interval
         exit 5
     fi
     # Lock acquired atomically — store PID for inspection
