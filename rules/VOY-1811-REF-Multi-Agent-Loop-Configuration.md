@@ -279,6 +279,7 @@ gh api graphql -F owner="iterwheel" -F repo="voyager" -F issue=<issue_number> \
       repository(owner:$owner, name:$repo) {
         issue(number:$issue) {
           timelineItems(first:50, itemTypes:[CROSS_REFERENCED_EVENT, CLOSED_EVENT]) {
+            pageInfo { hasNextPage endCursor }
             nodes {
               ... on CrossReferencedEvent {
                 source { ... on PullRequest { number title state url } }
@@ -303,6 +304,7 @@ gh api graphql -F owner="iterwheel" -F repo="voyager" -F pr=<pr_number> \
       repository(owner:$owner, name:$repo) {
         pullRequest(number:$pr) {
           reviewThreads(first:100) {
+            pageInfo { hasNextPage endCursor }
             nodes {
               isResolved
               path
@@ -329,8 +331,10 @@ gh pr view {pr_number} --json body,comments
 > paginate through `pageInfo.hasNextPage` and `endCursor` to ensure every
 > entry is inspected before declaring completion. Voyager's
 > `voyager/core/github_app.py` already implements cursor-based pagination for
-> `reviewThreads`; the checks above use fixed page sizes as reasonable defaults
-> but must be extended when the total count is unknown.
+> `reviewThreads`; the checks above include `pageInfo { hasNextPage endCursor }`
+> so agents can extend with `gh api --paginate` (which requires these fields)
+> when the total count is unknown. Pass `$endCursor` via `-F after="$cursor"`
+> and loop until `hasNextPage` is false.
 
 If a runtime cannot execute these checks (e.g., no GitHub CLI access), the
 agent MUST explicitly record the limitation and report it as an open
