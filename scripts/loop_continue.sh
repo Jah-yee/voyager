@@ -30,6 +30,7 @@ set -euo pipefail
 
 PROJECT_ROOT="${VOYAGER_PROJECT_ROOT:-$HOME/Projects/voyager}"
 ENV_FILE="${VOYAGER_ENV_FILE:-$HOME/.voyager/bridge.env}"
+# LOCK_DIR is used for atomic mkdir-based locking; LOCK_FILE retained for env var compat
 LOCK_FILE="${VOYAGER_LOCK_FILE:-/tmp/voyager-loop.lock}"
 LOG_DIR="${VOYAGER_LOG_DIR:-$HOME/Library/Logs/voyager}"
 LOOP_INTERVAL="${VOYAGER_LOOP_INTERVAL:-7200}"
@@ -50,36 +51,42 @@ log_err() {
     echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] ERROR: $*" | tee -a "$ERR_FILE" >&2
 }
 
-# ── Lock file (concurrency guard) ───────────────────────────────────────────
+# ── Lock directory (atomic concurrency guard) ───────────────────────────────
+#
+# Uses mkdir() which is atomic on all Unix filesystems.  A plain lock *file*
+# with a check-then-create sequence is racy: two invocations that start
+# within the same window can both observe no lock and both proceed.
+
+LOCK_DIR="${LOCK_FILE}.dir"
 
 acquire_lock() {
-    if [[ -f "$LOCK_FILE" ]]; then
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        # Lock held — check staleness by directory mtime
         local lock_age
-        lock_age=$(($(date +%s) - $(stat -f %m "$LOCK_FILE" 2>/dev/null || stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)))
+        lock_age=$(($(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)))
         if (( lock_age < LOOP_INTERVAL )); then
             log "Lock held by another instance (age=${lock_age}s < ${LOOP_INTERVAL}s). Exiting."
             exit 1
         fi
         log_err "Stale lock detected (age=${lock_age}s >= ${LOOP_INTERVAL}s). Removing lock."
-        rm -f "$LOCK_FILE"
+        rmdir "$LOCK_DIR" 2>/dev/null || rm -rf "$LOCK_DIR"
         exit 5
     fi
-    echo $$ > "$LOCK_FILE"
+    # Lock acquired atomically — store PID for inspection
+    echo $$ > "$LOCK_DIR/pid"
 }
 
 release_lock() {
-    # Only remove the lock file if this process owns it.
-    # Defense-in-depth: the trap is only installed after acquire_lock
+    # Defense-in-depth: trap is only installed after acquire_lock
     # succeeds, but verifying PID prevents an accidental double-release
     # or a stale trap from removing another process's lock.
-    if [[ -f "$LOCK_FILE" ]]; then
-        local lock_pid
-        lock_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        if [[ "$lock_pid" == "$$" ]] || [[ -z "$lock_pid" ]]; then
-            rm -f "$LOCK_FILE"
-        fi
-        # If lock_pid != $$, do NOT remove — another process owns the lock.
+    local lock_pid=""
+    [[ -f "$LOCK_DIR/pid" ]] && lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+    if [[ -z "$lock_pid" ]] || [[ "$lock_pid" == "$$" ]]; then
+        rm -f "$LOCK_DIR/pid"
+        rmdir "$LOCK_DIR" 2>/dev/null
     fi
+    # If lock_pid != $$, do NOT remove — another process owns the lock.
 }
 
 # ── Environment ──────────────────────────────────────────────────────────────
