@@ -121,6 +121,11 @@ source_env() {
     source "$ENV_FILE"
     set +a
     log "Environment sourced from $ENV_FILE"
+
+    # deepseek CLI reads DEEPSEEK_API_KEY, but bridge.env provides
+    # VOYAGER_DEEPSEEK_API_KEY.  Map the variable for headless invocation.
+    export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-$VOYAGER_DEEPSEEK_API_KEY}"
+    log "DEEPSEEK_API_KEY: $(if [[ -n "$DEEPSEEK_API_KEY" ]]; then echo 'set'; else echo 'NOT SET'; fi)"
 }
 
 # ── Prerequisites ────────────────────────────────────────────────────────────
