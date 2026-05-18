@@ -335,7 +335,7 @@ gh pr view {pr_number} --json body,comments
 > `voyager/core/github_app.py` already implements cursor-based pagination for
 > `reviewThreads`; the checks above include `pageInfo { hasNextPage endCursor }`
 > so agents can extend with `gh api --paginate` (which requires these fields)
-> when the total count is unknown. Pass `$endCursor` via `-F after="$cursor"`
+> when the total count is unknown. Pass `$endCursor` via `-F endCursor="$cursor"`
 > and loop until `hasNextPage` is false.
 
 If a runtime cannot execute these checks (e.g., no GitHub CLI access), the
