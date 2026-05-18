@@ -274,7 +274,6 @@ runtimes) before reporting Phase 11 complete:
 ```bash
 # 1. Assemble the Related PR Set from issue cross-references (GraphQL)
 gh api graphql -F owner="iterwheel" -F repo="voyager" -F issue=<issue_number> \
-  -F endCursor="" \
   -f query='
     query($owner:String!, $repo:String!, $issue:Int!, $endCursor:String) {
       repository(owner:$owner, name:$repo) {
@@ -300,7 +299,6 @@ gh api "/repos/iterwheel/voyager/pulls/{pr_number}/comments" \
 
 # 3. For each thread: check resolved state (GraphQL isResolved)
 gh api graphql -F owner="iterwheel" -F repo="voyager" -F pr=<pr_number> \
-  -F endCursor="" \
   -f query='
     query($owner:String!, $repo:String!, $pr:Int!, $endCursor:String) {
       repository(owner:$owner, name:$repo) {
@@ -335,8 +333,9 @@ gh pr view {pr_number} --json body,comments
 > `voyager/core/github_app.py` already implements cursor-based pagination for
 > `reviewThreads`; the checks above include `pageInfo { hasNextPage endCursor }`
 > so agents can extend with `gh api --paginate` (which requires these fields)
-> when the total count is unknown. Pass `$endCursor` via `-F endCursor="$cursor"`
-> and loop until `hasNextPage` is false.
+> when the total count is unknown. On the first page, omit `endCursor` (no `-F endCursor` flag). On subsequent
+> pages, pass `$endCursor` via `-F endCursor="$cursor"` and loop until
+> `hasNextPage` is false.
 
 If a runtime cannot execute these checks (e.g., no GitHub CLI access), the
 agent MUST explicitly record the limitation and report it as an open
