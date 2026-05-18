@@ -308,7 +308,10 @@ gh api graphql -F owner="iterwheel" -F repo="voyager" -F pr=<pr_number> \
             nodes {
               isResolved
               path
-              comments(first:100) { nodes { body } }
+              comments(first:100) {
+                pageInfo { hasNextPage endCursor }
+                nodes { body }
+              }
             }
           }
         }
@@ -335,7 +338,9 @@ gh pr view {pr_number} --json body,comments
 > so agents can extend with `gh api --paginate` (which requires these fields)
 > when the total count is unknown. On the first page, omit `endCursor` (no `-F endCursor` flag). On subsequent
 > pages, pass `$endCursor` via `-F endCursor="$cursor"` and loop until
-> `hasNextPage` is false.
+> `hasNextPage` is false. The `comments` connection inside `reviewThreads` (check #3)
+> also requires pagination when a thread has more than 100 replies; follow the same
+> `pageInfo`/`endCursor` pattern per thread.
 
 If a runtime cannot execute these checks (e.g., no GitHub CLI access), the
 agent MUST explicitly record the limitation and report it as an open
