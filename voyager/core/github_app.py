@@ -64,6 +64,9 @@ class GitHubAppClient:
         self._tokens: dict[str, InstallationToken] = {}
         self._installation_ids: dict[str, str] = {}
         self._client: httpx.AsyncClient | None = None
+        # Per-app cache of head repos known to lack an installation.
+        # Maps app_slug -> set of "owner/repo" strings. Cleared on restart.
+        self._head_repos_without_installation: dict[str, set[str]] = {}
 
     def _async_client(self) -> httpx.AsyncClient:
         """Return a per-instance cached httpx.AsyncClient.
@@ -342,6 +345,28 @@ class GitHubAppClient:
                 cursor = page_info.get("endCursor")
 
         return threads
+
+    async def check_head_repo_accessible(self, app_slug: str, head_repo: str) -> bool:
+        """Check whether *app_slug* has an installation that covers *head_repo*.
+
+        Used by Clearance Stage 1.5 before attempting ``resolveReviewThread`` on
+        fork PRs.  When ``False`` the head repository does not have an
+        installation for this app, so the mutation would fail with
+        ``Resource not accessible by integration``.
+
+        Negative results are cached per app in
+        ``_head_repos_without_installation`` — once a head repo is known to be
+        inaccessible the method returns ``False`` immediately on subsequent
+        calls until the client is re-created (process restart).
+        """
+        cache = self._head_repos_without_installation.setdefault(app_slug, set())
+        if head_repo in cache:
+            return False
+        installation_id = await self._discover_installation_id(self._apps[app_slug], head_repo)
+        if installation_id:
+            return True
+        cache.add(head_repo)
+        return False
 
     async def resolve_review_thread(
         self, app_slug: str, repository: str, thread_id: str

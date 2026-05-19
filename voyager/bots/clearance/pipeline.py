@@ -385,15 +385,41 @@ async def _maybe_sync_stage_15(
     head_sha: str,
     dry_run: bool,
     now: datetime,
+    head_repo: str | None = None,
+    is_fork_pr: bool = False,
 ) -> list[Stage15Action]:
     """Stage 1.5 — resolve GitHub threads whose verdict is RESOLVED but isResolved=false.
 
     Posts a conclusion comment (best-effort, suppressed on failure) then calls
     resolveReviewThread. When dry_run=True, returns the planned actions without
     any GitHub writes.
+
+    Issue #62: when *is_fork_pr* is True and *head_repo* does not have an
+    installation for the Clearance app, the resolve mutation is skipped and a
+    specific unsupported-context action is recorded instead so the operator sees
+    a precise "manual resolve required" message rather than a generic permission
+    error that repeats on every webhook.
     """
     actions: list[Stage15Action] = []
     snap_by_id = {s.thread_id: s for s in snapshots}
+
+    # Issue #62: preflight head-repo accessibility for fork PRs.
+    # Cache-negative inside GitHubAppClient so the check runs at most once per
+    # (app_slug, head_repo) pair per process lifetime.
+    fork_head_blocked = False
+    if is_fork_pr and head_repo and head_repo != repository:
+        if not dry_run:
+            # Issue #62 / Codex P1: only treat explicit 404 (no installation)
+            # as UnsupportedContext.  Let transient errors (timeout, 5xx)
+            # propagate so the outer error handler can record the real
+            # failure class instead of suppressing it as "install the app".
+            accessible = await client.check_head_repo_accessible(CLEARANCE_AGENT_SLUG, head_repo)
+            if not accessible:
+                fork_head_blocked = True
+        else:
+            # In dry-run mode we cannot call the GitHub API, so treat fork PRs
+            # conservatively: record a planned skip.
+            fork_head_blocked = True
 
     for thread in threads:
         if thread.verdict != Verdict.RESOLVED:
@@ -412,6 +438,34 @@ async def _maybe_sync_stage_15(
                     mutation=Stage15Mutation.RESOLVE_REVIEW_THREAD,
                     threadId=thread.id,
                     result={"dry_run": True},
+                )
+            )
+            continue
+
+        # Issue #62: skip resolveReviewThread on fork PRs where the head repo
+        # is not accessible. This produces a specific unsupported-context action
+        # instead of a generic permission error that repeats on every webhook.
+        if fork_head_blocked:
+            skip_reason = (
+                f"Unsupported context: PR #{pr} is from fork {head_repo}. "
+                f"Install {CLEARANCE_AGENT_SLUG} on {head_repo} to enable "
+                f"auto-resolve, or resolve thread {thread.id} manually."
+            )
+            _log.warning(skip_reason)
+            actions.append(
+                Stage15Action(
+                    mutation=Stage15Mutation.RESOLVE_REVIEW_THREAD,
+                    threadId=thread.id,
+                    result={
+                        "applied": False,
+                        "operation": "resolveReviewThread",
+                        "error_class": "UnsupportedContext",
+                        "status": None,
+                        "repo": repository,
+                        "pr": pr,
+                        "thread_id": thread.id,
+                        "suggested_action": skip_reason,
+                    },
                 )
             )
             continue
@@ -584,7 +638,11 @@ async def compute_clearance_automation(
     # A Codex thread whose first comment predates the most recent push may have
     # been addressed in a newer commit even though GitHub didn't mark it outdated.
     pr_pushed_at: str | None = pr_data.get("pushed_at") or None
-
+    # Issue #62: detect fork PRs. The REST API always includes head.repo.full_name
+    # and base.repo.full_name; when they differ the PR is from a fork.
+    head_repo: str | None = (pr_data.get("head") or {}).get("repo", {}).get("full_name") or None
+    base_repo: str | None = (pr_data.get("base") or {}).get("repo", {}).get("full_name") or None
+    is_fork_pr = bool(head_repo and base_repo and head_repo != base_repo)
     # Wave 7C-1 commit 3 + Codex MVE-round P2: hoist branch_protected fetch out of
     # the per-thread loop. All threads on the same PR share the same base branch,
     # so calling branch_protected once per webhook (not N times for N threads)
@@ -733,6 +791,8 @@ async def compute_clearance_automation(
         head_sha=head_sha,
         dry_run=dry_run,
         now=now,
+        head_repo=head_repo,
+        is_fork_pr=is_fork_pr,
     )
 
     investigator_fired = any(t.llm_verdict for t in threads)
