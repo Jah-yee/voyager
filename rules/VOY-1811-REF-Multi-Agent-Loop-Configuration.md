@@ -136,7 +136,7 @@ bootstrapping chain that survives session restarts.
 Phase 11 (Retrospective) completion
   │
   └─▶ task_create(
-         prompt: "follow VOY-1811",
+         prompt: "follow VOY-1811 once",
          auto_approve: true,
          trust_mode: true,
          mode: "agent"
@@ -148,9 +148,14 @@ Phase 11 (Retrospective) completion
          └─ Chain continues indefinitely
 ```
 
-Each `task_create` call enqueues exactly one `follow VOY-1811` run —
-one issue, stop after Phase 11. Phase 11 itself enqueues the next wakeup,
-forming a durable chain with no external scheduler dependency.
+Each `task_create` call enqueues exactly one `follow VOY-1811 once` run —
+one issue, stop after Phase 11. Phase 11 itself enqueues the next
+`task_create`, which **is** Phase 12 for DeepSeek TUI. The phrase "no Phase 12
+autonomous restart" in the Invocation table means the agent does not restart
+*within the same TUI session*; the durable task chain restarts it across
+sessions via TaskManager.
+
+The chain forms a durable self-bootstrapping loop with no external scheduler.
 
 ### Key Properties
 
@@ -171,7 +176,7 @@ forming a durable chain with no external scheduler dependency.
   two `follow VOY-1811 once` tasks cannot overlap. If a task is long-running,
   the next waits in queue — no race condition, but no parallelism either.
 - **Bootstrap requires operator.** The first task in the chain must be enqueued
-  manually (e.g. `follow VOY-1811`). After that, the chain self-sustains.
+  manually (e.g. `follow VOY-1811 once`). After that, the chain self-sustains.
 
 ## Invocation
 
