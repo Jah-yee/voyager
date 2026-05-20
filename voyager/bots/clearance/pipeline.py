@@ -29,6 +29,7 @@ import httpx
 
 from voyager.bots.clearance.classify import (
     ThreadState,
+    _comment_nodes,
     classify_thread,
     codex_comment_id,
     is_codex_thread,
@@ -87,6 +88,7 @@ async def _process_thread(
     get_diff: Callable[[], Awaitable[str]] | None = None,
     failures: list[tuple[str, str]] | None = None,
     profile_name: str | None = None,
+    pr_pushed_at: str | None = None,
 ) -> tuple[Thread, ThreadSnapshot] | None:
     """Classify, judge, and build Thread + ThreadSnapshot for one Codex thread.
 
@@ -156,17 +158,34 @@ async def _process_thread(
     path = thread_dict.get("path") or "unknown"
     line = thread_dict.get("line")
 
+    # Issue #63: State A threads where the Codex comment predates the most
+    # recent push may have been addressed in a newer commit, even though
+    # GitHub didn't mark the thread outdated.  Compare the first comment's
+    # createdAt against pr_pushed_at to determine staleness.
+    codex_review_stale = False
+    if state == ThreadState.A and pr_pushed_at:
+        comments = _comment_nodes(thread_dict)
+        codex_created = (comments[0].get("createdAt") if comments else None) or ""
+        # ISO-8601 timestamps are lexicographically comparable when in the
+        # same timezone (GitHub always emits UTC with trailing 'Z').
+        codex_review_stale = bool(codex_created and codex_created < pr_pushed_at)
+
     # AUGMENT invariant: gate skips when judge() already returned RESOLVED.
     # Together with `state == ThreadState.B` this preserves *every* deterministic
     # RESOLVED path (github_isResolved=true, positive Codex follow-up, future
     # code_changed=True) without LLM overrule. Do not loosen the gate without
     # extending the regression set.
+    # Issue #63: also route State A threads to the investigator when the Codex
+    # review predates the most recent push (codex_review_stale=True).
     llm_decision: InvestigationDecision | None = None
     llm_error_str: str | None = None
+    investigator_eligible = state == ThreadState.B or (
+        state == ThreadState.A and codex_review_stale
+    )
     if (
         investigator is not None
         and get_diff is not None
-        and state == ThreadState.B
+        and investigator_eligible
         and decision.verdict != Verdict.RESOLVED  # skip if already deterministically RESOLVED
     ):
         model_name = getattr(getattr(investigator, "_client", None), "model", "unknown")
@@ -189,7 +208,7 @@ async def _process_thread(
                 head_sha=head_sha,
                 path=path,
                 line=line,
-                classification="B",
+                classification=state.value,
                 codex_comment_body=codex_comment_body,
                 author_reply_body=author_reply_body,
                 diff_excerpt=excerpt,
@@ -561,6 +580,10 @@ async def compute_clearance_automation(
     pr_title = pr_data.get("title")
     pr_author_login: str | None = (pr_data.get("user") or {}).get("login") or None
     base_branch = (pr_data.get("base") or {}).get("ref") or "main"
+    # Issue #63: PR pushed_at timestamp for stale-thread detection.
+    # A Codex thread whose first comment predates the most recent push may have
+    # been addressed in a newer commit even though GitHub didn't mark it outdated.
+    pr_pushed_at: str | None = pr_data.get("pushed_at") or None
 
     # Wave 7C-1 commit 3 + Codex MVE-round P2: hoist branch_protected fetch out of
     # the per-thread loop. All threads on the same PR share the same base branch,
@@ -616,6 +639,7 @@ async def compute_clearance_automation(
             get_diff=get_diff,
             failures=investigator_failures,
             profile_name=default_profile_name,
+            pr_pushed_at=pr_pushed_at,
         )
         if result is None:
             continue
