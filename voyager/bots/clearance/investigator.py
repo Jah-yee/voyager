@@ -52,7 +52,7 @@ class ThreadInvestigationInput:
     head_sha: str
     path: str
     line: int | None
-    classification: Literal["B", "C"]
+    classification: Literal["A", "B", "C"]
     codex_comment_body: str
     author_reply_body: str | None
     diff_excerpt: str

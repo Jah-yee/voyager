@@ -545,3 +545,27 @@ Feature: Clearance pipeline — webhook-driven SWM-1101 per-thread verdict orche
     Then the automation status is "ready"
     And the automation has no writeback failure metadata
     And exactly 1 in-thread reply was posted under the Codex review comment
+
+  # ---------------------------------------------------------------------------
+  # Issue #63: State A investigator eligibility (codex_review_stale)
+  # ---------------------------------------------------------------------------
+
+  Scenario: Issue #63 State A stale — PR pushed after Codex review, investigator invoked
+    Given the stub PR "iterwheel/sandbox" #49 has 1 fresh Codex thread (State A) at path "app.py"
+    And a fake investigator returning verdict "RESOLVED" confidence 0.92 reason "diff confirms the null-guard was added" for each thread
+    And the PR was pushed after the Codex review
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "ready"
+    And the investigator was called 1 times
+    And the thread llm_verdict is "RESOLVED"
+    And exactly 1 resolveReviewThread mutation was invoked
+
+  Scenario: Issue #63 State A fresh — PR not pushed after Codex review, no investigator
+    Given the stub PR "iterwheel/sandbox" #49 has 1 fresh Codex thread (State A) at path "app.py"
+    And a fake investigator returning verdict "RESOLVED" confidence 0.95 reason "would resolve" for each thread
+    And the PR was not pushed after the Codex review
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "blocked"
+    And the investigator was never called
+    And the thread llm_verdict is None
+    And no resolveReviewThread mutation was invoked

@@ -58,6 +58,8 @@ class _StubGitHubAppClient:
             "title": "Fix the bug",
             "number": PR,
             "user": {"login": "ryosaeba1985"},  # default PR author for existing scenarios
+            # Issue #63: pushed_at defaults to None, so stale detection is off
+            # unless a scenario explicitly sets it.
         }
         self.pr_payload_second_fetch: dict[str, Any] | None = None  # R5-P2: second-call head SHA
         self.fail_pull_request: bool = False
@@ -1733,3 +1735,20 @@ def then_pipeline_stale_verdict_skip_log(ctx, expected_sha: str, actual_sha: str
     assert actual_sha in log_text, (
         f"actual_sha={actual_sha!r} not found in pipeline_stale_verdict_skip log: {log_text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #63: State A investigator eligibility (codex_review_stale)
+# ---------------------------------------------------------------------------
+
+
+@given("the PR was pushed after the Codex review")
+def given_pr_pushed_after_codex(ctx) -> None:
+    """Set pushed_at to a timestamp newer than _fresh_codex_thread's createdAt."""
+    ctx["client"].pr_payload["pushed_at"] = "2026-05-12T00:00:00Z"
+
+
+@given("the PR was not pushed after the Codex review")
+def given_pr_not_pushed_after_codex(ctx) -> None:
+    """Set pushed_at to a timestamp older than _fresh_codex_thread's createdAt."""
+    ctx["client"].pr_payload["pushed_at"] = "2026-05-10T00:00:00Z"
