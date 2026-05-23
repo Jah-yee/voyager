@@ -119,3 +119,20 @@ def test_token_boundary_rejects_extended_command_names(body: str) -> None:
 )
 def test_token_boundary_accepts_legitimate_invocations(body: str) -> None:
     assert parse_assembly_command(body) is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "/assembly\r\n",
+        "/assembly\r\nsecond line",
+        "first line\r\n/assembly\r\nthird line",
+        "/implement --dry-run\r\n",
+        "/assembly\r",  # bare CR with no LF (defensive)
+    ],
+)
+def test_crlf_line_endings_accepted(body: str) -> None:
+    """Codex round-5 P1: GitHub webhook bodies often use CRLF; the
+    command parser must accept /assembly even when the line ends with
+    \\r\\n, not just \\n."""
+    assert parse_assembly_command(body) is not None

@@ -17,14 +17,20 @@ from .constants import ASSEMBLY_COMMANDS
 # the line for flag parsing.  re.MULTILINE so the start anchor matches
 # every line, not just the first one.
 #
-# Codex round-4 P1: the trailing ``(?=[ \t]|$)`` lookahead enforces a hard
-# token boundary so neighbouring strings like ``/assemblyx``,
+# Codex round-4 P1: the trailing ``(?=[ \t\r]|$)`` lookahead enforces a
+# hard token boundary so neighbouring strings like ``/assemblyx``,
 # ``/assembly-now``, or ``/implementation`` do NOT match.  Only an exact
 # command followed by whitespace or end-of-line is accepted; this
 # matters in production where a typo could otherwise trigger real
 # GitHub mutations.
+#
+# Codex round-5 P1: ``\r`` is included in the boundary so GitHub
+# webhook bodies with CRLF line endings (e.g. ``/assembly\r\n``) still
+# match.  Without ``\r`` in the class, the lookahead fails after ``y``
+# because ``$`` in MULTILINE mode anchors before ``\n``, not before
+# ``\r``, and ``\r`` is neither tab nor space.
 _COMMAND_RE = re.compile(
-    r"^[ \t]*(/(?:assembly|implement))(?=[ \t]|$)(?P<rest>[^\n]*)$",
+    r"^[ \t]*(/(?:assembly|implement))(?=[ \t\r]|$)(?P<rest>[^\n]*)$",
     re.IGNORECASE | re.MULTILINE,
 )
 
