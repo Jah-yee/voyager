@@ -7,11 +7,12 @@ result-dict shape per the Writeback Result Schema.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from voyager.bots.assembly.adapters import PiOhMyPiDeepSeekAdapter
+from voyager.bots.assembly.adapters import AdapterResult, PiOhMyPiDeepSeekAdapter
 from voyager.bots.assembly.writeback import dispatch_assembly_writeback
 
 
@@ -328,3 +329,105 @@ class TestGateCornerRow5LivePiAdapter:
 
         assert len(result["writeback_failures"]) >= 1
         assert result["writeback_failures"][0]["error_class"] == "NotImplementedError"
+
+
+# ---------------------------------------------------------------------------
+# CHG-1819 Surface 10 (F3 cross-test) — concurrent-delivery serialization
+# from the package-surface angle.
+# ---------------------------------------------------------------------------
+#
+# Independent author / second pair of eyes on Surface 7's invariant.
+# Constraints (per CHG-1819 §Surface 10 + §Testing):
+#   - Exercise only the public ``dispatch_assembly_writeback`` symbol.
+#   - DO NOT reach into ``voyager.bots.assembly.writeback._get_lock`` or the
+#     ``_assembly_writeback_locks`` module-level dict.
+#   - DO NOT patch private writeback helpers (e.g. ``_ensure_branch``).
+#   - Gate concurrency via a PUBLIC client method (``create_branch_ref``):
+#     if the per-(repo, branch) lock holds across the branch -> PR -> codex
+#     sequence, only one of two concurrent dispatches can reach
+#     ``client.create_branch_ref`` while the gate is held.
+#
+# RED-phase note: this test only exists because Surface 7 already gates the
+# private-helper view of the same invariant.  Both must pass after the impl
+# worker wires the lock; either failing surfaces a regression.
+
+
+class TestConcurrentDeliverySerialization:
+    @pytest.mark.asyncio
+    async def test_xtest_concurrent_deliveries_serialized(self) -> None:
+        """Two dispatches for the same (repo, branch) must serialize.
+
+        Observable-from-outside proof: gate ``client.create_branch_ref`` on
+        an ``asyncio.Event``.  If the lock holds, the second task cannot
+        invoke ``create_branch_ref`` until the first releases the gate.
+        """
+        entered_event = asyncio.Event()
+        released_event = asyncio.Event()
+        entered_count = {"value": 0}
+
+        async def gated_create_branch_ref(*args, **kwargs):
+            entered_count["value"] += 1
+            entered_event.set()
+            await released_event.wait()
+            return {"object": {"sha": "newsha"}}
+
+        def _make_client():
+            client = AsyncMock()
+            client.branch_ref_exists = AsyncMock(return_value=False)
+            client.create_branch_ref = AsyncMock(side_effect=gated_create_branch_ref)
+            client.find_pull_request_by_head = AsyncMock(return_value=None)
+            client.create_pull_request = AsyncMock(
+                return_value={"number": 1234, "html_url": "https://example/pr/1234"}
+            )
+            client.update_pull_request = AsyncMock(return_value={})
+            client.create_issue_comment = AsyncMock(return_value={"id": 999})
+            client.upsert_issue_comment = AsyncMock(return_value={"id": 777})
+            return client
+
+        class _CommitAdapter:
+            name = "fake-commit-adapter"
+
+            async def execute(self, contract):
+                return AdapterResult(status="executed", commit_shas=["sha"], summary="")
+
+        client_a = _make_client()
+        client_b = _make_client()
+        route_a = _make_route(contract=_contract_dict())
+        route_b = _make_route(contract=_contract_dict())
+
+        with (
+            patch("voyager.bots.assembly.writeback.dry_run_enabled", return_value=False),
+            patch(
+                "voyager.bots.assembly.writeback.select_execution_adapter",
+                return_value=_CommitAdapter(),
+            ),
+        ):
+            task_a = asyncio.create_task(
+                dispatch_assembly_writeback(client_a, route_a, repository="o/r")
+            )
+            task_b = asyncio.create_task(
+                dispatch_assembly_writeback(client_b, route_b, repository="o/r")
+            )
+
+            # First task reaches the gated create_branch_ref.
+            await entered_event.wait()
+            # Give the second task ample scheduler ticks to try to enter.
+            await asyncio.sleep(0.05)
+            # While task A holds the gate, exactly one create_branch_ref
+            # call should be in flight if the per-(repo, branch) lock is
+            # serializing the branch -> PR -> codex sequence.  Without the
+            # lock, both tasks reach create_branch_ref before either is
+            # released and entered_count == 2.
+            assert entered_count["value"] == 1, (
+                "expected exactly 1 dispatch in create_branch_ref while "
+                f"lock held, got {entered_count['value']}"
+            )
+
+            released_event.set()
+            await asyncio.gather(task_a, task_b)
+
+        # Both tasks must eventually complete the branch step — the lock
+        # serializes, it does not drop the duplicate delivery.
+        assert entered_count["value"] == 2
+        assert client_a.create_branch_ref.await_count == 1
+        assert client_b.create_branch_ref.await_count == 1
