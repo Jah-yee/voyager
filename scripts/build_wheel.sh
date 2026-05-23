@@ -41,7 +41,13 @@ if [ -z "$wheel" ] || [ ! -f "$wheel" ]; then
   exit 2
 fi
 
-if ! unzip -l "$wheel" | grep -q 'voyager/_build_info.py'; then
+# Capture wheel namelist into a variable first; piping `unzip -l | grep -q`
+# directly is fragile under `set -o pipefail` because `grep -q` exits early
+# on first match, killing `unzip` with SIGPIPE (exit 141), which `pipefail`
+# then promotes to the pipeline's exit code — yielding a false-positive
+# "missing" report even when the file is present in the wheel.
+wheel_listing=$(unzip -l "$wheel")
+if ! printf '%s\n' "$wheel_listing" | grep -q 'voyager/_build_info.py'; then
   echo "ERROR: _build_info.py missing from wheel ($wheel); check [tool.hatch.build] artifacts in pyproject.toml" >&2
   exit 2
 fi
