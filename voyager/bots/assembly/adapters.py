@@ -35,7 +35,14 @@ class AdapterResult:
 
 
 class ExecutionAdapter(Protocol):
-    """Protocol every adapter must satisfy."""
+    """Protocol every adapter must satisfy.
+
+    Adapters MUST push commits to the source repository before returning
+    `commit_shas`; the writeback dispatcher passes `commit_shas[-1]` to
+    `create_branch_ref` and assumes the SHA already exists on the remote.
+    Adapters that produce commits locally only (without pushing) will cause
+    the branch-create step to fail with 422 'Object does not exist'.
+    """
 
     name: str
 

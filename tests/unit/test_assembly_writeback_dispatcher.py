@@ -433,3 +433,210 @@ def _reset_env(monkeypatch):
     monkeypatch.delenv("DRY_RUN", raising=False)
     monkeypatch.delenv(ASSEMBLY_EXECUTION_BACKEND_ENV, raising=False)
     return
+
+
+# ---------------------------------------------------------------------------
+# CHG-1819 Surface 7 (F3) — per-(repo, branch) writeback serialization
+# ---------------------------------------------------------------------------
+#
+# Two `dispatch_assembly_writeback` tasks for the same (repository, branch_name)
+# tuple must serialize across the branch -> PR -> codex sequence so that
+# duplicate webhook deliveries do not race on `create_branch_ref` (which
+# returns 422 "Reference already exists" on the second concurrent caller).
+#
+# Determinism: we use `asyncio.Event` gating, not sleep + call-order list —
+# the latter is flaky on slow CI when both coroutines schedule into the same
+# tick. The pattern is documented in CHG-1819 Surface 7 verbatim.
+#
+# Expected RED phase (before the impl worker wraps the branch/PR/codex
+# sequence in `async with _get_lock(...)`): both tasks reach the patched
+# `_ensure_branch` before either is released, so `len(seen) == 2` and the
+# `assert len(seen) == 1` line fails with `AssertionError: expected 1, got 2`.
+
+
+def _route_for_concurrency(*, branch_name: str = "69-implement-assembly-bot-mvp") -> dict:
+    """Build a route dict whose contract + writeback both target ``branch_name``.
+
+    The branch_name appears in two places: ``writeback["branch_name"]`` (read
+    by the dispatcher to skip the make_branch_name fallback) and inside the
+    nested contract dict so that the rebuilt-by-dispatcher contract keeps
+    the same value (the dispatcher prefers the writeback-side branch_name
+    when present).
+    """
+    route = _route()
+    route["writeback"]["branch_name"] = branch_name
+    contract = route["writeback"]["contract"] or {}
+    contract["branch_name"] = branch_name
+    route["writeback"]["contract"] = contract
+    return route
+
+
+def test_concurrent_deliveries_are_serialized(monkeypatch) -> None:
+    """F3: two deliveries for the same (repo, branch) must serialize.
+
+    Patches the `_ensure_branch` symbol bound inside the writeback module
+    with a fake that gates on an `asyncio.Event`; if the dispatcher holds
+    the per-(repo, branch) lock across the branch -> PR -> codex sequence,
+    only one task can enter `_ensure_branch` while `released_event` is unset.
+    """
+    from voyager.bots.assembly import adapters
+    from voyager.bots.assembly import writeback as wb_module
+
+    monkeypatch.setenv("DRY_RUN", "false")
+
+    class _CommitAdapter:
+        name = "fake-commit-adapter"
+
+        async def execute(self, contract):
+            return adapters.AdapterResult(status="executed", commit_shas=["sha-only"], summary="")
+
+    monkeypatch.setattr(
+        wb_module, "select_execution_adapter", lambda backend=None: _CommitAdapter()
+    )
+
+    entered_event = asyncio.Event()
+    released_event = asyncio.Event()
+    seen: list[str] = []
+
+    original_ensure_branch = wb_module._ensure_branch
+
+    async def fake_ensure_branch(client, repository, contract, head_sha, result):
+        seen.append("entered")
+        entered_event.set()
+        await released_event.wait()
+        # Delegate to the real branch step so the dispatcher reaches the PR
+        # and progress-comment steps deterministically — the lock contract is
+        # "hold across the whole branch -> PR -> codex sequence", so the
+        # test must exercise the full sequence, not just the entry point.
+        return await original_ensure_branch(client, repository, contract, head_sha, result)
+
+    monkeypatch.setattr(wb_module, "_ensure_branch", fake_ensure_branch)
+
+    async def driver() -> tuple[int, int]:
+        client_a = _mock_client_for_writes()
+        client_b = _mock_client_for_writes()
+        route_a = _route_for_concurrency()
+        route_b = _route_for_concurrency()
+        task_a = asyncio.create_task(
+            dispatch_assembly_writeback(client_a, route_a, repository="iterwheel/voyager-sandbox")
+        )
+        task_b = asyncio.create_task(
+            dispatch_assembly_writeback(client_b, route_b, repository="iterwheel/voyager-sandbox")
+        )
+        # Wait for the FIRST task to reach the fake branch step.
+        await entered_event.wait()
+        # Give the second task ample scheduler ticks to try to enter — if it
+        # is not blocked by the lock, it will append "entered" to `seen`.
+        # 50 ms is much longer than realistic asyncio scheduler latency on
+        # CI; the matching CHG-1819 Surface 7 spec also uses 0.05.
+        await asyncio.sleep(0.05)
+        first_count = len(seen)
+        released_event.set()
+        await asyncio.gather(task_a, task_b)
+        return first_count, len(seen)
+
+    first_count, final_count = asyncio.run(driver())
+    # While the first task held the lock, only it should have entered the
+    # branch step.  If the lock is missing, both tasks enter before either
+    # releases and `first_count == 2` (RED-phase failure).
+    assert first_count == 1, (
+        f"expected exactly 1 task in branch step while lock held, got {first_count}"
+    )
+    # Both tasks must eventually run — the lock serializes them, it does not
+    # drop the second delivery.
+    assert final_count == 2
+
+
+def test_distinct_branches_are_parallel(monkeypatch) -> None:
+    """F3 / D5: two deliveries for the same repo but DIFFERENT branch_name
+    must NOT serialize — the lock is keyed on (repo, branch), and a
+    different branch is a different GitHub-side resource.
+    """
+    from voyager.bots.assembly import adapters
+    from voyager.bots.assembly import writeback as wb_module
+
+    monkeypatch.setenv("DRY_RUN", "false")
+
+    class _CommitAdapter:
+        name = "fake-commit-adapter"
+
+        async def execute(self, contract):
+            return adapters.AdapterResult(status="executed", commit_shas=["sha-only"], summary="")
+
+    monkeypatch.setattr(
+        wb_module, "select_execution_adapter", lambda backend=None: _CommitAdapter()
+    )
+
+    entered_a = asyncio.Event()
+    entered_b = asyncio.Event()
+    released_event = asyncio.Event()
+    original_ensure_branch = wb_module._ensure_branch
+
+    async def fake_ensure_branch(client, repository, contract, head_sha, result):
+        # Distinguish callers by branch_name — the contract carries it.
+        if contract.branch_name.endswith("-alpha"):
+            entered_a.set()
+        else:
+            entered_b.set()
+        await released_event.wait()
+        return await original_ensure_branch(client, repository, contract, head_sha, result)
+
+    monkeypatch.setattr(wb_module, "_ensure_branch", fake_ensure_branch)
+
+    async def driver() -> None:
+        client_a = _mock_client_for_writes()
+        client_b = _mock_client_for_writes()
+        route_a = _route_for_concurrency(branch_name="69-implement-alpha")
+        route_b = _route_for_concurrency(branch_name="70-implement-beta")
+        task_a = asyncio.create_task(
+            dispatch_assembly_writeback(client_a, route_a, repository="iterwheel/voyager-sandbox")
+        )
+        task_b = asyncio.create_task(
+            dispatch_assembly_writeback(client_b, route_b, repository="iterwheel/voyager-sandbox")
+        )
+        # Both events should fire before either task is released.  Wait at
+        # most ~1s for both events to be set (much longer than realistic
+        # scheduler latency under uncontended `asyncio.Lock`).
+        await asyncio.wait_for(
+            asyncio.gather(entered_a.wait(), entered_b.wait()),
+            timeout=1.0,
+        )
+        released_event.set()
+        await asyncio.gather(task_a, task_b)
+
+    # If the implementation accidentally serializes across distinct
+    # (repo, branch) keys, the second `entered_*` event never fires and
+    # `asyncio.wait_for` raises TimeoutError.
+    asyncio.run(driver())
+
+
+# ---------------------------------------------------------------------------
+# CHG-1819 Surface 8 (F2, part b) — dispatcher does not read backend
+# from command_flags.  Structural source-inspection gate.
+# ---------------------------------------------------------------------------
+
+
+def test_dispatcher_does_not_read_backend_from_command_flags() -> None:
+    """F2: assert the dispatcher source code never reads ``backend`` from
+    ``command_flags`` (or any other attribute-style access).
+
+    The dispatcher's comment block legitimately mentions ``backend`` in
+    prose; strip comment-only lines before checking for attribute/subscript
+    access patterns. This guards against the dead lookup re-appearing in a
+    future refactor.
+    """
+    import inspect
+
+    from voyager.bots.assembly.writeback import dispatch_assembly_writeback
+
+    source = inspect.getsource(dispatch_assembly_writeback)
+    # Drop comment-only lines (first non-whitespace char is `#`).  We keep
+    # docstring text — the docstring on `dispatch_assembly_writeback` does
+    # not mention `backend`, so leaving it in does not produce false
+    # positives, and dropping it would over-fit the test.
+    code_lines = [line for line in source.splitlines() if line.lstrip()[:1] != "#"]
+    code_text = "\n".join(code_lines)
+    # Both attribute and subscript styles must be absent.
+    assert 'command_flags.get("backend")' not in code_text
+    assert "command_flags['backend']" not in code_text
+    assert 'command_flags["backend"]' not in code_text
