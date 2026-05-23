@@ -94,6 +94,29 @@ runs one stable document to cite.
 |-----|---------------|-------|
 | `<bot-actors>` | `[chatgpt-codex-connector[bot], iterwheel-clearance[bot]]` | Codex provides GitHub-side review; Clearance provides the PR readiness panel and may edit/update its marker comment. |
 
+### Codex Review Trigger (Phase 8 Iterate)
+
+Codex auto-reviews on `pull_request.opened` but not reliably on
+`pull_request.synchronize`. During Phase 8 (Iterate), the agent MUST actively
+re-engage Codex after each push rather than relying on passive bot polling.
+
+After each push to the PR branch during Phase 8:
+
+1. **Trigger** — Post `@codex review` as a PR comment to request a fresh Codex
+   review on the new commit.
+2. **Wait** — Poll PR comments for the Codex review summary. Codex typically
+   completes within 2–5 minutes of the trigger.
+3. **Inspect** — Check all Codex findings. Classify each as P0, P1, P2, or
+   non-actionable per the
+   [Completion Gate](#completion-gate-cor-1617-phase-11-binding) classification
+   rules.
+4. **Address** — Apply fixes for any actionable findings (P0/P1/P2).
+5. **Loop** — Push the fixes, then return to step 1 (post `@codex review`
+   again). Continue until Codex returns zero actionable findings.
+
+This rule applies only to PR iteration. Issue-only workflows without a PR are
+exempt — no `@codex review` trigger is needed.
+
 ### Loop Primitives (COR-1620)
 
 | Key | Voyager value | Notes |
