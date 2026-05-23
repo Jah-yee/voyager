@@ -32,3 +32,7 @@ def serve(
 def main() -> None:
     """Entry point for the ``vyg`` console script."""
     app()
+
+
+if __name__ == "__main__":
+    main()
