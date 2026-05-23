@@ -1,17 +1,17 @@
 {
   "action": "created",
   "sender": {
-    "login": "ryosaeba1985"
+    "login": "drive-by-commenter"
   },
   "repository": {
     "full_name": "iterwheel/voyager-sandbox"
   },
   "comment": {
-    "id": 9001,
+    "id": 9102,
     "body": "/assembly",
-    "author_association": "OWNER",
+    "author_association": "CONTRIBUTOR",
     "user": {
-      "login": "ryosaeba1985",
+      "login": "drive-by-commenter",
       "type": "User"
     }
   },
