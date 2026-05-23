@@ -27,9 +27,15 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
+# Only the two OS-level repro tests are macOS-specific (the `mv -h` flag
+# is BSD/macOS-only). The doc-grep guard `test_voy_1814_and_chg_1820_use_mv_hf_not_plain_mv_f`
+# is pure text matching and MUST run on every platform — it is the
+# regression check that blocks `mv -f` from reappearing in the SOP/CHG
+# docs, so disabling it on Linux CI would silently weaken protection.
+# Codex P2 finding on PR #80 caught the prior module-level skipif.
+darwin_only = pytest.mark.skipif(
     platform.system() != "Darwin",
-    reason="venv-swap command is macOS-specific (mv -h flag); see VOY-1814",
+    reason="venv-swap OS repro is macOS-specific (mv -h flag); see VOY-1814",
 )
 
 
@@ -43,6 +49,7 @@ def _make_layout(tmp_path: Path) -> tuple[Path, Path, Path]:
     return old_venv, new_venv, active
 
 
+@darwin_only
 def test_mv_f_alone_silently_fails_to_swap_symlink_on_macos(tmp_path: Path) -> None:
     """Documents the broken pattern. Asserts the bug exists so the fix is non-trivial."""
     _old_venv, _new_venv, active = _make_layout(tmp_path)
@@ -66,6 +73,7 @@ def test_mv_f_alone_silently_fails_to_swap_symlink_on_macos(tmp_path: Path) -> N
     assert not swap.exists()
 
 
+@darwin_only
 def test_mv_hf_swaps_symlink_atomically(tmp_path: Path) -> None:
     """Verifies the documented CHG-1820 D6 command actually swaps the symlink."""
     old_venv, new_venv, active = _make_layout(tmp_path)
