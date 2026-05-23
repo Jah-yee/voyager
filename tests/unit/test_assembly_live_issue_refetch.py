@@ -257,6 +257,54 @@ def test_per_command_dry_run_flag_blocks_mutations_when_env_dry_run_false(
     assert client.create_issue_comment.await_count == 0
 
 
+def test_live_empty_body_is_authoritative_not_cached_fallback(
+    monkeypatch,
+) -> None:
+    """Codex round-4 P2: when GitHub returns the issue with empty body
+    (operator cleared the requirements between routing and dispatch), the
+    live empty value must be authoritative — the dispatcher must NOT use
+    the stale cached body to rebuild the job contract."""
+    monkeypatch.setenv("DRY_RUN", "false")
+    client = AsyncMock()
+    client.get_issue = AsyncMock(
+        return_value={
+            "number": 69,
+            "title": "[Feature]: Implement Assembly bot MVP",
+            "body": "",  # ← intentionally cleared
+            "html_url": "https://example/issues/69",
+            "labels": [
+                {"name": "blueprint-ready"},
+                {"name": "stack-type-feature"},
+            ],
+            "state": "open",
+        }
+    )
+    client.upsert_issue_comment = AsyncMock(return_value={"id": 1})
+    client.branch_ref_exists = AsyncMock(return_value=False)
+    client.create_branch_ref = AsyncMock(return_value={"object": {"sha": "newsha"}})
+    client.find_pull_request_by_head = AsyncMock(return_value=None)
+    client.create_pull_request = AsyncMock(return_value={"number": 100, "html_url": "x"})
+    client.create_issue_comment = AsyncMock(return_value={"id": 2})
+
+    with patch(
+        "voyager.bots.assembly.writeback.select_execution_adapter",
+        return_value=_executing_adapter(),
+    ):
+        result = asyncio.run(
+            dispatch_assembly_writeback(
+                client, _route_with_cached_blueprint_ready(), repository="iterwheel/voyager-sandbox"
+            )
+        )
+
+    # Contract rebuilt with the (empty) live body, not the cached body
+    contract = result["contract"]
+    assert contract is not None
+    assert contract["issue_body"] == ""
+    # Falls back to title-fallback for both summary and AC since body empty
+    assert contract["task_summary_source"] == "title_fallback"
+    assert contract["acceptance_criteria_source"] == "title_fallback"
+
+
 def test_live_refetch_http_error_falls_back_to_cached_and_records_failure(
     monkeypatch,
 ) -> None:

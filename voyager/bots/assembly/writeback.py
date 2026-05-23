@@ -118,15 +118,20 @@ async def _live_issue_from_route(
     ]
     # Codex round-2 P1: a successful live refetch is authoritative for
     # labels even when the list is empty — the operator may have removed
-    # all gating labels between routing and dispatch. Only the cached
-    # fallback path (above) should defer to webhook-cached labels.
+    # all gating labels between routing and dispatch.
+    #
+    # Codex round-4 P2: the same authority applies to ``title``, ``body``,
+    # ``html_url``, and ``state``. ``or cached.get(...)`` would silently
+    # replace an intentionally-cleared live field with stale webhook
+    # content. ``dict.get(key, default)`` returns the default only when
+    # the key is missing — an empty/None live value still wins.
     return {
-        "number": live.get("number") or issue_number,
-        "title": live.get("title") or cached.get("title"),
-        "body": live.get("body") or cached.get("body"),
-        "html_url": live.get("html_url") or cached.get("html_url"),
+        "number": live.get("number", issue_number),
+        "title": live.get("title", cached.get("title")),
+        "body": live.get("body", cached.get("body")),
+        "html_url": live.get("html_url", cached.get("html_url")),
         "labels": live_labels,
-        "state": (live.get("state") or cached.get("state") or "open"),
+        "state": live.get("state", cached.get("state")) or "open",
         "pull_request": live.get("pull_request"),
         "_source": "live",
     }

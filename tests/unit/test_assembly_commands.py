@@ -86,3 +86,36 @@ def test_unrelated_body_returns_none() -> None:
 @pytest.mark.parametrize("body", ["", None])
 def test_empty_or_none_returns_none(body: str | None) -> None:
     assert parse_assembly_command(body) is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "/assemblyx",
+        "/assembly-now",
+        "/assembly_run",
+        "/implementation",
+        "/implement-now",
+        "/implementor",
+    ],
+)
+def test_token_boundary_rejects_extended_command_names(body: str) -> None:
+    """Codex round-4 P1: command parser must NOT match prefixes that extend
+    /assembly or /implement with extra characters. A typo like /assemblyx
+    must not trigger Assembly in production."""
+    assert parse_assembly_command(body) is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "/assembly",
+        "/assembly ",
+        "/assembly --dry-run",
+        "/assembly\t--allow-missing-stack",
+        "/implement",
+        "/implement --dry-run --allow-missing-stack",
+    ],
+)
+def test_token_boundary_accepts_legitimate_invocations(body: str) -> None:
+    assert parse_assembly_command(body) is not None
