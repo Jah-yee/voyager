@@ -315,6 +315,118 @@ def test_existing_pr_is_updated_not_recreated(monkeypatch) -> None:
     assert client.update_pull_request.await_count == 1
 
 
+# ---------------------------------------------------------------------------
+# VOY-1818 Surface 9 — actor-gate refusal handling
+# ---------------------------------------------------------------------------
+
+
+def test_unauthorized_actor_refusal_dry_run_false_upserts_comment(monkeypatch) -> None:
+    """DRY_RUN=false + actor-gate refusal -> upsert_issue_comment with the
+    unauthorized_actor body; no branch / PR / codex calls.
+    """
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv(ASSEMBLY_EXECUTION_BACKEND_ENV, ASSEMBLY_BACKEND_DRY_RUN)
+    client = _mock_client_for_writes()
+    refusal = {
+        "reason": "unauthorized_actor",
+        "missing_labels": [],
+        "outside_allow_list": False,
+        "actor_login": "drive-by",
+        "actor_association": "CONTRIBUTOR",
+    }
+    result = asyncio.run(
+        dispatch_assembly_writeback(
+            client,
+            _route(refusal=refusal, contract=None),
+            repository="iterwheel/voyager-sandbox",
+        )
+    )
+    assert result["refusal"]["reason"] == "unauthorized_actor"
+    assert result["refusal"]["actor_login"] == "drive-by"
+    assert result["refusal"]["actor_association"] == "CONTRIBUTOR"
+    # Exactly one comment upsert; no branch / PR / codex writes.
+    assert client.upsert_issue_comment.await_count == 1
+    assert client.create_branch_ref.await_count == 0
+    assert client.create_pull_request.await_count == 0
+    assert client.create_issue_comment.await_count == 0
+    # The body that was passed to upsert must contain the unauthorized_actor
+    # reason and the actor's own identity (per D12 — actor's own login is OK).
+    call = client.upsert_issue_comment.await_args
+    body = call.kwargs.get("body") or (call.args[-1] if call.args else "")
+    assert "unauthorized_actor" in body
+    assert "drive-by" in body
+    # D12 — refusal body MUST NOT echo any operator-set list.  In particular
+    # it must not enumerate the default-trusted-association set.
+    assert "OWNER MEMBER COLLABORATOR" not in body
+    assert "OWNER, MEMBER, COLLABORATOR" not in body
+    assert "frankyxhl" not in body
+
+
+def test_unauthorized_actor_refusal_dry_run_true_skips_comment(monkeypatch) -> None:
+    """DRY_RUN=true + actor-gate refusal -> no upsert_issue_comment call.
+
+    The dispatcher already short-circuits dry-run refusals via
+    _post_refusal_comment (writeback.py:374). The refusal still appears in
+    the returned result dict so the writeback ring captures it.
+    """
+    monkeypatch.setenv("DRY_RUN", "true")
+    monkeypatch.setenv(ASSEMBLY_EXECUTION_BACKEND_ENV, ASSEMBLY_BACKEND_DRY_RUN)
+    client = _mock_client_for_writes()
+    refusal = {
+        "reason": "unauthorized_actor",
+        "missing_labels": [],
+        "outside_allow_list": False,
+        "actor_login": "drive-by",
+        "actor_association": "NONE",
+    }
+    result = asyncio.run(
+        dispatch_assembly_writeback(
+            client,
+            _route(refusal=refusal, contract=None),
+            repository="iterwheel/voyager-sandbox",
+        )
+    )
+    assert result["dry_run"] is True
+    assert result["refusal"]["reason"] == "unauthorized_actor"
+    assert result["refusal"]["actor_login"] == "drive-by"
+    # No GitHub mutations under dry-run.
+    assert client.upsert_issue_comment.await_count == 0
+    assert client.create_branch_ref.await_count == 0
+    assert client.create_pull_request.await_count == 0
+    assert client.create_issue_comment.await_count == 0
+
+
+def test_non_actor_refusal_does_not_carry_actor_keys(monkeypatch) -> None:
+    """Negative assertion (Surface 9 case 3) — when a non-actor refusal
+    reaches the dispatcher, the refusal payload passed to the comment
+    renderer does NOT carry actor_login / actor_association.
+
+    Regression guard for the Surface 5 renderer fork: the renderer branches
+    on reason == "unauthorized_actor"; if a non-actor refusal carried actor
+    keys, the renderer would silently misroute.
+    """
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv(ASSEMBLY_EXECUTION_BACKEND_ENV, ASSEMBLY_BACKEND_DRY_RUN)
+    client = _mock_client_for_writes()
+    refusal = {
+        "reason": "pr_not_issue",
+        "missing_labels": [],
+        "outside_allow_list": False,
+    }
+    result = asyncio.run(
+        dispatch_assembly_writeback(
+            client,
+            _route(refusal=refusal, contract=None),
+            repository="iterwheel/voyager-sandbox",
+        )
+    )
+    assert result["refusal"]["reason"] == "pr_not_issue"
+    assert "actor_login" not in result["refusal"]
+    assert "actor_association" not in result["refusal"]
+    # Comment still upserted.
+    assert client.upsert_issue_comment.await_count == 1
+
+
 @pytest.fixture(autouse=True)
 def _reset_env(monkeypatch):
     """Reset env between tests so DRY_RUN does not leak."""
