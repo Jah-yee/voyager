@@ -28,6 +28,27 @@ def _format_failures(failures: list[dict[str, Any]] | None) -> list[str]:
 
 def _format_refusal(refusal: dict[str, Any]) -> str:
     reason = refusal.get("reason", "unknown")
+
+    # VOY-1818 Surface 5: unauthorized_actor has its own body shape.
+    # D12: MUST NOT echo the allow-list contents or trusted-association set.
+    if reason == "unauthorized_actor":
+        actor_login = refusal.get("actor_login") or "unknown"
+        actor_association = refusal.get("actor_association") or "none"
+        return "\n".join(
+            [
+                ASSEMBLY_COMMENT_MARKER,
+                "**Assembly refused this invocation.**",
+                "",
+                f"Reason: `{reason}`",
+                "",
+                f"Actor: `{actor_login}` (association: `{actor_association}`)",
+                "",
+                "Assembly only writes code when the triggering actor is authorized per",
+                "VOY-1805 §Actor Authorization for Assembly. See VOY-1818 for the gate",
+                "policy and how to add an actor to the allow-list.",
+            ]
+        ).strip()
+
     missing = refusal.get("missing_labels") or []
     outside = refusal.get("outside_allow_list")
     lines = [
