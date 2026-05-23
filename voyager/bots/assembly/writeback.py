@@ -38,30 +38,78 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
-def _live_issue_from_route(_client: GitHubAppClient, route: dict[str, Any]) -> dict[str, Any]:
-    """Best-effort: return the issue payload carried on the route validation.
+def _cached_issue_from_route(route: dict[str, Any]) -> dict[str, Any]:
+    """Return the cached webhook snapshot of the issue from the route shape.
 
-    The writeback dispatcher does not currently refetch the live issue —
-    it trusts the payload the router already validated, which the bridge
-    snapshots into ``writeback.contract``.  D4 re-validation operates on
-    the contract surface; an issue edit between routing and dispatch
-    surfaces as a refusal here.
+    Used as the fallback when the live GitHub refetch fails.
     """
-    # The router puts a full contract dict under writeback.contract for the
-    # happy path; on refusal it puts None and surfaces the refusal directly.
     writeback = route.get("writeback") or {}
     contract = writeback.get("contract") or {}
-    # Reconstruct a minimal issue shape from the contract.
     return {
         "number": contract.get("issue_number"),
         "title": contract.get("issue_title"),
         "body": contract.get("issue_body"),
         "html_url": contract.get("issue_url"),
-        # The router's preconditions already passed; the dispatcher's
-        # re-check operates on the same gates.  Labels are recomputed here
-        # from contract metadata since the payload is not preserved.
         "labels": writeback.get("issue_labels") or [],
         "state": writeback.get("issue_state") or "open",
+    }
+
+
+async def _live_issue_from_route(
+    client: GitHubAppClient,
+    repository: str,
+    route: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Refetch the live issue from GitHub before D4 re-validation.
+
+    Codex round-1 P1 (PR #74): D4's "live issue is authoritative" promise
+    requires an actual GitHub round-trip — the cached webhook payload may
+    be stale (label removed, issue closed) by the time the background
+    writeback task fires.
+
+    On HTTP/timeout failure, falls back to the cached webhook snapshot and
+    records the failure in ``result["writeback_failures"]`` so the operator
+    sees the degraded path.
+    """
+    cached = _cached_issue_from_route(route)
+    issue_number = cached.get("number")
+    if not issue_number:
+        return cached
+    try:
+        live = await client.get_issue(ASSEMBLY_AGENT_SLUG, repository, int(issue_number))
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation="getIssue",
+                exc=exc,
+                repository=repository,
+                issue=int(issue_number),
+            )
+        )
+        return cached
+    if not isinstance(live, dict):
+        # Defensive: real GitHub always returns a JSON object, but mock
+        # clients that auto-create get_issue without setting a return value
+        # would yield a non-dict. Fall back to cached rather than crashing
+        # the dispatcher.
+        return cached
+    # GitHub returns labels as objects with {name, color, ...}; normalise to
+    # plain names for the precondition gate, which is what Blueprint/Stack
+    # snapshots also carry.
+    live_labels = [
+        item.get("name")
+        for item in (live.get("labels") or [])
+        if isinstance(item, dict) and item.get("name")
+    ]
+    return {
+        "number": live.get("number") or issue_number,
+        "title": live.get("title") or cached.get("title"),
+        "body": live.get("body") or cached.get("body"),
+        "html_url": live.get("html_url") or cached.get("html_url"),
+        "labels": live_labels or cached.get("labels") or [],
+        "state": (live.get("state") or cached.get("state") or "open"),
+        "pull_request": live.get("pull_request"),
     }
 
 
@@ -116,16 +164,18 @@ async def dispatch_assembly_writeback(
         return await _post_refusal_comment(client, route, repository, base_result)
 
     # ------------------------------------------------------------------
-    # D4 — re-validate preconditions against the snapshot we have.
+    # D4 — re-validate preconditions against the LIVE issue snapshot
+    # (Codex round-1 P1 fix: refetch from GitHub, not just the cached
+    # webhook payload).  On refetch failure the cached snapshot is used
+    # and the failure is recorded in ``base_result["writeback_failures"]``.
     # ------------------------------------------------------------------
-    issue_snapshot = _live_issue_from_route(client, route)
+    issue_snapshot = await _live_issue_from_route(client, repository, route, base_result)
+    # When the live refetch succeeded, its label list is authoritative;
+    # fall back to webhook-cached labels only when the refetch returned
+    # no labels (typically because the fallback path triggered).
+    snapshot_labels = issue_snapshot.get("labels") or _labels_from_validation(validation)
     pre = validate_preconditions(
-        {
-            **issue_snapshot,
-            # Re-attach labels from the original webhook so the gate is
-            # meaningful even when the dispatcher cannot refetch.
-            "labels": _labels_from_validation(validation) or issue_snapshot.get("labels"),
-        },
+        {**issue_snapshot, "labels": snapshot_labels},
         allow_missing_stack=bool(command_flags.get("allow_missing_stack")),
     )
     if not pre.ok:

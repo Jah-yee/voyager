@@ -210,6 +210,17 @@ class GitHubAppClient:
         )
         return dict(payload or {})
 
+    async def get_issue(self, app_slug: str, repo: str, issue_number: int) -> dict[str, Any]:
+        """Fetch the current state of an issue (or issue-shaped PR)."""
+        owner, name = repo.split("/", 1)
+        payload = await self.request(
+            app_slug,
+            "GET",
+            f"/repos/{owner}/{name}/issues/{issue_number}",
+            repository=repo,
+        )
+        return dict(payload or {})
+
     async def pull_request_reviews(
         self, app_slug: str, repo: str, pull_number: int
     ) -> list[dict[str, Any]]:
