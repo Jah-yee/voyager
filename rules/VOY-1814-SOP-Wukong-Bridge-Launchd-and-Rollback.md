@@ -127,11 +127,15 @@ uv venv /Users/frank/.voyager/.venv-vX.Y.Z
 /Users/frank/.voyager/.venv-vX.Y.Z/bin/pip install dist/iterwheel_voyager-X.Y.Z-py3-none-any.whl
 
 # 3. Atomically swap ~/.voyager/.venv → the new versioned venv.
-#    `mv -f` uses rename(2) which is atomic on APFS/HFS+.
-#    DO NOT use `ln -sfn` — it is unlink + symlink and exposes a μs window
-#    where the symlink does not exist.
+#    `mv -hf` uses rename(2) and is atomic on APFS/HFS+.
+#    Critical: `-h` (BSD/macOS) means "do not follow target symlinks".
+#    Without `-h`, when `.venv` already points to an existing venv directory,
+#    `mv -f` follows the symlink and moves `.venv.swap-$$` INTO that directory
+#    instead of replacing the `.venv` symlink — leaving the active venv
+#    silently unchanged. DO NOT use plain `mv -f`, and DO NOT use `ln -sfn`
+#    (unlink + symlink, exposes a μs window where the symlink is missing).
 ln -s /Users/frank/.voyager/.venv-vX.Y.Z /Users/frank/.voyager/.venv.swap-$$
-mv -f /Users/frank/.voyager/.venv.swap-$$ /Users/frank/.voyager/.venv
+mv -hf /Users/frank/.voyager/.venv.swap-$$ /Users/frank/.voyager/.venv
 
 # 4. Verify the active venv reports the expected version + commit.
 /Users/frank/.voyager/.venv/bin/vyg version
@@ -232,10 +236,17 @@ the active-venv symlink back to it:
 
 ```bash
 ln -s /Users/frank/.voyager/.venv-v0.3.0 /Users/frank/.voyager/.venv.swap-$$
-mv -f /Users/frank/.voyager/.venv.swap-$$ /Users/frank/.voyager/.venv
+mv -hf /Users/frank/.voyager/.venv.swap-$$ /Users/frank/.voyager/.venv
 launchctl kickstart -k gui/$(id -u)/com.iterwheel.voyager.bridge
 curl -fsS http://127.0.0.1:8787/healthz   # confirm build_commit is the prior version
 ```
+
+The `-h` flag (BSD/macOS) tells `mv` not to follow target symlinks. Without
+it, the move silently lands `.venv.swap-$$` INSIDE the existing venv
+directory pointed at by `.venv` — and the active version never changes.
+After the swap, `readlink /Users/frank/.voyager/.venv` MUST point at
+the rolled-back venv directory; verify before treating the rollback as
+complete.
 
 This is the **preferred** path because it cannot accidentally pick up
 uncommitted dev-checkout changes — the production venv is fully isolated.
@@ -305,3 +316,4 @@ handoff or PR:
 |------|--------|----|
 | 2026-05-18 | Initial Wukong launchd and rollback SOP for issue #44. | Codex |
 | 2026-05-23 | VOY-1820 amendment — new Step 5 "Install the production wheel" + cascade renumber Steps 5→6 / 6→7 / 7→8; preferred venv-swap rollback path added to Step 8. | Claude (via VOY-1811 #75) |
+| 2026-05-23 | Post-PR ship-blocker fix — corrected venv-swap command from `mv -f` to `mv -hf` (BSD/macOS `-h` = "do not follow target symlinks"). On macOS, `mv -f` follows the existing `.venv` symlink and moves the intermediate INSIDE the old venv directory; the active venv never switches and rollback silently no-ops. Empirically reproduced on Wukong during PR #80 pre-merge operator review. Fix applied to Step 5 install + Step 8 rollback example. | Claude (via VOY-1811 #75) |
