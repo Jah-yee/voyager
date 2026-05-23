@@ -19,6 +19,7 @@ freshly-built artifacts so ``dist/`` returns to its pre-test state.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -41,10 +42,16 @@ def test_built_wheel_contains_build_info_and_reports_commit() -> None:
     # when uv-build overwrites same-name wheels from prior runs (the set-diff
     # snapshot pattern misses that case).
     build_start = time.time() - 1  # 1-second buffer for clock skew
+    # The build script's dirty-tree gate is operator-facing; in a pytest run
+    # other tests may leave untracked files (caches, dist/ leftovers) that
+    # `git status --porcelain` reports. Override the gate here — the test
+    # explicitly controls the input state and re-asserts wheel content below.
+    env = {**os.environ, "VOYAGER_BUILD_ALLOW_DIRTY": "1"}
     subprocess.run(
         ["bash", str(build_script)],
         cwd=PROJECT_ROOT,
         check=True,
+        env=env,
     )
 
     fresh_wheels = [
