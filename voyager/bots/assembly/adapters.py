@@ -348,6 +348,8 @@ class PiOhMyPiDeepSeekAdapter:
                 [
                     "git",
                     "push",
+                    "--force-with-lease",
+                    "--no-verify",
                     "origin",
                     f"HEAD:refs/heads/{contract.branch_name}",
                 ],
