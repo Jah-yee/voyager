@@ -291,6 +291,48 @@ def test_adapter_failure_diagnostic_reaches_comment_manifest_and_log(
     )
 
 
+def test_adapter_non_mapping_failure_diagnostic_does_not_break_manifest(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from voyager.bots.assembly import adapters
+    from voyager.bots.assembly import writeback as wb_module
+
+    monkeypatch.setenv("DRY_RUN", "false")
+
+    class _FailureAdapter:
+        name = "fake-diagnostic-adapter"
+
+        async def execute(self, contract, context):
+            _ = (contract, context)
+            return adapters.AdapterResult(
+                status="failed",
+                commit_shas=[],
+                summary="adapter failed",
+                details={"failure_diagnostic": ["not", "a", "mapping"]},
+            )
+
+    monkeypatch.setattr(
+        wb_module, "select_execution_adapter", lambda backend=None: _FailureAdapter()
+    )
+    client = _mock_client_for_writes()
+
+    result = asyncio.run(
+        dispatch_assembly_writeback(client, _route(), repository="iterwheel/voyager-sandbox")
+    )
+
+    assert result["adapter_result"]["status"] == "failed"
+    assert result["pull_request"]["action"] == "skipped_no_changes"
+    assert client.upsert_issue_comment.await_count == 1
+    body = client.upsert_issue_comment.await_args.kwargs["body"]
+    assert "**Backend failure diagnostics:**" not in body
+
+    manifest_path = find_audit_manifest(result["audit_id"], root=tmp_path / "audit")
+    assert manifest_path is not None
+    manifest = load_audit_manifest(manifest_path)
+    assert manifest.failure_diagnostic == {}
+
+
 # ---------------------------------------------------------------------------
 # AL- corner (refusal at server, not dispatcher — tested via refusal payload)
 # ---------------------------------------------------------------------------

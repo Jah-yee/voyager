@@ -455,6 +455,10 @@ def _write_audit_manifest(
     except (TypeError, ValueError):
         pr_number = None
 
+    failure_diagnostic_raw = details.get("failure_diagnostic")
+    failure_diagnostic = (
+        dict(failure_diagnostic_raw) if isinstance(failure_diagnostic_raw, dict) else {}
+    )
     manifest = AssemblyAuditManifest(
         audit_id=audit_id,
         repository=repository,
@@ -466,7 +470,7 @@ def _write_audit_manifest(
         checkout_dir=details.get("checkout_dir"),
         omp_session_jsonl_path=details.get("omp_session_jsonl_path"),
         exported_html_path=details.get("exported_html_path"),
-        failure_diagnostic=dict(details.get("failure_diagnostic") or {}),
+        failure_diagnostic=failure_diagnostic,
         failure_debug_bundle_path=details.get("failure_debug_bundle_path"),
         verification_commands=tuple(contract.verification_commands),
         adapter_status=adapter_result.get("status"),
