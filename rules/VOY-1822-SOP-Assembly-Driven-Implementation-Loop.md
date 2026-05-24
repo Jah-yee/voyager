@@ -84,6 +84,7 @@ Before triggering Assembly, verify every precondition in this section.
 | Stack | Issue has at least one `stack-type-*` label, unless using an explicit safe override | Labels or Stack comment |
 | Actor | Triggering actor is authorized | `BRIDGE_ASSEMBLY_AUTHORIZED_ACTORS` or trusted association policy |
 | Repository | Repo is installed for `iterwheel-assembly` and bridge allow-listed | VOY-1807 plus `BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_ASSEMBLY` |
+| Bridge | Bridge is healthy and `dry_run` state is intentional | `/healthz` local or public endpoint |
 | PR Source | Managed PRs must satisfy headRepository == baseRepository. Fork PRs are forbidden for managed Assembly/Codex implementation loops unless a human explicitly grants an exception. | `gh pr view <N> --repo <owner/repo> --json isCrossRepository,headRepository | jq -e '(.isCrossRepository | not) and (.headRepository.nameWithOwner == "<owner>/<repo>")' > /dev/null` |
 | Backend | `ASSEMBLY_EXECUTION_BACKEND` is intentional | Normally `dry-run`, `fake-subprocess`, or `pi-oh-my-pi-deepseek` |
 | Verification | Repo-specific verification commands are configured when defaults do not apply | `ASSEMBLY_VERIFICATION_COMMANDS_<encoded-repo>` or global override |
