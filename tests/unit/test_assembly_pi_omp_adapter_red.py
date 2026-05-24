@@ -288,6 +288,14 @@ async def test_pi_adapter_executes_omp_in_clone_pushes_branch_and_returns_sha(
     assert recorder.git_calls("clone")
     push_calls = recorder.git_calls("push")
     assert push_calls
+    # VOY-1822: push must use explicit HTTPS remote, never literal "origin".
+    push_argv = " ".join(push_calls[0]["argv"])
+    assert "https://github.com/iterwheel/voyager-sandbox.git" in push_argv, (
+        f"push argv must use explicit HTTPS remote, got: {push_argv}"
+    )
+    assert " origin " not in f" {push_argv} ", (
+        f"push argv must not contain literal 'origin', got: {push_argv}"
+    )
     assert any(_contract().branch_name in " ".join(call["argv"]) for call in push_calls)
     flattened_argv = "\n".join(" ".join(call["argv"]) for call in recorder.calls)
     assert INSTALLATION_TOKEN not in flattened_argv

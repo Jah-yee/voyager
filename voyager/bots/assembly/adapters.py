@@ -30,6 +30,7 @@ from .constants import (
     ASSEMBLY_FAKE_SUBPROCESS_OUTPUT_ENV,
 )
 from .job_contract import AssemblyJobContract
+from .publish import publish_branch
 
 _COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
@@ -344,22 +345,16 @@ class PiOhMyPiDeepSeekAdapter:
             if verification is not None:
                 return _failed_pi_result(verification, token, details)
 
-            push = await _run_exec(
-                [
-                    "git",
-                    "push",
-                    "--force-with-lease",
-                    "--no-verify",
-                    "origin",
-                    f"HEAD:refs/heads/{contract.branch_name}",
-                ],
-                cwd=checkout_dir,
+            publish_result = await publish_branch(
+                repository=repository,
+                branch_name=contract.branch_name,
+                installation_token=token,
+                checkout_dir=checkout_dir,
                 timeout_seconds=timeout_seconds,
-                env=git_auth_env,
             )
-            if push.returncode != 0:
+            if not publish_result.success:
                 return _failed_pi_result(
-                    "Git push failed for Assembly OMP backend.",
+                    f"Git push failed for Assembly OMP backend: {publish_result.message}",
                     token,
                     details,
                 )

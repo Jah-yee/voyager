@@ -57,6 +57,7 @@ from .constants import (
 )
 from .job_contract import AssemblyJobContract, build_job_contract
 from .preconditions import PreconditionResult, validate_preconditions
+from .publish import PublishResult, publish_branch
 from .routing import route_assembly_event, should_run_assembly
 
 __all__ = [
@@ -92,6 +93,7 @@ __all__ = [
     "FakeSubprocessAdapter",
     "PiOhMyPiDeepSeekAdapter",
     "PreconditionResult",
+    "PublishResult",
     "audit_manifest_path",
     "build_assembly_comment",
     "build_job_contract",
@@ -103,6 +105,7 @@ __all__ = [
     "lookup_hint",
     "make_branch_name",
     "parse_assembly_command",
+    "publish_branch",
     "route_assembly_event",
     "select_execution_adapter",
     "should_run_assembly",
