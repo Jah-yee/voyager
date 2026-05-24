@@ -693,6 +693,56 @@ async def _ensure_branch(
         return False
 
 
+async def _verify_pr_head_repo(
+    pr: dict[str, Any],
+    repository: str,
+    result: dict[str, Any],
+) -> bool:
+    """Verify the PR's head repository matches the base repository.
+
+    VOY-1822 requires managed PRs to satisfy headRepository == baseRepository.
+    Fork PRs are forbidden for managed Assembly/Codex implementation loops
+    because Clearance cannot auto-resolve review threads without GitHub App
+    access to the fork head repository.
+
+    Returns True when the head repo matches (or when the repo fields are not
+    present in the response — the caller already ensures same-repo creation via
+    the remote URL and bare branch name).  On explicit mismatch records a
+    writeback failure and returns False.
+    """
+    head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name") or ""
+    base_repo = ((pr.get("base") or {}).get("repo") or {}).get("full_name") or ""
+
+    # If either field is missing (e.g. simplified test mock or deleted fork),
+    # skip the check — the creation path already enforces same-repo via
+    # the remote URL and bare branch-name in create_pull_request.
+    if not head_repo or not base_repo:
+        return True
+
+    if head_repo != base_repo:
+        result["writeback_failures"].append(
+            {
+                "operation": "verifyPRHeadRepo",
+                "error_class": "ForkHeadRepo",
+                "status": None,
+                "repo": repository,
+                "pr": pr.get("number"),
+                "issue": None,
+                "thread_id": None,
+                "suggested_action": (
+                    f"PR head repository ({head_repo}) differs from "
+                    f"base repository ({base_repo}).  "
+                    "VOY-1822 requires same-repo PR branches for managed flows. "
+                    "Close this PR and create a new one from the target repository. "
+                    "Fork PRs block Clearance auto-resolve."
+                ),
+            }
+        )
+        return False
+
+    return True
+
+
 async def _ensure_pull_request(
     client: GitHubAppClient,
     repository: str,
@@ -725,6 +775,9 @@ async def _ensure_pull_request(
         return False
 
     if existing:
+        # VOY-1822: verify the PR is not from a fork before updating it.
+        if not await _verify_pr_head_repo(existing, repository, result):
+            return False
         pr_number = int(existing.get("number") or 0)
         try:
             await client.update_pull_request(
@@ -757,6 +810,9 @@ async def _ensure_pull_request(
             base=base_branch,
             body=pr_body,
         )
+        # VOY-1822: verify the newly created PR is not from a fork.
+        if not await _verify_pr_head_repo(pr, repository, result):
+            return False
         result["pull_request"] = {
             "number": pr.get("number"),
             "url": pr.get("html_url"),
