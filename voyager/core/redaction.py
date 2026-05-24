@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_GITHUB_TOKEN_RE = re.compile(r"\b(?:gh[opsru]_|github_pat_)[A-Za-z0-9_]+\b")
+_GITHUB_TOKEN_RE = re.compile(r"\b(?:gh[opsru]_|github_pat_)[A-Za-z0-9_.-]+\b")
 _TOKEN_QUERY_RE = re.compile(r"(?i)(token=)[^\s&]+")
 _BEARER_RE = re.compile(r"(?i)(Bearer\s+)\S+")
 
