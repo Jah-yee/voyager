@@ -162,11 +162,16 @@ class _CommandRecorder:
         if len(argv) > 1 and argv[1] == "clone":
             Path(argv[-1]).mkdir(parents=True, exist_ok=True)
         if len(argv) > 1 and argv[1] == "fetch":
+            if self.remote_branch_exists:
+                return _FakeProcess(argv, returncode=0, stdout="", stderr="")
+            # Simulate git fetch failure for a non-existent remote ref
+            # with the standard git error message.
+            fetch_ref = argv[-1] if len(argv) > 2 else "unknown"
             return _FakeProcess(
                 argv,
-                returncode=0 if self.remote_branch_exists else 128,
+                returncode=128,
                 stdout="",
-                stderr="",
+                stderr=f"fatal: couldn't find remote ref {fetch_ref}\n",
             )
         if "rev-parse" in argv and "--verify" in argv:
             return _FakeProcess(
@@ -288,6 +293,43 @@ async def test_pi_adapter_executes_omp_in_clone_pushes_branch_and_returns_sha(
     assert recorder.git_calls("clone")
     push_calls = recorder.git_calls("push")
     assert push_calls
+    # VOY-1822: push must use a dedicated named remote, not the URL directly.
+    push_argv = " ".join(push_calls[0]["argv"])
+    assert "assembly-publish" in push_argv, f"push argv must use the named remote, got: {push_argv}"
+    remote_url = "https://github.com/iterwheel/voyager-sandbox.git"
+    assert remote_url not in push_argv, (
+        f"push argv must not contain the URL directly, got: {push_argv}"
+    )
+    assert " origin " not in f" {push_argv} ", (
+        f"push argv must not contain literal 'origin', got: {push_argv}"
+    )
+    branch = _contract().branch_name
+    lease_fetch_calls = [
+        call
+        for call in recorder.git_calls("fetch")
+        if any(arg.startswith("assembly-publish-") for arg in call["argv"])
+        and "--no-tags" in call["argv"]
+        and any(
+            arg.startswith(f"refs/heads/{branch}:refs/remotes/assembly-publish-")
+            and arg.endswith(f"/{branch}")
+            for arg in call["argv"]
+        )
+    ]
+    assert lease_fetch_calls, "No Assembly publish lease fetch call recorded"
+    fetch_idx = recorder.calls.index(lease_fetch_calls[0])
+    push_idx = recorder.calls.index(push_calls[0])
+    assert fetch_idx < push_idx
+    # Verify the git remote add was issued with the HTTPS URL
+    remote_add_calls = [
+        call
+        for call in recorder.calls
+        if "remote" in " ".join(call["argv"]) and "add" in " ".join(call["argv"])
+    ]
+    assert remote_add_calls, "No git remote add call recorded"
+    remote_add_argv = " ".join(remote_add_calls[0]["argv"])
+    assert remote_url in remote_add_argv, (
+        f"remote add argv must contain the HTTPS URL, got: {remote_add_argv}"
+    )
     assert any(_contract().branch_name in " ".join(call["argv"]) for call in push_calls)
     flattened_argv = "\n".join(" ".join(call["argv"]) for call in recorder.calls)
     assert INSTALLATION_TOKEN not in flattened_argv
@@ -298,6 +340,11 @@ async def test_pi_adapter_executes_omp_in_clone_pushes_branch_and_returns_sha(
             call in recorder.git_calls("clone")
             or call in recorder.git_calls("fetch")
             or call in recorder.git_calls("push")
+            or (
+                call in recorder.git_calls("remote")
+                and len(call["argv"]) > 2
+                and call["argv"][2] == "add"
+            )
         )
         if is_auth_git:
             assert INSTALLATION_TOKEN in env_json

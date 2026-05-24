@@ -481,6 +481,101 @@ Direct implementation instead:
    Codex or a human PR instead of triggering Assembly.
 
 ---
+## App Token Publish Path
+
+### What Is It
+
+`voyager/core/publish.py::assembly_app_publish()` is a reusable function
+that pushes `HEAD` to a same-repository branch using the
+`iterwheel-assembly` GitHub App installation token, creates or updates a
+pull request as `iterwheel-assembly`, and posts a fresh `@codex review`
+comment on the PR.
+
+### When To Use Instead Of Personal `gh`/SSH Auth
+
+Use the App token publish path when:
+
+- Your local `gh` or SSH identity lacks write access to the target
+  repository (e.g. `ryosaeba1985` cannot push to `iterwheel/voyager`).
+- The branch targets a same-repository PR. Fork PRs are forbidden for
+  managed Assembly/Codex implementation loops per VOY-1822 §5.1.
+- You have network access to `api.github.com`, git is installed, and
+  the `iterwheel-assembly` App private key is configured.
+- The repository is installed for `iterwheel-assembly` per VOY-1807.
+
+Use personal `gh`/SSH auth when:
+
+- Your local identity has write access to the target repository.
+- You are pushing to a personal fork, not the target repository.
+- You need to push branches that are not managed by the Assembly loop.
+- The `iterwheel-assembly` App is not installed on the repository.
+
+### How It Works
+
+1. **Token minting.** `GitHubAppClient.installation_token()` signs a JWT
+   with the App private key and exchanges it for a short-lived installation
+   token at `api.github.com/app/installations/{id}/access_tokens`.
+2. **Askpass helper.** A temporary `git-askpass.sh` script is written to a
+   temp directory with `0o700` permissions. The script reads the token from
+   the `ASSEMBLY_GITHUB_TOKEN` env var — a password prompt never reaches a
+   TTY or terminal credential helper.
+3. **Git push.** `git push --force-with-lease --no-verify origin HEAD:refs/heads/<branch>`.
+   `--force-with-lease` refuses if the remote ref has moved since the last
+   known state (non-destructive even on amends). `--no-verify` bypasses
+   local pre-push hooks after the configured verification has already run.
+4. **PR create/update.** The function finds an existing PR by head branch,
+   or uses an explicit `pr_number` if provided. If the head branch has no
+   open PR, a new PR is created. Otherwise the existing PR body/title is
+   updated.
+5. **Codex trigger.** A fresh `@codex review` comment is posted on the PR
+   as `iterwheel-assembly`.
+6. **Cleanup.** The temp directory and askpass script are removed. The
+   token is never written to logs, stdout, stderr, or publish results.
+
+### Safety Guarantees
+
+- **Secret-safe.** The installation token is bounded to a subprocess env
+  var (`ASSEMBLY_GITHUB_TOKEN`) which is never logged or persisted. The
+  askpass file is removed immediately after each call. Any `gh*_` pattern
+  in subprocess output is redacted.
+- **Non-destructive push.** `--force-with-lease` refuses to overwrite the
+  remote ref if someone else has pushed to the branch since the last known
+  state. An initial push to a new branch works without error because there
+  is no prior remote ref to lease-check against.
+- **No hook interference.** `--no-verify` bypasses local pre-push hooks.
+  The configured verification commands (`pytest`, `ruff`, `mypy`) run
+  *before* the push, so a false-positive local hook cannot block a trusted
+  automated publish.
+
+### Usage (Operator Script / REPL)
+
+```python
+import asyncio
+from voyager.core.config import load_config
+from voyager.core.github_app import GitHubAppClient
+from voyager.core.publish import assembly_app_publish
+
+config = load_config()
+apps = config.apps
+client = GitHubAppClient(apps)
+
+result = asyncio.run(
+    assembly_app_publish(
+        repository="iterwheel/voyager",
+        branch="102-my-feature",
+        base="main",
+        pr_title="My Feature (Closes #102)",
+        pr_body="Implements #102.\n\nCloses #102.",
+        client=client,
+        cwd="/path/to/checkout",
+    )
+)
+print(f"Pushed: {result.pushed}, PR #{result.pr_number}")
+```
+
+When `pr_number` is provided (e.g. from a previous run), the function
+updates that PR instead of creating a new one. When omitted, it
+auto-discovers an open PR for the same head branch.
 
 ## Privacy Boundary
 
