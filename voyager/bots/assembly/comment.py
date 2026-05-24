@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .audit import lookup_hint
 from .constants import ASSEMBLY_COMMENT_MARKER
 
 
@@ -86,6 +87,7 @@ def build_assembly_comment(
     branch: dict[str, Any] | None = None,
     pull_request: dict[str, Any] | None = None,
     writeback_failures: list[dict[str, Any]] | None = None,
+    audit_id: str | None = None,
     dry_run: bool = False,
     surface: str = "issue",
 ) -> str:
@@ -136,6 +138,10 @@ def build_assembly_comment(
     issue_number = contract.get("issue_number")
     if issue_number:
         lines.append(f"- Issue: #{issue_number}")
+
+    repository = contract.get("repository") or ""
+    if audit_id and repository and issue_number:
+        lines.append(f"- {lookup_hint(audit_id, str(repository), int(issue_number))}")
 
     criteria = contract.get("acceptance_criteria") or []
     if criteria:

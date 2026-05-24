@@ -25,6 +25,12 @@ import httpx
 from voyager.core.writeback import build_writeback_failure, dry_run_enabled
 
 from .adapters import AdapterExecutionContext, AdapterResult, select_execution_adapter
+from .audit import (
+    AssemblyAuditManifest,
+    generate_audit_id,
+    utc_now_iso,
+    write_audit_manifest,
+)
 from .branch import make_branch_name
 from .comment import build_assembly_comment
 from .constants import (
@@ -200,6 +206,68 @@ def _redact_secret(value: Any, secret: str | None) -> Any:
     return value
 
 
+def _write_audit_manifest(
+    *,
+    contract: AssemblyJobContract,
+    result: dict[str, Any],
+    delivery_id: str,
+    repository: str,
+) -> None:
+    audit_id = str(result.get("audit_id") or "")
+    if not audit_id:
+        return
+
+    adapter_result = result.get("adapter_result") or {}
+    details = adapter_result.get("details") if isinstance(adapter_result, dict) else {}
+    details = details if isinstance(details, dict) else {}
+    pull_request = result.get("pull_request") or {}
+    pr_number_raw = pull_request.get("number")
+    try:
+        pr_number = int(pr_number_raw) if pr_number_raw else None
+    except (TypeError, ValueError):
+        pr_number = None
+
+    manifest = AssemblyAuditManifest(
+        audit_id=audit_id,
+        repository=repository,
+        issue_number=contract.issue_number,
+        delivery_id=delivery_id,
+        backend_name=str(result.get("execution_backend") or ""),
+        branch_name=contract.branch_name,
+        pr_number=pr_number,
+        checkout_dir=details.get("checkout_dir"),
+        omp_session_jsonl_path=details.get("omp_session_jsonl_path"),
+        exported_html_path=details.get("exported_html_path"),
+        verification_commands=tuple(contract.verification_commands),
+        adapter_status=adapter_result.get("status"),
+        adapter_summary=adapter_result.get("summary"),
+        commit_shas=tuple(adapter_result.get("commit_shas") or ()),
+        completed_at=utc_now_iso(),
+        extra={
+            "branch": result.get("branch"),
+            "pull_request": pull_request,
+            "writeback_failures": result.get("writeback_failures") or [],
+        },
+    )
+    try:
+        write_audit_manifest(manifest)
+    except OSError as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation="writeAssemblyAuditManifest",
+                exc=exc,
+                repository=repository,
+                pr=pr_number,
+                issue=contract.issue_number,
+            )
+        )
+        _log.warning(
+            "Assembly audit manifest write failed",
+            extra={"repository": repository, "issue": contract.issue_number},
+            exc_info=True,
+        )
+
+
 async def _live_issue_from_route(
     client: GitHubAppClient,
     repository: str,
@@ -300,6 +368,7 @@ async def dispatch_assembly_writeback(
         "execution_backend": backend_name,
         "refusal": refusal_router,
         "contract": contract_dict,
+        "audit_id": None,
         "adapter_result": None,
         "branch": None,
         "pull_request": None,
@@ -361,6 +430,11 @@ async def dispatch_assembly_writeback(
     )
     contract_dict = contract.to_dict()
     base_result["contract"] = contract_dict
+    base_result["audit_id"] = generate_audit_id(
+        delivery_id=contract.delivery_id,
+        repository=repository,
+        issue_number=contract.issue_number,
+    )
 
     # ------------------------------------------------------------------
     # CHG-1819 F3 — per-(repository, branch_name) asyncio lock.
@@ -425,6 +499,7 @@ async def dispatch_assembly_writeback(
                 "status": adapter_result.status,
                 "commit_shas": _redact_secret(list(adapter_result.commit_shas), secret),
                 "summary": _redact_secret(adapter_result.summary, secret),
+                "details": _redact_secret(adapter_result.details, secret),
             }
         else:
             base_result["adapter_result"] = {
@@ -435,6 +510,7 @@ async def dispatch_assembly_writeback(
                     if adapter_failure and adapter_failure["error_class"] == "NotImplementedError"
                     else "adapter raised; see writeback_failures"
                 ),
+                "details": {},
             }
 
         # --------------------------------------------------------------
@@ -452,6 +528,12 @@ async def dispatch_assembly_writeback(
                 "url": None,
                 "action": "dry_run_skipped",
             }
+            _write_audit_manifest(
+                contract=contract,
+                result=base_result,
+                delivery_id=delivery_id,
+                repository=repository,
+            )
             return base_result
 
         base_result["applied"] = True
@@ -473,6 +555,12 @@ async def dispatch_assembly_writeback(
             await _preserve_existing_pr_context_for_no_changes(
                 client, repository, contract, base_result
             )
+            _write_audit_manifest(
+                contract=contract,
+                result=base_result,
+                delivery_id=delivery_id,
+                repository=repository,
+            )
             await _upsert_progress_comments(client, contract, repository, base_result)
             return base_result
 
@@ -486,6 +574,12 @@ async def dispatch_assembly_writeback(
         if pr_ok:
             await _post_codex_trigger(client, repository, contract, base_result)
 
+        _write_audit_manifest(
+            contract=contract,
+            result=base_result,
+            delivery_id=delivery_id,
+            repository=repository,
+        )
         await _upsert_progress_comments(client, contract, repository, base_result)
         return base_result
 
@@ -792,6 +886,7 @@ async def _upsert_progress_comments(
         branch=branch,
         pull_request=pull_request,
         writeback_failures=failures,
+        audit_id=result.get("audit_id"),
         dry_run=result.get("dry_run", False),
         surface="issue",
     )
@@ -826,6 +921,7 @@ async def _upsert_progress_comments(
         branch=branch,
         pull_request=pull_request,
         writeback_failures=failures,
+        audit_id=result.get("audit_id"),
         dry_run=result.get("dry_run", False),
         surface="pr",
     )

@@ -19,12 +19,25 @@ from .adapters import (
     PiOhMyPiDeepSeekAdapter,
     select_execution_adapter,
 )
+from .audit import (
+    AssemblyAuditManifest,
+    audit_manifest_path,
+    find_audit_manifest,
+    generate_audit_id,
+    is_audit_id,
+    load_audit_manifest,
+    lookup_hint,
+    write_audit_manifest,
+)
 from .branch import make_branch_name
 from .commands import AssemblyCommand, parse_assembly_command
 from .comment import build_assembly_comment
 from .constants import (
     ASSEMBLY_AGENT_ID,
     ASSEMBLY_AGENT_SLUG,
+    ASSEMBLY_AUDIT_DIR_DEFAULT,
+    ASSEMBLY_AUDIT_DIR_ENV,
+    ASSEMBLY_AUDIT_SOP,
     ASSEMBLY_BACKEND_DRY_RUN,
     ASSEMBLY_BACKEND_FAKE_SUBPROCESS,
     ASSEMBLY_BACKEND_PI_OH_MY_PI_DEEPSEEK,
@@ -49,6 +62,9 @@ from .routing import route_assembly_event, should_run_assembly
 __all__ = [
     "ASSEMBLY_AGENT_ID",
     "ASSEMBLY_AGENT_SLUG",
+    "ASSEMBLY_AUDIT_DIR_DEFAULT",
+    "ASSEMBLY_AUDIT_DIR_ENV",
+    "ASSEMBLY_AUDIT_SOP",
     "ASSEMBLY_BACKEND_DRY_RUN",
     "ASSEMBLY_BACKEND_FAKE_SUBPROCESS",
     "ASSEMBLY_BACKEND_PI_OH_MY_PI_DEEPSEEK",
@@ -68,6 +84,7 @@ __all__ = [
     "ActorAuthorization",
     "AdapterExecutionContext",
     "AdapterResult",
+    "AssemblyAuditManifest",
     "AssemblyCommand",
     "AssemblyJobContract",
     "DryRunAdapter",
@@ -75,13 +92,20 @@ __all__ = [
     "FakeSubprocessAdapter",
     "PiOhMyPiDeepSeekAdapter",
     "PreconditionResult",
+    "audit_manifest_path",
     "build_assembly_comment",
     "build_job_contract",
     "evaluate_actor_authorization",
+    "find_audit_manifest",
+    "generate_audit_id",
+    "is_audit_id",
+    "load_audit_manifest",
+    "lookup_hint",
     "make_branch_name",
     "parse_assembly_command",
     "route_assembly_event",
     "select_execution_adapter",
     "should_run_assembly",
     "validate_preconditions",
+    "write_audit_manifest",
 ]

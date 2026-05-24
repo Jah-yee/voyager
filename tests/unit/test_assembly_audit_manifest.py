@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import stat
+from pathlib import Path
+
+from voyager.bots.assembly.adapters import _latest_omp_session_jsonl
+from voyager.bots.assembly.audit import (
+    AssemblyAuditManifest,
+    audit_manifest_path,
+    find_audit_manifest,
+    generate_audit_id,
+    is_audit_id,
+    load_audit_manifest,
+    lookup_hint,
+    write_audit_manifest,
+)
+from voyager.bots.assembly.comment import build_assembly_comment
+from voyager.bots.assembly.constants import ASSEMBLY_AUDIT_DIR_ENV, ASSEMBLY_AUDIT_SOP
+
+
+def test_generate_audit_id_is_stable_and_non_secret() -> None:
+    audit_id = generate_audit_id(
+        delivery_id="delivery-1",
+        repository="iterwheel/voyager",
+        issue_number=92,
+    )
+
+    assert audit_id == generate_audit_id(
+        delivery_id="delivery-1",
+        repository="iterwheel/voyager",
+        issue_number=92,
+    )
+    assert audit_id != generate_audit_id(
+        delivery_id="delivery-2",
+        repository="iterwheel/voyager",
+        issue_number=92,
+    )
+    assert is_audit_id(audit_id)
+
+
+def test_manifest_path_write_load_and_lookup(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(ASSEMBLY_AUDIT_DIR_ENV, str(tmp_path))
+    audit_id = "asmb-0123456789abcdef"
+    manifest = AssemblyAuditManifest(
+        audit_id=audit_id,
+        repository="iterwheel/voyager",
+        issue_number=92,
+        delivery_id="delivery-1",
+        backend_name="pi-oh-my-pi-deepseek",
+        branch_name="92-private-assembly-omp-audit-manifests",
+        checkout_dir="/Users/frank/.voyager/state/assembly/assembly-omp-x/repo",
+        omp_session_jsonl_path="/Users/frank/.omp/agent/sessions/x/run.jsonl",
+        verification_commands=("uv run pytest tests/",),
+        adapter_status="executed",
+        commit_shas=("a" * 40,),
+    )
+
+    expected_path = tmp_path / "iterwheel" / "voyager" / "92" / f"{audit_id}.json"
+    assert (
+        audit_manifest_path(
+            audit_id=audit_id,
+            repository="iterwheel/voyager",
+            issue_number=92,
+        )
+        == expected_path
+    )
+
+    path = write_audit_manifest(manifest)
+
+    assert path == expected_path
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert find_audit_manifest(audit_id, root=tmp_path) == expected_path
+    loaded = load_audit_manifest(path)
+    assert loaded.audit_id == audit_id
+    assert loaded.repository == "iterwheel/voyager"
+    assert loaded.issue_number == 92
+    assert loaded.commit_shas == ("a" * 40,)
+
+
+def test_manifest_redacts_token_values_and_secret_keys() -> None:
+    manifest = AssemblyAuditManifest(
+        audit_id="asmb-0123456789abcdef",
+        repository="iterwheel/voyager",
+        issue_number=92,
+        delivery_id="delivery-1",
+        backend_name="pi-oh-my-pi-deepseek",
+        adapter_summary="token ghp_super_secret should not survive",
+        extra={
+            "installation_token": "ghs_super_secret",
+            "nested": {
+                "api_key": "plain-secret",
+                "message": "saw ghp_nested_secret in output",
+            },
+        },
+    )
+
+    data = manifest.to_dict()
+
+    assert data["adapter_summary"] == "token [redacted] should not survive"
+    assert data["extra"]["installation_token"] == "[redacted]"
+    assert data["extra"]["nested"]["api_key"] == "[redacted]"
+    assert data["extra"]["nested"]["message"] == "saw [redacted] in output"
+
+
+def test_comment_renders_public_audit_hint_only() -> None:
+    audit_id = "asmb-0123456789abcdef"
+
+    body = build_assembly_comment(
+        status="applied",
+        contract={
+            "repository": "iterwheel/voyager",
+            "issue_number": 92,
+            "acceptance_criteria": [],
+        },
+        adapter_result={"status": "executed", "summary": "done"},
+        branch={"name": "92-private-assembly-omp-audit-manifests"},
+        pull_request={"number": 123, "action": "opened"},
+        audit_id=audit_id,
+    )
+
+    assert f"Audit ID `{audit_id}`" in body
+    assert f"rules/{ASSEMBLY_AUDIT_SOP}" in body
+    assert "/Users/frank/.omp/agent/sessions" not in body
+    assert "ghp_" not in body
+
+
+def test_lookup_hint_names_path_and_sop() -> None:
+    audit_id = "asmb-0123456789abcdef"
+
+    hint = lookup_hint(audit_id, "iterwheel/voyager", 92)
+
+    assert hint == (
+        "Audit ID `asmb-0123456789abcdef`. Private lookup: "
+        "`~/.voyager/state/assembly/audit/iterwheel/voyager/92/"
+        "asmb-0123456789abcdef.json`. SOP: "
+        "`rules/VOY-1823-SOP-Assembly-OMP-Audit-Lookup.md`."
+    )
+
+
+def test_lookup_hint_respects_audit_dir_override(monkeypatch, tmp_path: Path) -> None:
+    audit_root = tmp_path / "custom-audit"
+    monkeypatch.setenv(ASSEMBLY_AUDIT_DIR_ENV, str(audit_root))
+
+    hint = lookup_hint("asmb-0123456789abcdef", "iterwheel/voyager", 92)
+
+    assert (
+        f"Private lookup: `{audit_root}/iterwheel/voyager/92/asmb-0123456789abcdef.json`."
+    ) in hint
+
+
+def test_missing_omp_session_fallback(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    checkout_dir = tmp_path / ".voyager" / "state" / "assembly" / "assembly-omp-x" / "repo"
+
+    assert _latest_omp_session_jsonl(checkout_dir) is None
+
+
+def test_latest_omp_session_jsonl_skips_transient_stat_failures(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    session_dir = tmp_path / ".omp" / "agent" / "sessions" / "x-assembly-omp-x-repo"
+    session_dir.mkdir(parents=True)
+    stale = session_dir / "stale.jsonl"
+    newest = session_dir / "newest.jsonl"
+    stale.write_text("stale\n", encoding="utf-8")
+    newest.write_text("newest\n", encoding="utf-8")
+    checkout_dir = tmp_path / ".voyager" / "state" / "assembly" / "assembly-omp-x" / "repo"
+
+    original_stat = Path.stat
+
+    def fake_stat(self: Path, *args, **kwargs):
+        if self == stale:
+            raise OSError("rotated")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+
+    assert _latest_omp_session_jsonl(checkout_dir) == str(newest)

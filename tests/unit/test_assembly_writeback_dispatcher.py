@@ -17,7 +17,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from voyager.bots.assembly.audit import find_audit_manifest, is_audit_id, load_audit_manifest
 from voyager.bots.assembly.constants import (
+    ASSEMBLY_AUDIT_DIR_ENV,
     ASSEMBLY_BACKEND_DRY_RUN,
     ASSEMBLY_BACKEND_PI_OH_MY_PI_DEEPSEEK,
     ASSEMBLY_EXECUTION_BACKEND_ENV,
@@ -139,7 +141,7 @@ def test_dry_run_true_pi_backend_returns_failed_without_writes(monkeypatch) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_dry_run_false_dry_run_backend_comments_only(monkeypatch) -> None:
+def test_dry_run_false_dry_run_backend_comments_only(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("DRY_RUN", "false")
     monkeypatch.setenv(ASSEMBLY_EXECUTION_BACKEND_ENV, ASSEMBLY_BACKEND_DRY_RUN)
     client = _mock_client_for_writes()
@@ -154,6 +156,16 @@ def test_dry_run_false_dry_run_backend_comments_only(monkeypatch) -> None:
     assert client.create_branch_ref.await_count == 0
     assert client.create_pull_request.await_count == 0
     assert result["assembly_comment_id"] == 777
+    assert is_audit_id(result["audit_id"])
+    manifest_path = find_audit_manifest(result["audit_id"], root=tmp_path / "audit")
+    assert manifest_path is not None
+    manifest = load_audit_manifest(manifest_path)
+    assert manifest.repository == "iterwheel/voyager-sandbox"
+    assert manifest.issue_number == 69
+    assert manifest.adapter_status == "dry_run"
+    body = client.upsert_issue_comment.await_args.kwargs["body"]
+    assert f"Audit ID `{result['audit_id']}`" in body
+    assert "rules/VOY-1823-SOP-Assembly-OMP-Audit-Lookup.md" in body
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +234,7 @@ def test_missing_repository_short_circuits(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_full_path_with_commits_runs_sequence(monkeypatch) -> None:
+def test_full_path_with_commits_runs_sequence(monkeypatch, tmp_path) -> None:
     """Stub a custom adapter that returns commits; verify the full sequence runs."""
     from voyager.bots.assembly import adapters
 
@@ -261,6 +273,16 @@ def test_full_path_with_commits_runs_sequence(monkeypatch) -> None:
     assert client.create_pull_request.await_count == 1
     assert client.create_issue_comment.await_count == 1  # codex trigger
     assert client.upsert_issue_comment.await_count == 2  # issue + PR comments
+    manifest_path = find_audit_manifest(result["audit_id"], root=tmp_path / "audit")
+    assert manifest_path is not None
+    manifest = load_audit_manifest(manifest_path)
+    assert manifest.pr_number == 1234
+    assert manifest.branch_name == "69-implement-assembly-bot-mvp"
+    assert manifest.commit_shas == ("sha1", "sha2")
+    issue_body = client.upsert_issue_comment.call_args_list[-2].kwargs["body"]
+    pr_body = client.upsert_issue_comment.call_args_list[-1].kwargs["body"]
+    assert f"Audit ID `{result['audit_id']}`" in issue_body
+    assert f"Audit ID `{result['audit_id']}`" in pr_body
 
 
 def test_existing_branch_is_reused_idempotent(monkeypatch) -> None:
@@ -540,10 +562,11 @@ def test_non_actor_refusal_does_not_carry_actor_keys(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_env(monkeypatch):
+def _reset_env(monkeypatch, tmp_path):
     """Reset env between tests so DRY_RUN does not leak."""
     monkeypatch.delenv("DRY_RUN", raising=False)
     monkeypatch.delenv(ASSEMBLY_EXECUTION_BACKEND_ENV, raising=False)
+    monkeypatch.setenv(ASSEMBLY_AUDIT_DIR_ENV, str(tmp_path / "audit"))
     return
 
 
