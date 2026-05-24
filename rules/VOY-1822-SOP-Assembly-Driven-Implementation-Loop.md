@@ -7,7 +7,7 @@
 **Date:** 2026-05-24
 **Requested by:** Frank Xu (via issue #94)
 **Priority:** P2
-**Related:** VOY-1811, VOY-1817, VOY-1818, VOY-1821, #92, #93, #98
+**Related:** VOY-1811, VOY-1817, VOY-1818, VOY-1821, #92, #93, #98, #99
 
 ---
 
@@ -85,6 +85,7 @@ Before triggering Assembly, verify every precondition in this section.
 | Actor | Triggering actor is authorized | `BRIDGE_ASSEMBLY_AUTHORIZED_ACTORS` or trusted association policy |
 | Repository | Repo is installed for `iterwheel-assembly` and bridge allow-listed | VOY-1807 plus `BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_ASSEMBLY` |
 | Bridge | Bridge is healthy and `dry_run` state is intentional | `/healthz` local or public endpoint |
+| PR Source | Managed PRs must satisfy headRepository == baseRepository. Fork PRs are forbidden for managed Assembly/Codex implementation loops unless a human explicitly grants an exception. | `gh pr view <N> --repo <owner/repo> --json isCrossRepository,headRepository | jq -e '(.isCrossRepository | not) and (.headRepository.nameWithOwner == "<owner>/<repo>")' > /dev/null` |
 | Backend | `ASSEMBLY_EXECUTION_BACKEND` is intentional | Normally `dry-run`, `fake-subprocess`, or `pi-oh-my-pi-deepseek` |
 | Verification | Repo-specific verification commands are configured when defaults do not apply | `ASSEMBLY_VERIFICATION_COMMANDS_<encoded-repo>` or global override |
 | Credentials | Model/API credentials are available only to the backend process, not to prompts/comments | Local env/config audit |
@@ -176,10 +177,50 @@ When Assembly opens or updates a PR:
    skips docs paths.
 5. Run the repo's verification commands locally or in a clean clone when the
    blast radius warrants it.
+6. Confirm `headRepository` matches `baseRepository` on the PR. Fork PRs are
+   forbidden for managed Assembly loops (see §5.1 for why). Verify with:
+   ```bash
+   gh pr view <N> --repo <owner/repo> --json headRepository,isCrossRepository | jq -e '(.isCrossRepository | not) and (.headRepository.nameWithOwner == "<owner>/<repo>")' > /dev/null
+   ```
+   When the check passes (`isCrossRepository` is `false` and
+   `headRepository.nameWithOwner` matches the expected owner/repo) the exit
+   code is 0.  A non-zero exit indicates a fork PR.
 
 Assembly's own validation is evidence, not a substitute for operator
 acceptance. The operator is still responsible for checking semantic fit before
 approval.
+### 5.1. Fork PR Caveats
+
+Fork PRs are forbidden for managed Assembly/Codex implementation loops unless
+a human explicitly grants an exception. The code-level gate in
+`_ensure_pull_request` refuses to open or update a PR whose head repository
+differs from its base repository.
+
+If a fork PR exists for an Assembly-managed branch for any reason (e.g. it was
+created before this SOP was in effect, or before the code gate was deployed),
+the following consequences apply:
+
+1. **Clearance auto-resolve is blocked.** The `iterwheel-clearance` GitHub App
+   is installed on the target repository (`iterwheel/voyager`, `frankyxhl/trinity`,
+   etc.) but is NOT installed on the fork head repository. Clearance cannot
+   auto-resolve review threads on a fork PR because the App cannot access the
+   fork's head ref.
+
+2. **Manual thread resolution required.** Every review thread on a fork PR must be
+   manually resolved by a human with write access to the fork. Alternatively,
+   install the `iterwheel-clearance` App on the fork repository and re-trigger
+   Clearance.
+
+3. **Close and replace.** When a fork PR is identified during the managed loop,
+   close the fork PR and open a same-repo replacement. Push the feature branch
+   to the target repository remote, not a personal fork remote:
+   ```bash
+   git push <target-remote> <branch-name>
+   ```
+   Where `<target-remote>` points to `https://github.com/<owner>/<repo>.git` and
+   the owner is the target repository owner (e.g. `iterwheel` or `frankyxhl`),
+   not a personal fork owner.
+
 
 ### 6. Iterate On Findings
 
@@ -323,6 +364,7 @@ following for the current head SHA:
       terminal signal, not before it.
 - [ ] The final status message names the PR number, head SHA, CI result, Codex
       terminal signal, and Clearance label.
+- [ ] PR source confirmed — headRepository matches baseRepository (no fork PR).
 
 ### 7. Clearance And Human Approval
 
@@ -483,6 +525,7 @@ After PR opens:
 - [ ] Diff matches the issue scope.
 - [ ] Assembly posted `@codex review`.
 - [ ] CI is green or intentionally skipped.
+- [ ] PR source confirmed — headRepository matches baseRepository (no fork PR).
 - [ ] Local verification was run when needed.
 - [ ] Codex reached a terminal review signal for the current head SHA.
 - [ ] GraphQL review-thread inspection found no unresolved actionable findings.
@@ -520,3 +563,4 @@ this SOP by name: `VOY-1822 Assembly-Driven Implementation Loop`.
 |------|--------|----|
 | 2026-05-24 | Initial SOP for issue #94, derived from VOY-1811 and specialized for Assembly's issue-to-PR implementation loop. | Codex |
 | 2026-05-24 | Added Codex review settle gate and final ready-for-approval checklist for issue #98. | Codex |
+| 2026-05-24 | Added PR source precondition, fork PR caveats, and code-level `headRepository == baseRepository` gate for issue #99. | Codex |
