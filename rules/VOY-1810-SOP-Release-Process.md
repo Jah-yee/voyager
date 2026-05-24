@@ -90,6 +90,13 @@ gh pr create --repo iterwheel/voyager --base main --head ryosaeba1985:release/vX
 
 Per WUK-2100, `gh` must be authenticated as `ryosaeba1985`. The
 pre-push hook validates lint + format + tests locally before the push.
+This release flow intentionally uses a fork remote (`ryosaeba1985:release/vX.Y.Z`)
+because `ryosaeba1985` does not have direct write access to
+`iterwheel/voyager`. This is a **human-managed** release flow, not a
+VOY-1822 managed Assembly flow. **VOY-1822 forbids fork PRs for managed
+Assembly/Codex implementation loops** — see `rules/VOY-1822-SOP-Assembly-Driven-Implementation-Loop.md`.
+For managed flows, push feature branches directly to the target repository
+remote instead.
 
 ### 3. Wait for CI; the org owner merges
 
