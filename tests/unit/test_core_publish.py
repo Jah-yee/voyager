@@ -1,0 +1,369 @@
+"""Unit tests for voyager/core/publish.py — Assembly App token publish path.
+
+Covers token handling, askpass cleanup, force-with-lease behavior,
+PR create/update, codex trigger, and error paths — all without
+requiring a real token or GitHub API call.
+"""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from voyager.core.publish import (
+    CODEX_REVIEW_TRIGGER_BODY,
+    _git_auth_env,
+    _sanitize,
+    _write_git_askpass,
+    assembly_app_publish,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _mock_subprocess(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
+    """Return a mock asyncio subprocess with a controllable exit code."""
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
+    proc.kill = MagicMock()
+    return proc
+
+
+def _mock_client(**attrs: object) -> MagicMock:
+    """Return a mock ``GitHubAppClient`` with async methods defaulting to OK."""
+    client = MagicMock()
+    client.installation_token = AsyncMock(return_value="ghs_test_token_abc123")
+    client.find_pull_request_by_head = AsyncMock(return_value=None)
+    client.create_pull_request = AsyncMock(
+        return_value={"number": 42, "html_url": "https://github.test/pull/42"}
+    )
+    client.update_pull_request = AsyncMock(return_value={"html_url": "https://github.test/pull/42"})
+    client.create_issue_comment = AsyncMock(return_value={"id": 789})
+
+    for key, val in attrs.items():
+        setattr(client, key, val if isinstance(val, AsyncMock) else AsyncMock(return_value=val))
+    return client
+
+
+# ---------------------------------------------------------------------------
+# token / askpass helpers
+# ---------------------------------------------------------------------------
+
+
+class TestSanitize:
+    def test_redacts_token(self) -> None:
+        assert _sanitize("hello ghs_token_abc world", "ghs_token_abc") == "hello [redacted] world"
+
+    def test_redacts_any_github_token_pattern(self) -> None:
+        assert _sanitize("token=ghp_abc123", "") == "token=[redacted]"
+
+    def test_no_token_noop(self) -> None:
+        assert _sanitize("hello world", "") == "hello world"
+
+    def test_token_not_in_string_noop(self) -> None:
+        assert _sanitize("hello world", "ghs_secret") == "hello world"
+
+
+class TestGitAskpass:
+    def test_writes_and_chmod(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            askpass = _write_git_askpass(Path(tmp))
+            assert askpass.exists()
+            assert askpass.name == "git-askpass.sh"
+            text = askpass.read_text(encoding="utf-8")
+            assert "x-access-token" in text
+            assert "ASSEMBLY_GITHUB_TOKEN" in text
+            # Verify 0o700 — owner execute bit set
+            assert askpass.stat().st_mode & 0o700 == 0o700
+
+    def test_git_auth_env_sets_expected_vars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            askpass = _write_git_askpass(Path(tmp))
+            env = _git_auth_env("ghs_secret", askpass)
+            assert env.get("GIT_TERMINAL_PROMPT") == "0"
+            assert env.get("GIT_ASKPASS") == str(askpass)
+            assert env.get("ASSEMBLY_GITHUB_TOKEN") == "ghs_secret"
+
+    def test_git_auth_env_preserves_original_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            askpass = _write_git_askpass(Path(tmp))
+            env = _git_auth_env("tok", askpass)
+            # Original env vars should still be present
+            assert "PATH" in env
+
+
+# ---------------------------------------------------------------------------
+# assembly_app_publish — git push success paths
+# ---------------------------------------------------------------------------
+
+
+class TestPublishPushNewBranch:
+    """First push to a new branch — PR creation."""
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_new_branch_creates_pr(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-my-feature",
+            base="main",
+            pr_title="My feature (Closes #102)",
+            pr_body="Implements #102.\n\nCloses #102.",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is True
+        assert result.pr_number == 42
+        assert result.pr_action == "opened"
+        assert result.pr_url == "https://github.test/pull/42"
+        assert result.codex_comment_id == 789
+        assert result.error is None
+
+        # Verify the correct git push command was constructed
+        call_args = mock_exec.call_args[0]
+        assert call_args[1] == "push"
+        assert "--force-with-lease" in call_args
+        assert "--no-verify" in call_args
+        assert call_args[-1] == "HEAD:refs/heads/102-my-feature"
+
+        # Verify PR was created with correct data
+        client.create_pull_request.assert_awaited_once()
+        _, kwargs = client.create_pull_request.await_args
+        assert kwargs["title"] == "My feature (Closes #102)"
+        assert kwargs["head"] == "102-my-feature"
+        assert kwargs["base"] == "main"
+
+        # Verify @codex review was posted
+        client.create_issue_comment.assert_awaited_once()
+        _, kwargs = client.create_issue_comment.await_args
+        assert kwargs["body"] == CODEX_REVIEW_TRIGGER_BODY
+
+
+class TestPublishUpdateExistingPR:
+    """Push updating an existing PR (explicit pr_number)."""
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_explicit_pr_number_updates(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-my-feature",
+            base="main",
+            pr_title="My feature (Closes #102)",
+            pr_number=42,
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is True
+        assert result.pr_number == 42
+        assert result.pr_action == "updated"
+        assert result.error is None
+
+        # PR was updated, not created
+        client.update_pull_request.assert_awaited_once_with(
+            "iterwheel-assembly",
+            "iterwheel/voyager",
+            42,
+            body="",
+            title="My feature (Closes #102)",
+        )
+        client.create_pull_request.assert_not_awaited()
+
+        # @codex review still posted
+        client.create_issue_comment.assert_awaited_once()
+
+
+class TestPublishFindExistingPR:
+    """Push where an existing PR for the branch is auto-detected."""
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_existing_pr_updated(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+        client.find_pull_request_by_head = AsyncMock(
+            return_value={"number": 99, "html_url": "https://github.test/pull/99"}
+        )
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-my-feature",
+            base="main",
+            pr_title="My feature (Closes #102)",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is True
+        assert result.pr_number == 99
+        assert result.pr_action == "updated"
+        assert result.error is None
+
+        client.find_pull_request_by_head.assert_awaited_once()
+        client.update_pull_request.assert_awaited_once()
+        client.create_pull_request.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Error paths
+# ---------------------------------------------------------------------------
+
+
+class TestPublishTokenFailure:
+    async def test_token_mint_failure_returns_error(self) -> None:
+        client = _mock_client()
+        client.installation_token = AsyncMock(side_effect=RuntimeError("no key"))
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-x",
+            base="main",
+            pr_title="x",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is False
+        assert result.pr_number is None
+        assert result.error is not None
+        assert "installation_token" in (result.error or "")
+
+    async def test_empty_token_returns_error(self) -> None:
+        client = _mock_client()
+        client.installation_token = AsyncMock(return_value="")
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-x",
+            base="main",
+            pr_title="x",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is False
+        assert result.error is not None
+        assert "empty" in (result.error or "").lower()
+
+
+class TestPublishPushFailure:
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_push_failure_returns_error(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=128)
+        client = _mock_client()
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-x",
+            base="main",
+            pr_title="x",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is False
+        assert result.error is not None
+        assert "exit 128" in (result.error or "")
+
+        # No GitHub API calls beyond token
+        client.create_pull_request.assert_not_awaited()
+        client.update_pull_request.assert_not_awaited()
+        client.create_issue_comment.assert_not_awaited()
+
+
+class TestPublishPRCreateFailure:
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_pr_create_failure_returns_error(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+        client.create_pull_request = AsyncMock(side_effect=RuntimeError("no PR"))
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-x",
+            base="main",
+            pr_title="x",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is True  # push succeeded
+        assert result.pr_number is None
+        assert result.error is not None
+        assert "create_pull_request" in (result.error or "")
+
+
+class TestPublishCodexFailure:
+    """Codex trigger failure is non-fatal — push and PR still succeed."""
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_codex_failure_non_fatal(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+        client.create_issue_comment = AsyncMock(side_effect=RuntimeError("no comment"))
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-x",
+            base="main",
+            pr_title="x",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is True
+        assert result.pr_number == 42
+        assert result.pr_action == "opened"
+        # codex_comment_id should be None since it failed
+        # (the call to create_issue_comment is still made — we just log the warning)
+        assert result.error is None
+
+
+# ---------------------------------------------------------------------------
+# Askpass cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestAskpassCleanup:
+    """Verify the temporary askpass file is removed after publish."""
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_askpass_removed_after_push(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+
+        # Track temp dirs created
+        created_dirs: list[Path] = []
+
+        original_mkdtemp = tempfile.mkdtemp
+
+        def tracking_mkdtemp(*args: object, **kwargs: object) -> str:
+            path = original_mkdtemp(*args, **kwargs)  # type: ignore[misc]
+            created_dirs.append(Path(path))
+            return path
+
+        with patch("voyager.core.publish.tempfile.mkdtemp", tracking_mkdtemp):
+            result = await assembly_app_publish(
+                repository="iterwheel/voyager",
+                branch="102-x",
+                base="main",
+                pr_title="x",
+                client=client,
+                cwd="/tmp",
+            )
+
+        assert result.pushed is True
+        assert result.error is None
+
+        # Temp dir should have been cleaned up
+        for d in created_dirs:
+            assert not d.exists(), f"Temp dir was not cleaned up: {d}"

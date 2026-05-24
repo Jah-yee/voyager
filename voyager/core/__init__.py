@@ -1,1 +1,1 @@
-"""Core infrastructure: GitHub App auth, security, config, writeback."""
+"""Core infrastructure: GitHub App auth, security, config, writeback, publish."""
