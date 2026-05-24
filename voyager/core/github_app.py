@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,8 @@ from urllib.parse import quote
 
 import httpx
 import jwt
+
+from .redaction import sanitize_public_text
 
 _log = logging.getLogger(__name__)
 
@@ -26,6 +29,18 @@ class GitHubGraphQLError(Exception):
         n = len(errors)
         first_type = (errors[0] if errors else {}).get("type", "unknown")
         super().__init__(f"GitHub GraphQL returned {n} error(s); first type: {first_type}")
+
+
+def _graphql_error_log_fields(errors: list[dict[str, Any]]) -> list[dict[str, str]]:
+    safe_errors: list[dict[str, str]] = []
+    for error in errors[:3]:
+        safe_errors.append(
+            {
+                "type": sanitize_public_text(error.get("type") or "unknown", limit=80),
+                "message": sanitize_public_text(error.get("message") or "", limit=180),
+            }
+        )
+    return safe_errors
 
 
 GITHUB_API = "https://api.github.com"
@@ -197,7 +212,15 @@ class GitHubAppClient:
         response.raise_for_status()
         data = response.json()
         if data.get("errors"):
-            raise GitHubGraphQLError(data["errors"])
+            errors = data["errors"]
+            _log.warning(
+                "github.graphql.errors app_slug=%s repository=%s error_count=%d errors=%s",
+                app_slug,
+                repository,
+                len(errors),
+                json.dumps(_graphql_error_log_fields(errors), default=str),
+            )
+            raise GitHubGraphQLError(errors)
         return data.get("data")
 
     async def pull_request(self, app_slug: str, repo: str, pull_number: int) -> dict[str, Any]:
