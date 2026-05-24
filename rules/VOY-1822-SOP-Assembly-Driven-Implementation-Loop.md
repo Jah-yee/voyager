@@ -7,7 +7,7 @@
 **Date:** 2026-05-24
 **Requested by:** Frank Xu (via issue #94)
 **Priority:** P2
-**Related:** VOY-1811, VOY-1817, VOY-1818, VOY-1821, #92, #93
+**Related:** VOY-1811, VOY-1817, VOY-1818, VOY-1821, #92, #93, #98
 
 ---
 
@@ -195,6 +195,135 @@ Use the VOY-1811 Phase 8 pattern on the PR:
 Assembly may open/update the branch, but it is not the reviewer. Do not let
 Assembly approve, merge, resolve review threads, or apply readiness labels.
 
+Codex review is asynchronous. A reaction on the `@codex review` trigger means
+the request was seen; it does not mean the review is complete. Treat
+`clearance-3-ready-for-approval` as provisional until the Codex review settle
+gate below has passed for the current PR head SHA.
+
+### 6.1. Codex Review Settle Gate
+
+Run this gate after every `@codex review` trigger and after every push that
+changes the PR head SHA.
+
+Record the current head SHA:
+
+```bash
+gh pr view <pr> --repo <owner/repo> --json headRefOid,mergeable,labels,reviews,comments,statusCheckRollup
+```
+
+Then inspect review threads with GraphQL, not only flat PR comments. GitHub
+GraphQL connections are paginated; a single page is not authoritative.
+
+```bash
+# First request: use null.
+# Subsequent requests: use the previous reviewThreads.pageInfo.endCursor.
+gh api graphql \
+  -F owner=<owner> \
+  -F repo=<repo> \
+  -F number=<pr> \
+  -F threadsCursor=<threads-cursor-or-null> \
+  -f query='query($owner:String!, $repo:String!, $number:Int!, $threadsCursor:String) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$number) {
+        reviewThreads(first:100, after:$threadsCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            isResolved
+            isOutdated
+            path
+            line
+            comments(first:100) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                author { login }
+                body
+                createdAt
+                url
+              }
+            }
+          }
+        }
+      }
+    }
+  }'
+```
+
+Repeat the `reviewThreads` query until `reviewThreads.pageInfo.hasNextPage` is
+false. When `hasNextPage` is true, the next request must replace
+`threadsCursor` with the previous response's
+`reviewThreads.pageInfo.endCursor`; do not keep querying with a null cursor. For
+any thread where `comments.pageInfo.hasNextPage` is true, fetch that thread by
+GraphQL node id and paginate its comments with a thread-local comment cursor
+until all comments are loaded. Treat any unexhausted thread or comment
+connection as non-terminal.
+
+```bash
+# First request: use null.
+# Subsequent requests: use the previous comments.pageInfo.endCursor.
+gh api graphql \
+  -F threadId=<thread-id> \
+  -F commentsCursor=<comments-cursor-or-null> \
+  -f query='query($threadId:ID!, $commentsCursor:String) {
+    node(id:$threadId) {
+      ... on PullRequestReviewThread {
+        comments(first:100, after:$commentsCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            author { login }
+            body
+            createdAt
+            url
+          }
+        }
+      }
+    }
+  }'
+```
+
+Repeat the thread-comment query until `comments.pageInfo.hasNextPage` is false.
+When `hasNextPage` is true, the next request must replace `commentsCursor` with
+the previous response's `comments.pageInfo.endCursor`; do not keep querying with
+a null cursor.
+
+A Codex review is terminal only when one of these signals is observed for the
+current head SHA:
+
+- Codex posts a no-major-issues result, such as `Didn't find any major issues`.
+- Codex submits a completed review for the current head SHA and thread-aware
+  inspection shows no new actionable P0/P1/P2 review threads.
+- A human operator explicitly classifies all new Codex comments as
+  non-actionable and records the rationale in the PR.
+
+These are not terminal signals:
+
+- An `eyes` reaction on `@codex review`.
+- Green CI by itself.
+- `clearance-3-ready-for-approval` by itself.
+- A single `gh pr view` response with no review body yet.
+- Absence of new comments before the configured wait window has elapsed.
+
+If Codex posts actionable feedback, fix it, push, post a fresh `@codex review`,
+and restart this settle gate for the new head SHA. Do not report the PR as ready
+for human approval while a requested Codex review is still settling.
+
+### 6.2. Ready-For-Approval Declaration Checklist
+
+Before telling the requester that a PR is ready for approval, verify all of the
+following for the current head SHA:
+
+- [ ] CI checks are green or intentionally skipped with a recorded reason.
+- [ ] The latest requested Codex review reached a terminal signal.
+- [ ] GraphQL `reviewThreads` inspection shows no unresolved actionable
+      P0/P1/P2 threads.
+- [ ] Any outdated or already-fixed review threads are either manually resolved
+      by an authorized actor or explicitly called out as open-but-non-actionable
+      with rationale.
+- [ ] Clearance is `clearance-3-ready-for-approval` after the latest Codex
+      terminal signal, not before it.
+- [ ] The final status message names the PR number, head SHA, CI result, Codex
+      terminal signal, and Clearance label.
+
 ### 7. Clearance And Human Approval
 
 Clearance is the readiness gate for the PR.
@@ -209,6 +338,10 @@ Clearance is the readiness gate for the PR.
 The Assembly loop must not report "ready to merge" at Stage 1 or Stage 2. The
 normal handoff point is Stage 3. Stage 4 is the final merge-ready state after
 human approval.
+
+Stage 3 is not sufficient if a requested Codex review has not reached a
+terminal signal for the current head SHA. In that case, continue monitoring
+Codex and review threads before handing the PR to a human for approval.
 
 ### 8. Merge And Completion Gate
 
@@ -351,8 +484,10 @@ After PR opens:
 - [ ] Assembly posted `@codex review`.
 - [ ] CI is green or intentionally skipped.
 - [ ] Local verification was run when needed.
-- [ ] Codex has no unresolved actionable findings.
-- [ ] Clearance is Stage 3 before approval handoff.
+- [ ] Codex reached a terminal review signal for the current head SHA.
+- [ ] GraphQL review-thread inspection found no unresolved actionable findings.
+- [ ] Clearance is Stage 3 after the latest Codex terminal signal, before
+      approval handoff.
 - [ ] Clearance is Stage 4 before merge.
 
 After merge:
@@ -384,3 +519,4 @@ this SOP by name: `VOY-1822 Assembly-Driven Implementation Loop`.
 | Date | Change | By |
 |------|--------|----|
 | 2026-05-24 | Initial SOP for issue #94, derived from VOY-1811 and specialized for Assembly's issue-to-PR implementation loop. | Codex |
+| 2026-05-24 | Added Codex review settle gate and final ready-for-approval checklist for issue #98. | Codex |
