@@ -525,6 +525,50 @@ def test_resume_request_uses_compatible_stored_session(monkeypatch, tmp_path) ->
     assert stored.session_id == session_id
 
 
+def test_resume_resolution_runs_under_branch_lock(monkeypatch) -> None:
+    from voyager.bots.assembly import adapters
+    from voyager.bots.assembly import writeback as wb_module
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    route = _route()
+    route["writeback"]["command_flags"]["resume"] = True
+
+    class _NoChangesAdapter:
+        name = "resume-capable"
+        supports_resume = True
+
+        async def execute(self, contract, context):
+            return adapters.AdapterResult(
+                status="no_changes",
+                commit_shas=[],
+                summary="no changes",
+            )
+
+    async def _assert_locked_resolve(**kwargs):
+        repository = kwargs["repository"]
+        contract = kwargs["contract"]
+        assert wb_module._get_lock(repository, contract.branch_name).locked()
+        return {
+            "requested": True,
+            "mode": "resume_fallback",
+            "fallback_reason": "test fallback",
+            "pr_number": None,
+            "expected_head_sha": None,
+        }
+
+    monkeypatch.setattr(
+        wb_module, "select_execution_adapter", lambda backend=None: _NoChangesAdapter()
+    )
+    monkeypatch.setattr(wb_module, "_resolve_session", _assert_locked_resolve)
+
+    client = _mock_client_for_writes()
+    result = asyncio.run(
+        dispatch_assembly_writeback(client, route, repository="iterwheel/voyager-sandbox")
+    )
+
+    assert result["session"]["mode"] == "resume_fallback"
+
+
 def test_resume_request_falls_back_when_stored_head_is_stale(monkeypatch) -> None:
     from voyager.bots.assembly import adapters
     from voyager.bots.assembly import writeback as wb_module

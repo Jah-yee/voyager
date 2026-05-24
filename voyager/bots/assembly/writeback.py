@@ -638,13 +638,6 @@ async def dispatch_assembly_writeback(
         repository=repository,
         issue_number=contract.issue_number,
     )
-    base_result["session"] = await _resolve_session(
-        client=client,
-        adapter=adapter,
-        repository=repository,
-        contract=contract,
-        command_flags=command_flags,
-    )
 
     # ------------------------------------------------------------------
     # CHG-1819 F3 — per-(repository, branch_name) asyncio lock.
@@ -657,6 +650,17 @@ async def dispatch_assembly_writeback(
     # growth is documented on `_get_lock`.
     # ------------------------------------------------------------------
     async with _get_lock(repository, contract.branch_name):
+        # Resolve session metadata inside the same per-branch lock that
+        # protects adapter execution. This keeps the PR head-SHA compatibility
+        # check adjacent to the run that consumes the session and avoids a
+        # stale resume window between validation and execution.
+        base_result["session"] = await _resolve_session(
+            client=client,
+            adapter=adapter,
+            repository=repository,
+            contract=contract,
+            command_flags=command_flags,
+        )
         # --------------------------------------------------------------
         # Adapter execution.  Failures are captured but do NOT abort the
         # progress-comment step (D11 "always runs").
