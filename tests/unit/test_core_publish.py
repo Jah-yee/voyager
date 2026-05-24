@@ -280,6 +280,86 @@ class TestPublishPushFailure:
         client.create_issue_comment.assert_not_awaited()
 
 
+class TestPublishPushRemoteURL:
+    """VOY-1822: push argv must use explicit HTTPS remote, not ``origin``."""
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_push_uses_https_remote_not_origin(self, mock_exec: MagicMock) -> None:
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-my-feature",
+            base="main",
+            pr_title="My feature (Closes #102)",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is True
+        assert result.error is None
+
+        call_args = mock_exec.call_args[0]
+        assert "https://github.com/iterwheel/voyager.git" in call_args
+        # Verify no literal "origin" appears as a push remote
+        assert "origin" not in call_args
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_push_uses_different_repo_remote(self, mock_exec: MagicMock) -> None:
+        """The remote URL is derived from the *repository* parameter."""
+        mock_exec.return_value = _mock_subprocess(returncode=0)
+        client = _mock_client()
+
+        result = await assembly_app_publish(
+            repository="other-org/other-repo",
+            branch="fix",
+            base="main",
+            pr_title="Fix",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is True
+        call_args = mock_exec.call_args[0]
+        assert "https://github.com/other-org/other-repo.git" in call_args
+        assert "iterwheel" not in call_args
+
+
+class TestPublishTimeout:
+    """Timeout from git push converts to structured PublishResult."""
+
+    @patch("voyager.core.publish.asyncio.create_subprocess_exec")
+    async def test_timeout_returns_structured_failure(self, mock_exec: MagicMock) -> None:
+        """A subprocess that times out returns pulled=False with a timeout error."""
+        proc = MagicMock()
+        proc.communicate = AsyncMock(side_effect=TimeoutError())
+        proc.kill = MagicMock()
+        mock_exec.return_value = proc
+
+        client = _mock_client()
+
+        result = await assembly_app_publish(
+            repository="iterwheel/voyager",
+            branch="102-x",
+            base="main",
+            pr_title="x",
+            client=client,
+            cwd="/tmp",
+        )
+
+        assert result.pushed is False
+        assert result.pr_number is None
+        assert result.error is not None
+        assert "timed out" in (result.error or "").lower()
+        # Verify kill was called on the timed-out process
+        proc.kill.assert_called_once()
+        # No GitHub API calls beyond token
+        client.create_pull_request.assert_not_awaited()
+        client.update_pull_request.assert_not_awaited()
+        client.create_issue_comment.assert_not_awaited()
+
+
 class TestPublishPRCreateFailure:
     @patch("voyager.core.publish.asyncio.create_subprocess_exec")
     async def test_pr_create_failure_returns_error(self, mock_exec: MagicMock) -> None:

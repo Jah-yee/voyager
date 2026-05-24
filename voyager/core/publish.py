@@ -131,13 +131,12 @@ async def _run_exec(argv: list[str], *, cwd: str, timeout_seconds: int, env: dic
         _stdout_raw, _stderr_raw = await asyncio.wait_for(
             process.communicate(), timeout=timeout_seconds
         )
+        rc = process.returncode or 0
     except TimeoutError:
         kill = getattr(process, "kill", None)
         if callable(kill):
             kill()
-        raise
-
-    rc = process.returncode or 0
+        rc = -1
     # Log at debug with token redacted; never surface the raw token.
     _log.debug(
         "publish subprocess exited %s: %s",
@@ -226,24 +225,31 @@ async def assembly_app_publish(
 
         # ---- Step 3: git push HEAD:refs/heads/<branch> ----
         # Always safe: --force-with-lease refuses if the remote ref has moved.
+        # The push target is the explicit HTTPS URL, never a named remote, so
+        # fork or SSH remotes cannot bypass App-token auth.
+        remote_url = f"https://github.com/{repository}.git"
         argv = [
             "git",
             "push",
             "--force-with-lease",
             "--no-verify",
-            "origin",
+            remote_url,
             f"HEAD:refs/heads/{branch}",
         ]
         rc = await _run_exec(argv, cwd=work_dir, timeout_seconds=timeout_seconds, env=auth_env)
 
         if rc != 0:
+            if rc < 0:
+                error_msg = f"git push timed out ({timeout_seconds}s)"
+            else:
+                error_msg = f"git push failed (exit {rc})"
             return PublishResult(
                 pushed=False,
                 pr_number=None,
                 pr_url=None,
                 pr_action=None,
                 codex_comment_id=None,
-                error=f"git push failed (exit {rc})",
+                error=error_msg,
             )
 
         # ---- Step 4: create or update PR ----
