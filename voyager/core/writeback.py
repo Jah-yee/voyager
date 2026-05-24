@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .github_app import GitHubAppClient
 
 CLEARANCE_AGENT_SLUG = "iterwheel-clearance"  # voyager clearance bot App
-_GITHUB_TOKEN_RE = re.compile(r"\bgh[opsru]_[A-Za-z0-9_]+\b")
+_GITHUB_TOKEN_RE = re.compile(r"\b(?:gh[opsru]_|github_pat_)[A-Za-z0-9_]+\b")
 _TOKEN_QUERY_RE = re.compile(r"(?i)(token=)[^\s&]+")
 
 

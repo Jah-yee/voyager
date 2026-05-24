@@ -97,7 +97,10 @@ def test_build_writeback_failure_graphql_error_sanitizes_public_fields():
         [
             {
                 "type": "FORBIDDEN",
-                "message": "Resource token=ghp_SECRET123 Bearer ghs_SECRET456 not accessible",
+                "message": (
+                    "Resource token=ghp_SECRET123 Bearer ghs_SECRET456 "
+                    "github_pat_SECRET789 not accessible"
+                ),
             }
         ]
     )
@@ -111,6 +114,7 @@ def test_build_writeback_failure_graphql_error_sanitizes_public_fields():
     all_text = str(failure)
     assert "ghp_" not in all_text
     assert "ghs_" not in all_text
+    assert "github_pat_" not in all_text
     assert "token=ghp" not in all_text
     assert "token=[redacted]" in all_text
     assert "Bearer [redacted]" in all_text
