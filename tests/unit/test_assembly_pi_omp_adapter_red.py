@@ -273,6 +273,9 @@ async def test_pi_adapter_executes_omp_in_clone_pushes_branch_and_returns_sha(
     assert result.status == "executed"
     assert result.commit_shas == [VALID_SHA]
     assert re.fullmatch(r"[0-9a-f]{40}", result.commit_shas[0])
+    assert result.details["checkout_dir"]
+    assert not Path(str(result.details["checkout_dir"])).exists()
+    assert not list(tmp_path.glob("assembly-omp-*"))
 
     omp_calls = recorder.command_calls("omp")
     assert len(omp_calls) == 1

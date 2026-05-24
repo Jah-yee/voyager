@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -154,198 +155,228 @@ class PiOhMyPiDeepSeekAdapter:
         command_path = str(context.command_path or "").strip()
         token = str(context.installation_token or "")
         timeout_seconds = context.timeout_seconds if context.timeout_seconds > 0 else 900
+        details: dict[str, Any] = {
+            "workdir": str(context.workdir),
+            "checkout_dir": None,
+            "omp_session_jsonl_path": None,
+            "exported_html_path": None,
+        }
+        temp_root_path: Path | None = None
 
         try:
             context.workdir.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(
-                prefix="assembly-omp-",
-                dir=context.workdir,
-            ) as temp_root:
-                temp_root_path = Path(temp_root)
-                checkout_dir = Path(temp_root) / "repo"
-                safe_remote = _github_safe_remote(repository)
-                askpass = _write_git_askpass(temp_root_path)
-                git_env = _git_env()
-                git_auth_env = _git_env(token=token, askpass=askpass)
-
-                clone = await _run_exec(
-                    ["git", "clone", safe_remote, str(checkout_dir)],
-                    cwd=context.workdir,
-                    timeout_seconds=timeout_seconds,
-                    env=git_auth_env,
+            temp_root_path = Path(
+                tempfile.mkdtemp(
+                    prefix="assembly-omp-",
+                    dir=context.workdir,
                 )
-                if clone.returncode != 0:
-                    return _failed_pi_result("Git clone failed for Assembly OMP backend.", token)
+            )
+            checkout_dir = temp_root_path / "repo"
+            details["checkout_dir"] = str(checkout_dir)
+            safe_remote = _github_safe_remote(repository)
+            askpass = _write_git_askpass(temp_root_path)
+            git_env = _git_env()
+            git_auth_env = _git_env(token=token, askpass=askpass)
 
-                git_user = await _run_exec(
-                    ["git", "config", "user.name", "iterwheel-assembly[bot]"],
+            clone = await _run_exec(
+                ["git", "clone", safe_remote, str(checkout_dir)],
+                cwd=context.workdir,
+                timeout_seconds=timeout_seconds,
+                env=git_auth_env,
+            )
+            if clone.returncode != 0:
+                return _failed_pi_result(
+                    "Git clone failed for Assembly OMP backend.", token, details
+                )
+
+            git_user = await _run_exec(
+                ["git", "config", "user.name", "iterwheel-assembly[bot]"],
+                cwd=checkout_dir,
+                timeout_seconds=timeout_seconds,
+                env=git_env,
+            )
+            if git_user.returncode != 0:
+                return _failed_pi_result(
+                    "Git user.name config failed for Assembly OMP backend.",
+                    token,
+                    details,
+                )
+            git_email = await _run_exec(
+                [
+                    "git",
+                    "config",
+                    "user.email",
+                    "3821103+iterwheel-assembly[bot]@users.noreply.github.com",
+                ],
+                cwd=checkout_dir,
+                timeout_seconds=timeout_seconds,
+                env=git_env,
+            )
+            if git_email.returncode != 0:
+                return _failed_pi_result(
+                    "Git user.email config failed for Assembly OMP backend.",
+                    token,
+                    details,
+                )
+
+            branch_start_ref = await _branch_start_ref(
+                contract,
+                checkout_dir,
+                timeout_seconds,
+                git_env=git_env,
+                git_auth_env=git_auth_env,
+            )
+
+            checkout = await _run_exec(
+                [
+                    "git",
+                    "checkout",
+                    "-B",
+                    contract.branch_name,
+                    branch_start_ref,
+                ],
+                cwd=checkout_dir,
+                timeout_seconds=timeout_seconds,
+                env=git_env,
+            )
+            if checkout.returncode != 0:
+                return _failed_pi_result(
+                    "Git checkout failed for Assembly OMP backend.",
+                    token,
+                    details,
+                )
+
+            base_sha = await _git_head_sha(checkout_dir, timeout_seconds, git_env)
+            if base_sha is None:
+                return _failed_pi_result(
+                    "Could not read base commit for Assembly OMP backend.",
+                    token,
+                    details,
+                )
+
+            prompt = _build_omp_prompt(contract)
+            omp = await _run_exec(
+                [command_path, "-p", prompt],
+                cwd=checkout_dir,
+                timeout_seconds=timeout_seconds,
+                env=_omp_env(),
+            )
+            details["omp_session_jsonl_path"] = _latest_omp_session_jsonl(checkout_dir)
+            if omp.returncode != 0:
+                return _failed_pi_result(
+                    f"OMP subprocess failed with exit code {omp.returncode}.",
+                    token,
+                    details,
+                )
+
+            status = await _run_exec(
+                ["git", "status", "--porcelain"],
+                cwd=checkout_dir,
+                timeout_seconds=timeout_seconds,
+                env=git_env,
+            )
+            if status.returncode != 0:
+                return _failed_pi_result(
+                    "Git status failed for Assembly OMP backend.",
+                    token,
+                    details,
+                )
+
+            dirty_tree = bool(status.stdout.strip())
+            if dirty_tree:
+                staged = await _run_exec(
+                    ["git", "add", "-A"],
                     cwd=checkout_dir,
                     timeout_seconds=timeout_seconds,
                     env=git_env,
                 )
-                if git_user.returncode != 0:
+                if staged.returncode != 0:
                     return _failed_pi_result(
-                        "Git user.name config failed for Assembly OMP backend.",
+                        "Git add failed for Assembly OMP backend.",
                         token,
+                        details,
                     )
-                git_email = await _run_exec(
+                commit = await _run_exec(
                     [
                         "git",
-                        "config",
-                        "user.email",
-                        "3821103+iterwheel-assembly[bot]@users.noreply.github.com",
+                        "commit",
+                        "-m",
+                        f"Implement #{contract.issue_number} via Assembly",
                     ],
                     cwd=checkout_dir,
                     timeout_seconds=timeout_seconds,
                     env=git_env,
                 )
-                if git_email.returncode != 0:
+                if commit.returncode != 0:
                     return _failed_pi_result(
-                        "Git user.email config failed for Assembly OMP backend.",
+                        "Git commit failed for Assembly OMP backend.",
                         token,
+                        details,
                     )
 
-                branch_start_ref = await _branch_start_ref(
-                    contract,
-                    checkout_dir,
-                    timeout_seconds,
-                    git_env=git_env,
-                    git_auth_env=git_auth_env,
+            head_sha = await _git_head_sha(checkout_dir, timeout_seconds, git_env)
+            if head_sha is None:
+                return _failed_pi_result(
+                    "Git rev-parse failed for Assembly OMP backend.",
+                    token,
+                    details,
                 )
-
-                checkout = await _run_exec(
-                    [
-                        "git",
-                        "checkout",
-                        "-B",
-                        contract.branch_name,
-                        branch_start_ref,
-                    ],
-                    cwd=checkout_dir,
-                    timeout_seconds=timeout_seconds,
-                    env=git_env,
+            if not _COMMIT_SHA_RE.fullmatch(head_sha):
+                return _failed_pi_result(
+                    "Assembly OMP backend produced an invalid commit SHA.",
+                    token,
+                    details,
                 )
-                if checkout.returncode != 0:
-                    return _failed_pi_result(
-                        "Git checkout failed for Assembly OMP backend.",
-                        token,
-                    )
-
-                base_sha = await _git_head_sha(checkout_dir, timeout_seconds, git_env)
-                if base_sha is None:
-                    return _failed_pi_result(
-                        "Could not read base commit for Assembly OMP backend.",
-                        token,
-                    )
-
-                prompt = _build_omp_prompt(contract)
-                omp = await _run_exec(
-                    [command_path, "-p", prompt],
-                    cwd=checkout_dir,
-                    timeout_seconds=timeout_seconds,
-                    env=_omp_env(),
-                )
-                if omp.returncode != 0:
-                    return _failed_pi_result(
-                        f"OMP subprocess failed with exit code {omp.returncode}.",
-                        token,
-                    )
-
-                status = await _run_exec(
-                    ["git", "status", "--porcelain"],
-                    cwd=checkout_dir,
-                    timeout_seconds=timeout_seconds,
-                    env=git_env,
-                )
-                if status.returncode != 0:
-                    return _failed_pi_result(
-                        "Git status failed for Assembly OMP backend.",
-                        token,
-                    )
-
-                dirty_tree = bool(status.stdout.strip())
-                if dirty_tree:
-                    staged = await _run_exec(
-                        ["git", "add", "-A"],
-                        cwd=checkout_dir,
-                        timeout_seconds=timeout_seconds,
-                        env=git_env,
-                    )
-                    if staged.returncode != 0:
-                        return _failed_pi_result(
-                            "Git add failed for Assembly OMP backend.",
-                            token,
-                        )
-                    commit = await _run_exec(
-                        [
-                            "git",
-                            "commit",
-                            "-m",
-                            f"Implement #{contract.issue_number} via Assembly",
-                        ],
-                        cwd=checkout_dir,
-                        timeout_seconds=timeout_seconds,
-                        env=git_env,
-                    )
-                    if commit.returncode != 0:
-                        return _failed_pi_result(
-                            "Git commit failed for Assembly OMP backend.",
-                            token,
-                        )
-
-                head_sha = await _git_head_sha(checkout_dir, timeout_seconds, git_env)
-                if head_sha is None:
-                    return _failed_pi_result(
-                        "Git rev-parse failed for Assembly OMP backend.",
-                        token,
-                    )
-                if not _COMMIT_SHA_RE.fullmatch(head_sha):
-                    return _failed_pi_result(
-                        "Assembly OMP backend produced an invalid commit SHA.",
-                        token,
-                    )
-                if not dirty_tree and head_sha == base_sha:
-                    return AdapterResult(
-                        status="no_changes",
-                        commit_shas=[],
-                        summary="OMP completed with no repository changes.",
-                    )
-
-                verification = await _run_verification_commands(
-                    contract,
-                    checkout_dir,
-                    timeout_seconds,
-                    git_env,
-                )
-                if verification is not None:
-                    return _failed_pi_result(verification, token)
-
-                push = await _run_exec(
-                    [
-                        "git",
-                        "push",
-                        "origin",
-                        f"HEAD:refs/heads/{contract.branch_name}",
-                    ],
-                    cwd=checkout_dir,
-                    timeout_seconds=timeout_seconds,
-                    env=git_auth_env,
-                )
-                if push.returncode != 0:
-                    return _failed_pi_result(
-                        "Git push failed for Assembly OMP backend.",
-                        token,
-                    )
-
+            if not dirty_tree and head_sha == base_sha:
                 return AdapterResult(
-                    status="executed",
-                    commit_shas=[head_sha],
-                    summary="OMP completed, committed changes, and pushed the Assembly branch.",
+                    status="no_changes",
+                    commit_shas=[],
+                    summary="OMP completed with no repository changes.",
+                    details=details,
                 )
+
+            verification = await _run_verification_commands(
+                contract,
+                checkout_dir,
+                timeout_seconds,
+                git_env,
+            )
+            if verification is not None:
+                return _failed_pi_result(verification, token, details)
+
+            push = await _run_exec(
+                [
+                    "git",
+                    "push",
+                    "origin",
+                    f"HEAD:refs/heads/{contract.branch_name}",
+                ],
+                cwd=checkout_dir,
+                timeout_seconds=timeout_seconds,
+                env=git_auth_env,
+            )
+            if push.returncode != 0:
+                return _failed_pi_result(
+                    "Git push failed for Assembly OMP backend.",
+                    token,
+                    details,
+                )
+
+            return AdapterResult(
+                status="executed",
+                commit_shas=[head_sha],
+                summary="OMP completed, committed changes, and pushed the Assembly branch.",
+                details=details,
+            )
         except TimeoutError:
-            return _failed_pi_result("Assembly OMP backend timed out.", token)
+            return _failed_pi_result("Assembly OMP backend timed out.", token, details)
         except OSError:
-            return _failed_pi_result("Assembly OMP backend could not start a subprocess.", token)
+            return _failed_pi_result(
+                "Assembly OMP backend could not start a subprocess.", token, details
+            )
+        finally:
+            if temp_root_path is not None:
+                shutil.rmtree(temp_root_path, ignore_errors=True)
 
 
 def _validate_pi_context(context: AdapterExecutionContext) -> str | None:
@@ -558,11 +589,50 @@ def _sanitize_for_result(value: str, secret: str) -> str:
     return _GITHUB_TOKEN_RE.sub("[redacted]", sanitized)
 
 
-def _failed_pi_result(summary: str, secret: str) -> AdapterResult:
+def _sanitize_details_for_result(value: Any, secret: str) -> Any:
+    if isinstance(value, str):
+        return _sanitize_for_result(value, secret)
+    if isinstance(value, list):
+        return [_sanitize_details_for_result(item, secret) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_details_for_result(item, secret) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _sanitize_details_for_result(item, secret) for key, item in value.items()}
+    return value
+
+
+def _latest_omp_session_jsonl(checkout_dir: Path) -> str | None:
+    """Return the newest OMP session transcript path for this checkout, if any."""
+    session_root = Path.home() / ".omp" / "agent" / "sessions"
+    if not session_root.exists():
+        return None
+    temp_root_name = checkout_dir.parent.name
+    candidates = list(session_root.glob(f"*{temp_root_name}*/*.jsonl"))
+    newest: Path | None = None
+    newest_mtime = -1.0
+    for candidate in candidates:
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or mtime > newest_mtime:
+            newest = candidate
+            newest_mtime = mtime
+    if newest is None:
+        return None
+    return str(newest)
+
+
+def _failed_pi_result(
+    summary: str,
+    secret: str,
+    details: dict[str, Any] | None = None,
+) -> AdapterResult:
     return AdapterResult(
         status="failed",
         commit_shas=[],
         summary=_sanitize_for_result(summary, secret),
+        details=_sanitize_details_for_result(details or {}, secret),
     )
 
 
