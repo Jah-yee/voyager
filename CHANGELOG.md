@@ -8,6 +8,83 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-24
+
+### Added — Assembly bot MVP and GitHub App writeback ([#67](https://github.com/iterwheel/voyager/issues/67), [#68](https://github.com/iterwheel/voyager/issues/68), [#69](https://github.com/iterwheel/voyager/pull/74))
+
+- Added the Assembly implementation bot for `/assembly` and `/implement`
+  issue comments on ready, allow-listed issues, including job-contract
+  extraction, branch creation, PR open/update, `@codex review` trigger
+  comments, and issue/PR progress comments.
+- Added the `iterwheel-assembly` GitHub App registry, permission model, config
+  examples, and Assembly safety boundaries: Assembly never merges, approves, or
+  resolves review threads.
+- Added live issue re-validation, per-command `--dry-run`, CRLF command
+  parsing, and stable progress-comment behavior for failed and partial
+  writeback paths.
+
+### Added — Assembly authorization and hardening ([#73](https://github.com/iterwheel/voyager/issues/73), [#76](https://github.com/iterwheel/voyager/issues/76))
+
+- Added actor authorization for Assembly triggers, including bot exclusion,
+  trusted actor/association policy, warning logs for sender/comment-user
+  divergence, and an `unauthorized_actor` refusal comment.
+- Hardened Assembly idempotency with a per-`(repository, branch)` writeback
+  lock, existing-PR update behavior, SHA-contract documentation, empty-title
+  acceptance-criteria handling, and issue-closed refusal documentation.
+
+### Added — Deployable wheel, build metadata, and `vyg` CLI ([#75](https://github.com/iterwheel/voyager/issues/75), [#80](https://github.com/iterwheel/voyager/pull/80))
+
+- Added wheel packaging with build-commit injection, a wheel-content guard,
+  `voyager._build_info` fallback behavior, and `/healthz` version/build
+  metadata.
+- Added the `vyg` CLI for running the bridge from an installed wheel and
+  documented Wukong's wheel-based launchd deployment flow.
+- Added wheel smoke tests and rollback-oriented deployment helpers, including
+  macOS symlink-swap fixes and stale artifact cleanup before builds.
+
+### Added — Assembly fake subprocess and real OMP backend canary ([#82](https://github.com/iterwheel/voyager/issues/82), [#83](https://github.com/iterwheel/voyager/pull/83), [#84](https://github.com/iterwheel/voyager/pull/84), [#87](https://github.com/iterwheel/voyager/pull/87))
+
+- Added a guarded fake subprocess backend for local/test Assembly execution,
+  including executed, no-change, failed, timeout, malformed-output, and invalid
+  SHA outcomes.
+- Added the real `pi-oh-my-pi-deepseek` Assembly backend using `omp -p`,
+  isolated temporary checkouts, GitHub App installation tokens via temporary
+  `GIT_ASKPASS` only for git clone/push, and token-redaction tests.
+- Added environment controls for the real backend:
+  `ASSEMBLY_EXECUTION_BACKEND`, `ASSEMBLY_PI_COMMAND_PATH`,
+  `ASSEMBLY_PI_WORKDIR`, and `ASSEMBLY_PI_TIMEOUT_SECONDS`.
+- Recorded the first sandbox-only OMP canaries on `iterwheel/voyager-sandbox`,
+  including successful PR creation, rollback verification, and token/API-key
+  boundary checks. Production repositories remain outside the real-OMP rollout.
+
+### Fixed — Assembly duplicate no-change progress downgrade ([#85](https://github.com/iterwheel/voyager/issues/85), [#86](https://github.com/iterwheel/voyager/pull/86))
+
+- Fixed a duplicate `/assembly` delivery path where a later `no_changes`
+  result could overwrite the source issue's progress comment from
+  `status: applied` to `status: no_changes` after a PR had already been
+  opened.
+- Assembly now preserves existing branch/PR context for duplicate no-change
+  dispatches while keeping true first-run no-change results visible when no PR
+  exists.
+
+### Fixed — Clearance fork writeback and stale Codex thread handling ([#62](https://github.com/iterwheel/voyager/issues/62), [#63](https://github.com/iterwheel/voyager/issues/63), [#64](https://github.com/iterwheel/voyager/pull/64), [#65](https://github.com/iterwheel/voyager/pull/65))
+
+- Clearance now skips `resolveReviewThread` on fork PRs without head-repository
+  access and avoids caching a negative fork-access result before the first
+  mutation attempt.
+- Stale State A Codex threads now route through the investigator path instead
+  of being treated as a normal unresolved actionable finding.
+
+### Changed — VOY-1811 operating loop documentation ([#56](https://github.com/iterwheel/voyager/issues/56), [#59](https://github.com/iterwheel/voyager/issues/59), [#61](https://github.com/iterwheel/voyager/pull/66), [#78](https://github.com/iterwheel/voyager/pull/78))
+
+- Added the VOY-1811 completion gate for related-PR review-thread sweeps,
+  delayed-review checks, and distinct issue-closure versus review-thread
+  closure criteria.
+- Added DeepSeek TUI durable wakeup notes and the Phase 8 requirement to post
+  `@codex review` after each PR push during the iteration loop.
+- Added a session retrospective documenting the #76 VOY-1811 run and follow-up
+  automation candidates.
+
 ### Added — Wukong launchd bridge runbook ([#44](https://github.com/iterwheel/voyager/issues/44))
 
 - Added a repo-safe launchd plist template, Wukong env-file template, and
@@ -248,7 +325,8 @@ auth, FastAPI webhook bridge, DeepSeek LLM adapter, rocket-factory
 pipeline state machine, SWM-1101 per-thread verdict pipeline. See
 `b2e4ca1` and prior history.
 
-[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/iterwheel/voyager/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/iterwheel/voyager/releases/tag/v0.3.0
 [0.2.0]: https://github.com/iterwheel/voyager/releases/tag/v0.2.0
 [0.1.0]: https://github.com/iterwheel/voyager/tree/b2e4ca1
