@@ -8,6 +8,8 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-05-25
+
 ### Fixed — Assembly App-token git publish isolation ([#121](https://github.com/iterwheel/voyager/issues/121))
 
 - Assembly now disables host git credential helpers for App-token branch
