@@ -128,7 +128,11 @@ def _threads_status_line(evaluation: ClearanceEvaluation, automation: dict[str, 
     low_priority = _automation_int(automation, "unresolved_codex_thread_count") or 0
     automation_status = str((automation or {}).get("status") or "")
 
-    if automation_status in {"ready", "ready_with_low_priority"} and semantic_blockers is not None:
+    if (
+        evaluation["status"] in {"clearance_ready", "clearance_ready_for_approval"}
+        and automation_status in {"ready", "ready_with_low_priority"}
+        and semantic_blockers is not None
+    ):
         parts = [f"{semantic_blockers} blocking"]
         if automation_status == "ready_with_low_priority" and low_priority:
             noun = "thread" if low_priority == 1 else "threads"

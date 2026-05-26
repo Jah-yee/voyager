@@ -247,6 +247,30 @@ def test_issue_118_readiness_comment_names_visual_unresolved_skipped_threads() -
     assert "Clearance no longer treats them as blockers" in comment
 
 
+def test_thread_success_summary_requires_final_ready_status() -> None:
+    from voyager.bots.clearance.enrichment import build_clearance_comment
+
+    comment = build_clearance_comment(
+        _evaluation(
+            status="clearance_blocked",
+            label="clearance-2-blocked",
+            unresolved_thread_count=1,
+        ),
+        automation={
+            **_automation(),
+            "status": "ready",
+            "unresolved_codex_thread_count": 0,
+            "semantic_blocker_count": 0,
+            "visual_unresolved_thread_count": 0,
+            "visual_unresolved_skipped_thread_count": 0,
+        },
+        provenance={"updated_at": "2026-05-17T00:00:00Z"},
+    )
+
+    assert "❌ Threads: 1 unresolved" in comment
+    assert "✅ Threads: 0 blocking" not in comment
+
+
 def test_writeback_failure_warning_for_generic_issue_operation() -> None:
     from voyager.bots.clearance.enrichment import build_clearance_comment
 
