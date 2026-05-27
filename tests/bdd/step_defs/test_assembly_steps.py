@@ -310,6 +310,11 @@ def dispatcher_branch_and_pr(dispatch_outcome: dict) -> None:
     assert client.create_pull_request.await_count == 1
 
 
+@then(parsers.parse('the dispatcher result branch sha is "{sha}"'))
+def dispatcher_branch_sha(dispatch_outcome: dict, sha: str) -> None:
+    assert dispatch_outcome["result"]["branch"]["sha"] == sha
+
+
 @then("the dispatcher posted a Codex review trigger")
 def dispatcher_codex_trigger(dispatch_outcome: dict) -> None:
     client = dispatch_outcome["client"]

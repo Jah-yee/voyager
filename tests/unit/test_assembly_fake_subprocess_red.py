@@ -605,8 +605,67 @@ def test_two_phase_codex_trigger_waits_for_testpilot_result(monkeypatch) -> None
     )
 
     assert result["testpilot_result"]["status"] == "executed"
+    assert result["branch"]["sha"] == OTHER_VALID_SHA
     assert result["codex_review_comment_id"] == 4242
     assert observed_testpilot_results == [result["testpilot_result"]]
+
+
+def test_two_phase_testpilot_starts_with_fresh_session_when_implementer_resumed(
+    monkeypatch,
+) -> None:
+    import voyager.bots.assembly.writeback as writeback
+
+    seen_contexts: list[Any] = []
+
+    class _ResumeAwareAdapter:
+        name = "resume-aware"
+        supports_resume = True
+
+        async def execute(self, contract, context=None):
+            seen_contexts.append(context)
+            if context.phase == "testpilot":
+                return AdapterResult(status="no_changes", summary="testpilot reviewed")
+            return AdapterResult(
+                status="executed",
+                commit_shas=[VALID_SHA],
+                summary="implementer committed",
+            )
+
+    async def fake_resolve_session(**kwargs):
+        return {
+            "requested": True,
+            "mode": "resumed",
+            "expected_head_sha": VALID_SHA,
+            "session_id": "/private/implementer-session.jsonl",
+            "fallback_reason": None,
+        }
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("ASSEMBLY_PHASE_MODE", "two-phase")
+    monkeypatch.setattr(writeback, "_resolve_session", fake_resolve_session)
+    monkeypatch.setattr(
+        writeback,
+        "select_execution_adapter",
+        lambda backend=None: _ResumeAwareAdapter(),
+    )
+
+    result = asyncio.run(
+        writeback.dispatch_assembly_writeback(
+            _mock_client(),
+            _route(),
+            repository="iterwheel/voyager-sandbox",
+        )
+    )
+
+    assert result["session"]["mode"] == "resumed"
+    assert len(seen_contexts) == 2
+    assert seen_contexts[0].phase == "implementer"
+    assert seen_contexts[0].session_mode == "resumed"
+    assert seen_contexts[0].resume_session_id == "/private/implementer-session.jsonl"
+    assert seen_contexts[1].phase == "testpilot"
+    assert seen_contexts[1].session_mode == "fresh"
+    assert seen_contexts[1].resume_requested is False
+    assert seen_contexts[1].resume_session_id is None
 
 
 def test_two_phase_testpilot_failed_clears_applied(monkeypatch) -> None:

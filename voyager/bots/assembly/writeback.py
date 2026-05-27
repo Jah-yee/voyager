@@ -863,7 +863,7 @@ async def dispatch_assembly_writeback(
                     testpilot_adapter,
                     repository,
                     is_dry_run=is_dry_run,
-                    session=base_result.get("session"),
+                    session=None,
                     audit_id=base_result.get("audit_id"),
                     phase="testpilot",
                 )
@@ -898,9 +898,12 @@ async def dispatch_assembly_writeback(
                 else {"status": "failed", "commit_shas": [], "summary": "No result", "details": {}}
             )
 
-            # Adapters own their push boundary. The dispatcher only records
-            # the TestPilot result; the PR already tracks the same branch.
+            # Adapters own their push boundary. When TestPilot adds commits,
+            # keep the recorded head aligned with the PR branch for audit and
+            # resume metadata written below.
             base_result["testpilot_result"] = tp_adapter_dict
+            if tp_result.commit_shas:
+                base_result.setdefault("branch", {})["sha"] = str(tp_result.commit_shas[-1])
             if tp_result.status in {"blocked", "failed", "unknown"}:
                 base_result["applied"] = False
 

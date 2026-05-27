@@ -199,6 +199,7 @@ Feature: Assembly bot — code implementation routing and writeback
     And Assembly dispatches the route with a mock GitHub client
     Then the dispatcher result adapter_result status is "executed"
     And the dispatcher result testpilot_result status is "executed"
+    And the dispatcher result branch sha is "89abcdef0123456789abcdef0123456789abcdef"
     And the dispatcher posted a Codex review trigger after TestPilot
     And the latest Assembly progress comment includes "TestPilot: passed"
 
