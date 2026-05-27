@@ -695,6 +695,48 @@ def test_two_phase_testpilot_result_redacts_installation_token(monkeypatch) -> N
         assert token not in call.kwargs["body"]
 
 
+def test_two_phase_testpilot_context_failure_records_progress(monkeypatch) -> None:
+    token = "ghs_implementer_only_token_123"
+
+    class _TokenAdapter:
+        name = "token-adapter"
+        requires_installation_token = True
+
+        async def execute(self, contract, context=None):
+            if context is None or context.installation_token != token:
+                raise AssertionError("missing implementer token context")
+            return AdapterResult(
+                status="executed",
+                commit_shas=[VALID_SHA],
+                summary="implementer committed",
+            )
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("ASSEMBLY_PHASE_MODE", "two-phase")
+    client = _mock_client(token=token)
+    client.installation_token.side_effect = [token, RuntimeError("token service unavailable")]
+
+    with patch(
+        "voyager.bots.assembly.writeback.select_execution_adapter",
+        return_value=_TokenAdapter(),
+    ):
+        result = asyncio.run(
+            dispatch_assembly_writeback(
+                client,
+                _route(),
+                repository="iterwheel/voyager-sandbox",
+            )
+        )
+
+    assert result["testpilot_result"]["status"] == "failed"
+    assert result["applied"] is False
+    assert any(f["operation"] == "testpilot.execute" for f in result["writeback_failures"])
+    assert client.upsert_issue_comment.await_count >= 1
+    progress_body = client.upsert_issue_comment.await_args_list[-1].kwargs["body"]
+    assert "TestPilot: `failed`" in progress_body
+    assert "TestPilot adapter raised: RuntimeError" in progress_body
+
+
 def test_omp_prompt_uses_testpilot_specific_instructions() -> None:
     from voyager.bots.assembly.adapters import _build_omp_prompt
 

@@ -240,6 +240,24 @@ Feature: Assembly bot — code implementation routing and writeback
     And the latest Assembly progress comment includes "TestPilot: `failed`"
     And the latest Assembly progress comment includes "verification failed"
 
+  Scenario: Two-phase mode records progress when testpilot context setup fails
+    Given a webhook payload "assembly_command_ready"
+    And DRY_RUN is "false"
+    And ASSEMBLY_EXECUTION_BACKEND is "fake-subprocess"
+    And ASSEMBLY_PHASE_MODE is "two-phase"
+    And the fake subprocess backend is allowed
+    And the fake subprocess backend will return executed with commit SHA "0123456789abcdef0123456789abcdef01234567"
+    And the fake testpilot context builder will fail
+    When Assembly receives the "issue_comment" event
+    And Assembly dispatches the route with a mock GitHub client
+    Then the dispatcher result adapter_result status is "executed"
+    And the dispatcher result testpilot_result status is "failed"
+    And the dispatcher result applied is false
+    And the dispatcher result writeback_failures includes "testpilot.execute"
+    And the latest Assembly progress comment includes "TestPilot: `failed`"
+    And the latest Assembly progress comment includes "TestPilot adapter raised: RuntimeError"
+
+
   # ---------------------------------------------------------------------------
   # Scenario 12 (Feature #96) — Single-phase backward compatibility (no phase config)
   # ---------------------------------------------------------------------------

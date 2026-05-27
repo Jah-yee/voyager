@@ -856,16 +856,17 @@ async def dispatch_assembly_writeback(
         if phase_mode == PhaseMode.TWO_PHASE and pr_ok:
             testpilot_backend = select_phase_backend(global_backend, PhaseName.TESTPILOT)
             testpilot_adapter = select_execution_adapter(testpilot_backend)
-            testpilot_context = await _build_adapter_context(
-                client,
-                testpilot_adapter,
-                repository,
-                is_dry_run=is_dry_run,
-                session=base_result.get("session"),
-                audit_id=base_result.get("audit_id"),
-                phase="testpilot",
-            )
+            testpilot_context: AdapterExecutionContext | None = None
             try:
+                testpilot_context = await _build_adapter_context(
+                    client,
+                    testpilot_adapter,
+                    repository,
+                    is_dry_run=is_dry_run,
+                    session=base_result.get("session"),
+                    audit_id=base_result.get("audit_id"),
+                    phase="testpilot",
+                )
                 tp_result = await _execute_adapter(testpilot_adapter, contract, testpilot_context)
             except Exception as exc:
                 tp_result = AdapterResult(
@@ -885,7 +886,7 @@ async def dispatch_assembly_writeback(
                     }
                 )
 
-            tp_secret = testpilot_context.installation_token
+            tp_secret = testpilot_context.installation_token if testpilot_context else None
             tp_adapter_dict = (
                 {
                     "status": tp_result.status,

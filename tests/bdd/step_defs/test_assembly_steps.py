@@ -418,6 +418,21 @@ def fake_testpilot_failed(monkeypatch, summary: str) -> None:
     )
 
 
+@given("the fake testpilot context builder will fail")
+def fake_testpilot_context_builder_fails(monkeypatch) -> None:
+    from voyager.bots.assembly import writeback
+
+    monkeypatch.setenv("ASSEMBLY_TESTPILOT_BACKEND", "fake-subprocess")
+    original = writeback._build_adapter_context
+
+    async def wrapped_build_adapter_context(*args, **kwargs):
+        if kwargs.get("phase") == "testpilot":
+            raise RuntimeError("testpilot context unavailable")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(writeback, "_build_adapter_context", wrapped_build_adapter_context)
+
+
 # ---------------------------------------------------------------------------
 # Feature #96 — Two-phase mode Then steps
 # ---------------------------------------------------------------------------
