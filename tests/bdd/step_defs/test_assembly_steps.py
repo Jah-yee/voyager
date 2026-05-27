@@ -397,6 +397,21 @@ def fake_testpilot_blocked(monkeypatch, summary: str) -> None:
     )
 
 
+@given(parsers.parse('the fake testpilot backend will return failed with summary "{summary}"'))
+def fake_testpilot_failed(monkeypatch, summary: str) -> None:
+    monkeypatch.setenv("ASSEMBLY_TESTPILOT_BACKEND", "fake-subprocess")
+    monkeypatch.setenv(
+        "ASSEMBLY_FAKE_SUBPROCESS_OUTPUT_TESTPILOT",
+        json.dumps(
+            {
+                "status": "failed",
+                "commit_shas": [],
+                "summary": summary,
+            }
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Feature #96 — Two-phase mode Then steps
 # ---------------------------------------------------------------------------

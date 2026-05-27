@@ -1287,7 +1287,11 @@ async def _upsert_progress_comments(
     status = "applied"
     if phase_mode == "two-phase" and tp_status == "blocked":
         status = "blocked"
-    elif adapter_status == "failed" or (failures and not pull_request.get("number")):
+    elif (
+        adapter_status == "failed"
+        or (phase_mode == "two-phase" and tp_status in {"failed", "unknown"})
+        or (failures and not pull_request.get("number"))
+    ):
         status = "failed"
     elif failures:
         status = "partial"
