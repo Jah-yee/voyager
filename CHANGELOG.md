@@ -8,6 +8,8 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+## [0.4.6] — 2026-05-27
+
 ### Added — Assembly resolver fallback for Clearance ([#131](https://github.com/iterwheel/voyager/issues/131))
 
 - Clearance Stage 1.5 can now use the allow-listed Assembly App identity to
@@ -442,7 +444,8 @@ auth, FastAPI webhook bridge, DeepSeek LLM adapter, rocket-factory
 pipeline state machine, SWM-1101 per-thread verdict pipeline. See
 `b2e4ca1` and prior history.
 
-[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/iterwheel/voyager/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/iterwheel/voyager/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/iterwheel/voyager/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/iterwheel/voyager/compare/v0.4.2...v0.4.3
