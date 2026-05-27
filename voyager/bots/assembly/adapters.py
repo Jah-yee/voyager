@@ -336,7 +336,7 @@ class PiOhMyPiDeepSeekAdapter:
                     context=context,
                 )
 
-            prompt = _build_omp_prompt(contract)
+            prompt = _build_omp_prompt(contract, phase=context.phase)
             omp_argv = [command_path, "-p", prompt]
             if context.session_mode == "resumed" and context.resume_session_id:
                 omp_argv = [command_path, "-p", f"--resume={context.resume_session_id}", prompt]
@@ -768,12 +768,11 @@ async def _run_verification_commands(
     return None
 
 
-def _build_omp_prompt(contract: AssemblyJobContract) -> str:
+def _build_omp_prompt(contract: AssemblyJobContract, *, phase: str = "implementer") -> str:
     acceptance = "\n".join(f"- {item}" for item in contract.acceptance_criteria) or "- None"
     forbidden = "\n".join(f"- {item}" for item in contract.forbidden_operations) or "- None"
     verification = "\n".join(f"- {item}" for item in contract.verification_commands) or "- None"
-    return (
-        "You are Assembly implementing a GitHub issue in the current checkout.\n"
+    common = (
         f"Repository: {contract.repository}\n"
         f"Issue: #{contract.issue_number} {contract.issue_title}\n"
         f"Issue URL: {contract.issue_url}\n"
@@ -786,6 +785,22 @@ def _build_omp_prompt(contract: AssemblyJobContract) -> str:
         f"{forbidden}\n\n"
         "Verification commands:\n"
         f"{verification}\n\n"
+    )
+    if phase == "testpilot":
+        return (
+            "You are Assembly TestPilot independently verifying the current PR branch.\n"
+            f"{common}"
+            "Inspect the current branch against the acceptance criteria and existing diff. "
+            "Do not re-run the implementation phase. Add or tighten tests, fixtures, or "
+            "small verification-only fixes when they are clearly needed to prove the PR. "
+            "If the acceptance criteria are not met and a safe test/verification fix is not "
+            "practical, leave the checkout unchanged and report the gap. Run the verification "
+            "commands when practical, commit any TestPilot changes on the current branch, and "
+            "do not push. The Assembly adapter will push after validation."
+        )
+    return (
+        "You are Assembly implementing a GitHub issue in the current checkout.\n"
+        f"{common}"
         "Work only in this checkout on the current branch. Make the smallest production "
         "changes needed, run the verification commands when practical, commit changes "
         "on the current branch, and do not push. The Assembly adapter will push after "

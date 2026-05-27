@@ -646,3 +646,60 @@ def test_two_phase_testpilot_failed_clears_applied(monkeypatch) -> None:
 
     assert result["testpilot_result"]["status"] == "failed"
     assert result["applied"] is False
+
+
+def test_two_phase_testpilot_result_redacts_installation_token(monkeypatch) -> None:
+    token = "ghs_testpilot_secret_token_red_456"
+
+    class _PhaseAwareTokenAdapter:
+        name = "phase-aware-token"
+        requires_installation_token = True
+
+        async def execute(self, contract, context=None):
+            if context is None or context.installation_token != token:
+                raise AssertionError("missing installation token context")
+            if context.phase == "testpilot":
+                return AdapterResult(
+                    status="failed",
+                    commit_shas=[],
+                    summary=f"testpilot saw {token}",
+                    details={"stderr_tail": f"secret={token}"},
+                )
+            return AdapterResult(
+                status="executed",
+                commit_shas=[VALID_SHA],
+                summary="implementer committed",
+            )
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("ASSEMBLY_PHASE_MODE", "two-phase")
+    client = _mock_client(token=token)
+
+    with patch(
+        "voyager.bots.assembly.writeback.select_execution_adapter",
+        return_value=_PhaseAwareTokenAdapter(),
+    ):
+        result = asyncio.run(
+            dispatch_assembly_writeback(
+                client,
+                _route(),
+                repository="iterwheel/voyager-sandbox",
+            )
+        )
+
+    assert result["testpilot_result"]["status"] == "failed"
+    _assert_not_contains(result, token)
+    for call in client.upsert_issue_comment.await_args_list:
+        assert token not in call.kwargs["body"]
+    for call in client.create_issue_comment.await_args_list:
+        assert token not in call.kwargs["body"]
+
+
+def test_omp_prompt_uses_testpilot_specific_instructions() -> None:
+    from voyager.bots.assembly.adapters import _build_omp_prompt
+
+    prompt = _build_omp_prompt(_contract(), phase="testpilot")
+
+    assert "Assembly TestPilot independently verifying" in prompt
+    assert "Do not re-run the implementation phase" in prompt
+    assert "implementing a GitHub issue" not in prompt

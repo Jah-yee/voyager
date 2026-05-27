@@ -152,7 +152,9 @@ def combine_phase_results(
 
     if testpilot is not None:
         if testpilot.is_blocking:
-            return "blocked"
+            if testpilot.status == "blocked":
+                return "blocked"
+            return "failed"
         if testpilot.adapter_result is not None:
             # Both phases completed
             if implementer.is_success and testpilot.is_success:

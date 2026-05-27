@@ -885,12 +885,13 @@ async def dispatch_assembly_writeback(
                     }
                 )
 
+            tp_secret = testpilot_context.installation_token
             tp_adapter_dict = (
                 {
                     "status": tp_result.status,
-                    "commit_shas": list(tp_result.commit_shas),
-                    "summary": tp_result.summary,
-                    "details": tp_result.details,
+                    "commit_shas": _redact_secret(list(tp_result.commit_shas), tp_secret),
+                    "summary": _redact_secret(tp_result.summary, tp_secret),
+                    "details": _redact_secret(tp_result.details, tp_secret),
                 }
                 if tp_result
                 else {"status": "failed", "commit_shas": [], "summary": "No result", "details": {}}

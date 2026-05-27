@@ -225,6 +225,18 @@ def test_combine_implementer_passes_testpilot_blocks() -> None:
     assert combine_phase_results(imp, tp) == "blocked"
 
 
+def test_combine_implementer_passes_testpilot_fails() -> None:
+    imp = PhaseResult(
+        phase=PhaseName.IMPLEMENTER,
+        adapter_result={"status": "executed"},
+    )
+    tp = PhaseResult(
+        phase=PhaseName.TESTPILOT,
+        adapter_result={"status": "failed", "summary": "verification failed"},
+    )
+    assert combine_phase_results(imp, tp) == "failed"
+
+
 def test_combine_implementer_passes_testpilot_adds_tests() -> None:
     imp = PhaseResult(
         phase=PhaseName.IMPLEMENTER,
