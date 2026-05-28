@@ -810,6 +810,8 @@ async def dispatch_assembly_writeback(
             return base_result
 
         base_result["applied"] = True
+        if adapter_result is not None and adapter_result.status == "blocked":
+            base_result["applied"] = False
 
         # Per D11, when the adapter produced no commits, skip
         # branch/PR/codex steps but still upsert the progress comment so
@@ -907,7 +909,12 @@ async def dispatch_assembly_writeback(
             if tp_result.status in {"blocked", "failed", "unknown"}:
                 base_result["applied"] = False
 
-        if pr_ok:
+        testpilot_status = (base_result.get("testpilot_result") or {}).get("status")
+        codex_trigger_allowed = phase_mode != PhaseMode.TWO_PHASE or testpilot_status in {
+            "executed",
+            "no_changes",
+        }
+        if pr_ok and codex_trigger_allowed:
             await _post_codex_trigger(client, repository, contract, base_result)
 
         _persist_session_metadata(
@@ -1293,7 +1300,7 @@ async def _upsert_progress_comments(
     tp_status = (testpilot_result or {}).get("status") if testpilot_result else None
 
     status = "applied"
-    if phase_mode == "two-phase" and tp_status == "blocked":
+    if adapter_status == "blocked" or (phase_mode == "two-phase" and tp_status == "blocked"):
         status = "blocked"
     elif (
         adapter_status == "failed"

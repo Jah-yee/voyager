@@ -482,6 +482,38 @@ async def test_concurrent_fake_subprocess_dispatches_serialize_without_duplicate
     assert client.update_pull_request.await_count == 1
 
 
+def test_blocked_implementer_result_is_not_applied(monkeypatch) -> None:
+    from voyager.bots.assembly.constants import ASSEMBLY_BACKEND_FAKE_SUBPROCESS
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv(ASSEMBLY_EXECUTION_BACKEND_ENV, ASSEMBLY_BACKEND_FAKE_SUBPROCESS)
+    monkeypatch.setenv(FAKE_ALLOW_ENV, "1")
+    _set_fake_output(
+        monkeypatch,
+        {
+            "status": "blocked",
+            "commit_shas": [],
+            "summary": "AC not met",
+        },
+    )
+
+    client = _mock_client()
+    result = asyncio.run(
+        dispatch_assembly_writeback(
+            client,
+            _route(),
+            repository="iterwheel/voyager-sandbox",
+        )
+    )
+
+    assert result["adapter_result"]["status"] == "blocked"
+    assert result["applied"] is False
+    assert result["pull_request"]["action"] == "skipped_no_changes"
+    assert client.create_issue_comment.await_count == 0
+    progress_body = client.upsert_issue_comment.await_args_list[-1].kwargs["body"]
+    assert "status: `blocked`" in progress_body
+
+
 def test_invalid_fake_sha_dispatcher_fails_without_branch_pr_or_raw_sha_leak(
     monkeypatch,
 ) -> None:
@@ -666,6 +698,52 @@ def test_two_phase_testpilot_starts_with_fresh_session_when_implementer_resumed(
     assert seen_contexts[1].session_mode == "fresh"
     assert seen_contexts[1].resume_requested is False
     assert seen_contexts[1].resume_session_id is None
+
+
+def test_two_phase_testpilot_blocked_skips_codex_trigger(monkeypatch) -> None:
+    import voyager.bots.assembly.writeback as writeback
+    from voyager.bots.assembly.constants import ASSEMBLY_BACKEND_FAKE_SUBPROCESS
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv(ASSEMBLY_EXECUTION_BACKEND_ENV, ASSEMBLY_BACKEND_FAKE_SUBPROCESS)
+    monkeypatch.setenv("ASSEMBLY_PHASE_MODE", "two-phase")
+    monkeypatch.setenv("ASSEMBLY_TESTPILOT_BACKEND", ASSEMBLY_BACKEND_FAKE_SUBPROCESS)
+    monkeypatch.setenv(FAKE_ALLOW_ENV, "1")
+    _set_fake_output(
+        monkeypatch,
+        {
+            "status": "executed",
+            "commit_shas": [VALID_SHA],
+            "summary": "implementer commit",
+        },
+    )
+    monkeypatch.setenv(
+        "ASSEMBLY_FAKE_SUBPROCESS_OUTPUT_TESTPILOT",
+        json.dumps(
+            {
+                "status": "blocked",
+                "commit_shas": [],
+                "summary": "testpilot found unmet AC",
+            }
+        ),
+    )
+    observed_triggers: list[object] = []
+
+    async def fake_post_codex_trigger(client, repository, contract, result):
+        observed_triggers.append((client, repository, contract, result))
+
+    monkeypatch.setattr(writeback, "_post_codex_trigger", fake_post_codex_trigger)
+    result = asyncio.run(
+        writeback.dispatch_assembly_writeback(
+            _mock_client(),
+            _route(),
+            repository="iterwheel/voyager-sandbox",
+        )
+    )
+
+    assert result["testpilot_result"]["status"] == "blocked"
+    assert result["applied"] is False
+    assert observed_triggers == []
 
 
 def test_two_phase_testpilot_failed_clears_applied(monkeypatch) -> None:

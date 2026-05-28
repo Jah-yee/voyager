@@ -222,6 +222,7 @@ Feature: Assembly bot — code implementation routing and writeback
     And the latest Assembly progress comment includes "blocked"
     And the latest Assembly progress comment includes "AC #3 not met"
     And the latest Assembly progress comment includes "TestPilot: blocked"
+    And the dispatcher did not post a Codex review trigger
     And the run does not claim success without testpilot verification
 
   Scenario: Two-phase mode implementer succeeds but testpilot fails

@@ -315,6 +315,12 @@ def dispatcher_branch_sha(dispatch_outcome: dict, sha: str) -> None:
     assert dispatch_outcome["result"]["branch"]["sha"] == sha
 
 
+@then("the dispatcher did not post a Codex review trigger")
+def dispatcher_no_codex_trigger(dispatch_outcome: dict) -> None:
+    client = dispatch_outcome["client"]
+    assert client.create_issue_comment.await_count == 0
+
+
 @then("the dispatcher posted a Codex review trigger")
 def dispatcher_codex_trigger(dispatch_outcome: dict) -> None:
     client = dispatch_outcome["client"]
