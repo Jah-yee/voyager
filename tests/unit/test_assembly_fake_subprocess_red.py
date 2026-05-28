@@ -746,6 +746,49 @@ def test_two_phase_testpilot_blocked_skips_codex_trigger(monkeypatch) -> None:
     assert observed_triggers == []
 
 
+def test_two_phase_testpilot_dry_run_is_not_applied(monkeypatch) -> None:
+    import voyager.bots.assembly.writeback as writeback
+    from voyager.bots.assembly.constants import (
+        ASSEMBLY_BACKEND_DRY_RUN,
+        ASSEMBLY_BACKEND_FAKE_SUBPROCESS,
+    )
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv(ASSEMBLY_EXECUTION_BACKEND_ENV, ASSEMBLY_BACKEND_FAKE_SUBPROCESS)
+    monkeypatch.setenv("ASSEMBLY_PHASE_MODE", "two-phase")
+    monkeypatch.setenv("ASSEMBLY_TESTPILOT_BACKEND", ASSEMBLY_BACKEND_DRY_RUN)
+    monkeypatch.setenv(FAKE_ALLOW_ENV, "1")
+    _set_fake_output(
+        monkeypatch,
+        {
+            "status": "executed",
+            "commit_shas": [VALID_SHA],
+            "summary": "implementer commit",
+        },
+    )
+    observed_triggers: list[object] = []
+
+    async def fake_post_codex_trigger(client, repository, contract, result):
+        observed_triggers.append((client, repository, contract, result))
+
+    monkeypatch.setattr(writeback, "_post_codex_trigger", fake_post_codex_trigger)
+    client = _mock_client()
+    result = asyncio.run(
+        writeback.dispatch_assembly_writeback(
+            client,
+            _route(),
+            repository="iterwheel/voyager-sandbox",
+        )
+    )
+
+    assert result["testpilot_result"]["status"] == "dry_run"
+    assert result["applied"] is False
+    assert observed_triggers == []
+    progress_body = client.upsert_issue_comment.await_args_list[-1].kwargs["body"]
+    assert "status: `failed`" in progress_body
+    assert "TestPilot: `dry_run`" in progress_body
+
+
 def test_two_phase_testpilot_failed_clears_applied(monkeypatch) -> None:
     from voyager.bots.assembly.constants import ASSEMBLY_BACKEND_FAKE_SUBPROCESS
 

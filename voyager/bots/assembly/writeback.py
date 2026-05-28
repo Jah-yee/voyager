@@ -906,7 +906,7 @@ async def dispatch_assembly_writeback(
             base_result["testpilot_result"] = tp_adapter_dict
             if tp_result.commit_shas:
                 base_result.setdefault("branch", {})["sha"] = str(tp_result.commit_shas[-1])
-            if tp_result.status in {"blocked", "failed", "unknown"}:
+            if tp_result.status in {"blocked", "failed", "unknown", "dry_run"}:
                 base_result["applied"] = False
 
         testpilot_status = (base_result.get("testpilot_result") or {}).get("status")
@@ -1304,7 +1304,7 @@ async def _upsert_progress_comments(
         status = "blocked"
     elif (
         adapter_status == "failed"
-        or (phase_mode == "two-phase" and tp_status in {"failed", "unknown"})
+        or (phase_mode == "two-phase" and tp_status in {"failed", "unknown", "dry_run"})
         or (failures and not pull_request.get("number"))
     ):
         status = "failed"
