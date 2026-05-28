@@ -42,15 +42,20 @@ def _parse_token_list(raw: str, *, case: str = "lower") -> list[str]:
     return normalized
 
 
-def _resolve_authorized_actors() -> set[str]:
+def _resolve_authorized_actors(cfg: Any | None = None) -> set[str]:
     """Return the canonical-lowercase set of authorized actor logins."""
     raw = os.environ.get(AUTHORIZED_ACTORS_ENV)
     if raw is None:
-        return set()
+        assembly = getattr(cfg, "assembly", None)
+        return {
+            str(actor).strip().lower()
+            for actor in (getattr(assembly, "authorized_actors", ()) or ())
+            if str(actor).strip()
+        }
     return set(_parse_token_list(raw, case="lower"))
 
 
-def _resolve_trusted_associations() -> set[str]:
+def _resolve_trusted_associations(cfg: Any | None = None) -> set[str]:
     """Return the canonical-uppercase set of trusted associations.
 
     Semantics per D6:
@@ -60,7 +65,12 @@ def _resolve_trusted_associations() -> set[str]:
     """
     raw = os.environ.get(AUTHORIZED_ASSOCIATIONS_ENV)
     if raw is None:
-        return set()
+        assembly = getattr(cfg, "assembly", None)
+        return {
+            str(association).strip().upper()
+            for association in (getattr(assembly, "authorized_associations", ()) or ())
+            if str(association).strip()
+        }
     tokens = _parse_token_list(raw, case="upper")
     if not tokens:
         return set(DEFAULT_AUTHORIZED_ASSOCIATIONS)
@@ -81,7 +91,10 @@ class ActorAuthorization:
     matched_signal: str | None
 
 
-def evaluate_actor_authorization(payload: dict[str, Any]) -> ActorAuthorization:
+def evaluate_actor_authorization(
+    payload: dict[str, Any],
+    cfg: Any | None = None,
+) -> ActorAuthorization:
     """Evaluate whether the comment actor is authorized per VOY-1818.
 
     Steps
@@ -162,8 +175,8 @@ def evaluate_actor_authorization(payload: dict[str, Any]) -> ActorAuthorization:
         )
 
     # --- Step 4: allow-list / association check (D5) ---
-    authorized_actors = _resolve_authorized_actors()
-    trusted_associations = _resolve_trusted_associations()
+    authorized_actors = _resolve_authorized_actors(cfg)
+    trusted_associations = _resolve_trusted_associations(cfg)
 
     matched_signal: str | None = None
 

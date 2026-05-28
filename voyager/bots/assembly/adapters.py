@@ -1182,13 +1182,24 @@ def _truthy_env(name: str) -> bool:
     return value.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
-def select_execution_adapter(backend: str | None = None) -> ExecutionAdapter:
+def select_execution_adapter(
+    backend: str | None = None,
+    cfg: Any | None = None,
+) -> ExecutionAdapter:
     """Return an adapter instance for the requested backend.
 
     When ``backend`` is None, reads ``ASSEMBLY_EXECUTION_BACKEND`` from the
-    environment.  Unknown / empty values fall back to ``dry-run``.
+    environment, then ``cfg.assembly.execution_backend`` as the TOML fallback.
+    Unknown / empty values fall back to ``dry-run``.
     """
-    chosen = (backend or os.environ.get(ASSEMBLY_EXECUTION_BACKEND_ENV, "")).strip().lower()
+    if backend is not None:
+        raw = backend
+    elif ASSEMBLY_EXECUTION_BACKEND_ENV in os.environ:
+        raw = os.environ.get(ASSEMBLY_EXECUTION_BACKEND_ENV, "")
+    else:
+        assembly = getattr(cfg, "assembly", None)
+        raw = getattr(assembly, "execution_backend", None) or ""
+    chosen = raw.strip().lower()
     if chosen == ASSEMBLY_BACKEND_FAKE_SUBPROCESS:
         return FakeSubprocessAdapter()
     if chosen == ASSEMBLY_BACKEND_PI_OH_MY_PI_DEEPSEEK:

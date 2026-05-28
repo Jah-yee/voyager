@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,33 @@ class Profile:
 
 
 @dataclass(frozen=True, kw_only=True)
+class BridgeConfig:
+    """Bridge runtime settings.
+
+    Environment variables remain the first-precedence runtime override. These
+    values are the TOML fallback for non-secret bridge knobs.
+    """
+
+    dry_run: bool = True
+    allowed_repositories: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, kw_only=True)
+class AssemblyConfig:
+    """Assembly runtime settings loaded from ``[assembly]``."""
+
+    execution_backend: str | None = None
+    phase_mode: str | None = None
+    implementer_backend: str | None = None
+    testpilot_backend: str | None = None
+    pi_command_path: str | None = None
+    pi_workdir: Path | None = None
+    pi_timeout_seconds: int | None = None
+    authorized_actors: tuple[str, ...] = ()
+    authorized_associations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
 class VoyagerConfig:
     """Top-level voyager configuration.
 
@@ -75,6 +102,8 @@ class VoyagerConfig:
     profiles: dict[str, Profile]
     default_profile: str | None
     deepseek_api_key: str | None = None
+    bridge: BridgeConfig = field(default_factory=BridgeConfig)
+    assembly: AssemblyConfig = field(default_factory=AssemblyConfig)
 
 
 def _parse_app(item: dict[str, Any]) -> AppConfig:
@@ -200,6 +229,141 @@ def _parse_profile(name: str, item: dict[str, Any]) -> Profile:
     )
 
 
+def _optional_table(value: Any, section_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{section_name} must be a TOML table, got {type(value).__name__}: {value!r}"
+        )
+    return value
+
+
+def _optional_string(section: dict[str, Any], key: str, section_name: str) -> str | None:
+    value = section.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{section_name}.{key} must be a TOML string, got {type(value).__name__}: {value!r}"
+        )
+    return value.strip() or None
+
+
+def _string_tuple(
+    section: dict[str, Any],
+    key: str,
+    section_name: str,
+    *,
+    case: str | None = None,
+) -> tuple[str, ...]:
+    value = section.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(
+            f"{section_name}.{key} must be a TOML array of strings, got "
+            f"{type(value).__name__}: {value!r}"
+        )
+    items: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(
+                f"{section_name}.{key}[{index}] must be a TOML string, got "
+                f"{type(item).__name__}: {item!r}"
+            )
+        normalized = item.strip()
+        if not normalized:
+            continue
+        if case == "lower":
+            normalized = normalized.lower()
+        elif case == "upper":
+            normalized = normalized.upper()
+        items.append(normalized)
+    return tuple(items)
+
+
+def _parse_bridge(raw: dict[str, Any]) -> BridgeConfig:
+    section = _optional_table(raw.get("bridge"), "[bridge]")
+
+    dry_run_raw = section.get("dry_run", True)
+    if not isinstance(dry_run_raw, bool):
+        raise ValueError(
+            f"[bridge].dry_run must be a TOML boolean, got "
+            f"{type(dry_run_raw).__name__}: {dry_run_raw!r}"
+        )
+
+    allowed_section = _optional_table(
+        section.get("allowed_repositories"),
+        "[bridge.allowed_repositories]",
+    )
+    allowed_repositories: dict[str, tuple[str, ...]] = {}
+    for slug, value in allowed_section.items():
+        if not isinstance(value, list):
+            raise ValueError(
+                f"[bridge.allowed_repositories].{slug} must be a TOML array of strings, got "
+                f"{type(value).__name__}: {value!r}"
+            )
+        entries: list[str] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"[bridge.allowed_repositories].{slug}[{index}] must be a TOML string, got "
+                    f"{type(item).__name__}: {item!r}"
+                )
+            normalized = item.strip().lower()
+            if normalized:
+                entries.append(normalized)
+        allowed_repositories[str(slug).strip().lower()] = tuple(entries)
+
+    return BridgeConfig(
+        dry_run=dry_run_raw,
+        allowed_repositories=allowed_repositories,
+    )
+
+
+def _parse_assembly(raw: dict[str, Any]) -> AssemblyConfig:
+    section = _optional_table(raw.get("assembly"), "[assembly]")
+
+    timeout_raw = section.get("pi_timeout_seconds")
+    if timeout_raw is None:
+        timeout: int | None = None
+    else:
+        if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, int):
+            raise ValueError(
+                f"[assembly].pi_timeout_seconds must be a TOML integer, got "
+                f"{type(timeout_raw).__name__}: {timeout_raw!r}"
+            )
+        if timeout_raw <= 0:
+            raise ValueError(f"[assembly].pi_timeout_seconds must be > 0, got {timeout_raw!r}")
+        timeout = timeout_raw
+
+    workdir_raw = _optional_string(section, "pi_workdir", "[assembly]")
+    workdir = Path(workdir_raw).expanduser() if workdir_raw is not None else None
+
+    return AssemblyConfig(
+        execution_backend=_optional_string(section, "execution_backend", "[assembly]"),
+        phase_mode=_optional_string(section, "phase_mode", "[assembly]"),
+        implementer_backend=_optional_string(section, "implementer_backend", "[assembly]"),
+        testpilot_backend=_optional_string(section, "testpilot_backend", "[assembly]"),
+        pi_command_path=_optional_string(section, "pi_command_path", "[assembly]"),
+        pi_workdir=workdir,
+        pi_timeout_seconds=timeout,
+        authorized_actors=_string_tuple(
+            section,
+            "authorized_actors",
+            "[assembly]",
+            case="lower",
+        ),
+        authorized_associations=_string_tuple(
+            section,
+            "authorized_associations",
+            "[assembly]",
+            case="upper",
+        ),
+    )
+
+
 def load_config(path: str | Path | None = None) -> VoyagerConfig:
     if path is None:
         env_path = os.environ.get("VOYAGER_CONFIG_PATH")
@@ -274,12 +438,17 @@ def load_config(path: str | Path | None = None) -> VoyagerConfig:
     # precedence (12-factor) combine cfg.deepseek_api_key with os.environ at
     # the call site — see voyager/server.py:_get_investigator.
 
+    bridge = _parse_bridge(raw)
+    assembly = _parse_assembly(raw)
+
     return VoyagerConfig(
         apps=apps,
         work_dir=work_dir,
         profiles=profiles,
         default_profile=default_profile,
         deepseek_api_key=deepseek_api_key,
+        bridge=bridge,
+        assembly=assembly,
     )
 
 
