@@ -31,8 +31,22 @@ _recent_writebacks: deque[dict[str, Any]] = deque(maxlen=100)
 _client: Any = None
 _store: Any = None
 _SENTINEL: Any = object()
+_config: Any = _SENTINEL
 _default_profile_name: Any = _SENTINEL
 _investigator: Any = _SENTINEL
+
+
+def _get_config() -> Any:
+    """Return memoized VoyagerConfig, or None if config is unavailable."""
+    global _config
+    if _config is _SENTINEL:
+        try:
+            from voyager.core.config import load_config
+
+            _config = load_config()
+        except Exception:
+            return None
+    return _config
 
 
 def _get_client() -> Any:
@@ -41,10 +55,11 @@ def _get_client() -> Any:
     if _client is not None:
         return _client
     try:
-        from voyager.core.config import load_config
         from voyager.core.github_app import GitHubAppClient
 
-        cfg = load_config()
+        cfg = _get_config()
+        if cfg is None:
+            return None
         _client = GitHubAppClient(cfg.apps)
         return _client
     except Exception:
@@ -62,9 +77,10 @@ def _get_store() -> Any:
         return _store
     try:
         from voyager.bots.clearance.state import StateStore
-        from voyager.core.config import load_config
 
-        cfg = load_config()
+        cfg = _get_config()
+        if cfg is None:
+            return None
         _store = StateStore(cfg.work_dir)
         return _store
     except Exception:
@@ -76,9 +92,9 @@ def _get_default_profile_name() -> str | None:
     global _default_profile_name
     if _default_profile_name is _SENTINEL:
         try:
-            from voyager.core.config import load_config
-
-            cfg = load_config()
+            cfg = _get_config()
+            if cfg is None:
+                return None
             _default_profile_name = cfg.default_profile
         except Exception:
             _default_profile_name = None
@@ -203,20 +219,29 @@ def _repository_pattern_matches(pattern: str, repository: str) -> bool:
     return pattern == repository
 
 
-def _repository_allowed_for_agent(repository: str | None, agent_slug: str) -> bool:
+def _repository_allowed_for_agent(
+    repository: str | None,
+    agent_slug: str,
+    cfg: Any | None = None,
+) -> bool:
     """Return whether a route may run for this repository and agent.
 
     Production defaults to deny when no allow-list is configured. Dry-run keeps
     the historical permissive behavior so local routing tests and exploratory
     dry-runs do not need allow-list env setup.
     """
-    specific = os.environ.get(_allowed_repositories_env_key(agent_slug))
-    raw = (
-        specific if specific and specific.strip() else os.environ.get("BRIDGE_ALLOWED_REPOSITORIES")
-    )
-    allowed = _parse_allowed_repositories(raw)
+    specific_key = _allowed_repositories_env_key(agent_slug)
+    if specific_key in os.environ:
+        allowed = _parse_allowed_repositories(os.environ.get(specific_key))
+    elif "BRIDGE_ALLOWED_REPOSITORIES" in os.environ:
+        allowed = _parse_allowed_repositories(os.environ.get("BRIDGE_ALLOWED_REPOSITORIES"))
+    else:
+        bridge = getattr(cfg, "bridge", None)
+        allowed = set(
+            (getattr(bridge, "allowed_repositories", {}) or {}).get(agent_slug.lower(), ())
+        )
     if not allowed:
-        return dry_run_enabled()
+        return dry_run_enabled(cfg)
     if not repository:
         return False
     normalized_repo = repository.strip().lower()
@@ -224,13 +249,15 @@ def _repository_allowed_for_agent(repository: str | None, agent_slug: str) -> bo
 
 
 def _filter_routes_by_repository(
-    routes: list[dict[str, Any]], repository: str | None
+    routes: list[dict[str, Any]],
+    repository: str | None,
+    cfg: Any | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     allowed: list[dict[str, Any]] = []
     denied: list[dict[str, Any]] = []
     for route in routes:
         agent_slug = str(route.get("agent") or "")
-        if _repository_allowed_for_agent(repository, agent_slug):
+        if _repository_allowed_for_agent(repository, agent_slug, cfg):
             allowed.append(route)
         else:
             denied.append(route)
@@ -340,11 +367,12 @@ async def root() -> dict[str, Any]:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
+    cfg = _get_config()
     return {
         "ok": True,
         "service": "iterwheel-github-bridge",
         "time": _utc_now(),
-        "dry_run": dry_run_enabled(),
+        "dry_run": dry_run_enabled(cfg),
         "version": VERSION,
         "build_commit": BUILD_COMMIT,
     }
@@ -438,13 +466,14 @@ async def github_webhook(
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     repository: str | None = (payload.get("repository") or {}).get("full_name")
+    cfg = _get_config()
     candidate_routes = [
         *route_blueprint_event(x_github_event, payload),
         *route_stack_event(x_github_event, payload),
         *route_clearance_event(x_github_event, payload),
-        *route_assembly_event(x_github_event, payload),
+        *route_assembly_event(x_github_event, payload, cfg=cfg),
     ]
-    routes, denied_routes = _filter_routes_by_repository(candidate_routes, repository)
+    routes, denied_routes = _filter_routes_by_repository(candidate_routes, repository, cfg)
     if denied_routes:
         _log.warning(
             "repository_allowlist_denied: repo=%r denied_routes=%s",
@@ -465,7 +494,7 @@ async def github_webhook(
     return {
         "ok": True,
         "queued": bool(routes),
-        "dry_run": dry_run_enabled(),
+        "dry_run": dry_run_enabled(cfg),
         "app": matched_slug,
         "event": x_github_event,
         "delivery_id": x_github_delivery,

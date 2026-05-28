@@ -64,20 +64,32 @@ These files are machine-local and must not be committed:
 
 | Path | Contents | Required permissions |
 |------|----------|----------------------|
-| `/Users/frank/.voyager/bridge.env` | Live launchd environment, webhook secrets, allow-lists, and `DRY_RUN=false`. | `600` |
-| `/Users/frank/.voyager/config.toml` | App IDs, installation IDs, profile config, and private key paths. | `600` |
+| `/Users/frank/.voyager/bridge.env` | Live launchd environment and env overrides. Webhook secrets remain here; non-secret bridge/Assembly knobs may move to `config.toml`. | `600` |
+| `/Users/frank/.voyager/config.toml` | App IDs, installation IDs, profile config, private key paths, and non-secret bridge/Assembly runtime fallback settings. | `600` |
 | `/Users/frank/.voyager/secrets/` | GitHub App private keys referenced by `config.toml`. | directory `700`, files `600` |
 | `/Users/frank/.voyager/state/` | Bridge state and Clearance JSONL records. | directory `700` preferred |
 | `/Users/frank/Library/LaunchAgents/com.iterwheel.voyager.bridge.plist` | Installed copy of the launchd plist. | `644` |
 | `/Users/frank/Library/Logs/voyager/` | launchd stdout/stderr logs. | directory `755` |
 
 If `config.toml` points to another private-key directory, that config remains
-the source of truth. Preserve the same private permissions.
+the source of truth. Preserve the same private permissions. Treat
+`config.toml` as operator-private even when it only contains non-secret runtime
+fallbacks.
 
 ### 3. Preserve the Production Environment Contract
 
-The production env file must keep this safety shape until a later approved
-rollout changes it:
+Runtime precedence is env-over-TOML on a per-knob basis:
+
+1. If the matching env var is set, the bridge uses the env value.
+2. If the env var is unset, the bridge falls back to `config.toml`.
+3. If neither is configured, safety defaults apply: dry-run is enabled and
+   repository allow-lists are empty.
+
+Webhook secrets such as `GITHUB_WEBHOOK_SECRET_*` and
+`GITHUB_REPOSITORY_WEBHOOK_SECRET` remain env-only. Do not move them into TOML
+unless a separate secret-storage decision explicitly approves that.
+
+The production env file may keep this legacy safety shape:
 
 ```bash
 DRY_RUN=false
@@ -86,9 +98,36 @@ BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_STACK=frankyxhl/alfred,frankyxhl/trinity,i
 BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CLEARANCE=iterwheel/voyager
 ```
 
+Or the equivalent non-secret settings may move into `config.toml`:
+
+```toml
+[bridge]
+dry_run = false
+
+[bridge.allowed_repositories]
+iterwheel-blueprint = ["frankyxhl/alfred", "frankyxhl/trinity", "iterwheel/voyager"]
+iterwheel-stack = ["frankyxhl/alfred", "frankyxhl/trinity", "iterwheel/voyager"]
+iterwheel-clearance = ["iterwheel/voyager"]
+
+[assembly]
+execution_backend = "pi-oh-my-pi-deepseek"
+phase_mode = "two-phase"
+pi_command_path = "omp"
+pi_workdir = "~/.voyager/state/assembly"
+pi_timeout_seconds = 900
+authorized_actors = ["frankyxhl"]
+authorized_associations = []
+```
+
 Leave `BRIDGE_ALLOWED_REPOSITORIES` unset unless a route deliberately depends
 on the global fallback allow-list. App-specific allow-lists are easier to audit
 and prevent a new bot route from inheriting broad write access by accident.
+When a per-agent env allow-list is unset, the matching
+`[bridge.allowed_repositories]` TOML entry is used; when the env var is set to
+a non-empty value, the env value wins.
+Assembly runtime knobs follow the same env-over-TOML pattern. Keep the
+matching env vars in `bridge.env` only for temporary overrides or values that
+must not be shared across bridge hosts.
 
 ### 4. Run Preflight
 

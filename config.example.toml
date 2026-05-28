@@ -34,6 +34,42 @@ default_profile = "flash_no_thinking"
 # deepseek_api_key = "sk-replace-with-real-key"
 
 
+# --- Bridge runtime knobs ------------------------------------------------
+# Non-secret bridge runtime settings can live here. Environment variables keep
+# first precedence for backward compatibility and emergency overrides; TOML is
+# only used when the matching env var is unset. Webhook secrets remain env-only.
+#
+# To enable real writes from TOML instead of DRY_RUN=false in bridge.env:
+# [bridge]
+# dry_run = false
+#
+# Repository allow-lists are default-deny when unset and dry_run is false.
+# Values are case-insensitive and can be exact repo names, "*" for all repos,
+# or owner wildcards such as "frankyxhl/*".
+# [bridge.allowed_repositories]
+# iterwheel-blueprint = ["frankyxhl/alfred", "frankyxhl/trinity", "iterwheel/voyager"]
+# iterwheel-stack = ["frankyxhl/alfred", "frankyxhl/trinity", "iterwheel/voyager"]
+# iterwheel-clearance = ["iterwheel/voyager"]
+# iterwheel-assembly = ["iterwheel/voyager-sandbox"]
+#
+# Assembly runtime settings. Env vars with the same meaning still win when set:
+# ASSEMBLY_EXECUTION_BACKEND, ASSEMBLY_PHASE_MODE,
+# ASSEMBLY_IMPLEMENTER_BACKEND, ASSEMBLY_TESTPILOT_BACKEND,
+# ASSEMBLY_PI_COMMAND_PATH, ASSEMBLY_PI_WORKDIR,
+# ASSEMBLY_PI_TIMEOUT_SECONDS, BRIDGE_ASSEMBLY_AUTHORIZED_ACTORS, and
+# BRIDGE_ASSEMBLY_AUTHORIZED_ASSOCIATIONS.
+# [assembly]
+# execution_backend = "dry-run"
+# phase_mode = "single"
+# implementer_backend = "pi-oh-my-pi-deepseek"
+# testpilot_backend = "pi-oh-my-pi-deepseek"
+# pi_command_path = "omp"
+# pi_workdir = "~/.voyager/state/assembly"
+# pi_timeout_seconds = 900
+# authorized_actors = ["frankyxhl", "ryosaeba1985"]
+# authorized_associations = []
+
+
 # --- GitHub Apps ---------------------------------------------------------
 # One [[apps]] block per installed App. Webhook secrets are NOT stored
 # here — they live in env vars named GITHUB_WEBHOOK_SECRET_<SLUG_UPPER>

@@ -99,7 +99,12 @@ def _actor_denial_route(
     ]
 
 
-def route_assembly_event(event: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+def route_assembly_event(
+    event: str,
+    payload: dict[str, Any],
+    *,
+    cfg: Any | None = None,
+) -> list[dict[str, Any]]:
     """Return the Assembly route list for an incoming webhook payload."""
     if not should_run_assembly(event, payload):
         return []
@@ -112,7 +117,7 @@ def route_assembly_event(event: str, payload: dict[str, Any]) -> list[dict[str, 
     repository_name: str = ((payload.get("repository") or {}).get("full_name")) or ""
 
     # D3: actor gate first, preconditions second (VOY-1818).
-    actor = evaluate_actor_authorization(payload)
+    actor = evaluate_actor_authorization(payload, cfg)
 
     if not actor.ok:
         return _actor_denial_route(event, payload, command, issue, actor)

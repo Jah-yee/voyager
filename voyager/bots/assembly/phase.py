@@ -32,9 +32,12 @@ class PhaseMode(Enum):
     TWO_PHASE = ASSEMBLY_PHASE_MODE_TWO_PHASE
 
     @classmethod
-    def from_env(cls) -> PhaseMode:
-        """Read phase mode from the environment, defaulting to SINGLE."""
-        raw = os.environ.get(ASSEMBLY_PHASE_MODE_ENV, ASSEMBLY_PHASE_MODE_DEFAULT)
+    def from_env(cls, cfg: Any | None = None) -> PhaseMode:
+        """Read phase mode from env, then TOML, defaulting to SINGLE."""
+        raw = os.environ.get(ASSEMBLY_PHASE_MODE_ENV)
+        if raw is None:
+            assembly = getattr(cfg, "assembly", None)
+            raw = getattr(assembly, "phase_mode", None) or ASSEMBLY_PHASE_MODE_DEFAULT
         raw_lower = raw.strip().lower()
         if raw_lower == ASSEMBLY_PHASE_MODE_TWO_PHASE:
             return cls.TWO_PHASE
@@ -48,11 +51,19 @@ class PhaseName(Enum):
     TESTPILOT = "testpilot"
 
 
-def select_phase_backend(global_backend: str | None, phase: PhaseName) -> str:
+def select_phase_backend(
+    global_backend: str | None,
+    phase: PhaseName,
+    cfg: Any | None = None,
+    *,
+    global_backend_is_env: bool = False,
+) -> str:
     """Return the backend for a specific phase.
 
     Per-phase env vars (ASSEMBLY_IMPLEMENTER_BACKEND, ASSEMBLY_TESTPILOT_BACKEND)
-    override the global ASSEMBLY_EXECUTION_BACKEND. Falls back to dry-run.
+    override the global ASSEMBLY_EXECUTION_BACKEND. When the global backend was
+    supplied by env, it wins over TOML per-phase fallbacks. Falls back to
+    dry-run.
     """
     env_var = (
         ASSEMBLY_IMPLEMENTER_BACKEND_ENV
@@ -62,6 +73,20 @@ def select_phase_backend(global_backend: str | None, phase: PhaseName) -> str:
     raw = os.environ.get(env_var)
     if raw:
         chosen = raw.strip().lower()
+        if chosen:
+            return chosen
+    if global_backend_is_env:
+        chosen = (global_backend or "").strip().lower()
+        return chosen or ASSEMBLY_BACKEND_DRY_RUN
+    assembly = getattr(cfg, "assembly", None)
+    configured_raw = (
+        getattr(assembly, "implementer_backend", None)
+        if phase == PhaseName.IMPLEMENTER
+        else getattr(assembly, "testpilot_backend", None)
+    )
+    configured = configured_raw if isinstance(configured_raw, str) else None
+    if configured:
+        chosen = configured.strip().lower()
         if chosen:
             return chosen
     if global_backend:

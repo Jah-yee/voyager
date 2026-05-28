@@ -83,6 +83,15 @@ def _get_lock(repository: str, branch_name: str) -> asyncio.Lock:
 _log = logging.getLogger(__name__)
 
 
+def _load_config_or_none() -> Any | None:
+    try:
+        from voyager.core.config import load_config
+
+        return load_config()
+    except Exception:
+        return None
+
+
 def _positive_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -98,6 +107,24 @@ def _path_env(name: str, default: str) -> Path:
     raw = os.environ.get(name)
     value = raw.strip() if raw else default
     return Path(value).expanduser()
+
+
+def _positive_int_runtime(name: str, configured: int | None, default: int) -> int:
+    if name in os.environ:
+        return _positive_int_env(name, default)
+    return configured or default
+
+
+def _path_runtime(name: str, configured: Path | None, default: str) -> Path:
+    if name in os.environ:
+        return _path_env(name, default)
+    return configured or Path(default).expanduser()
+
+
+def _string_runtime(name: str, configured: str | None, default: str) -> str:
+    if name in os.environ:
+        return os.environ.get(name) or default
+    return configured or default
 
 
 def _cached_issue_from_route(route: dict[str, Any]) -> dict[str, Any]:
@@ -120,7 +147,7 @@ def _cached_issue_from_route(route: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _is_dry_run(command_flags: dict[str, Any]) -> bool:
+def _is_dry_run(command_flags: dict[str, Any], cfg: Any | None = None) -> bool:
     """Combined dry-run gate: env ``DRY_RUN`` OR per-command ``--dry-run``.
 
     Codex round-2 P1 (PR #74): the parsed ``--dry-run`` flag must gate
@@ -128,7 +155,7 @@ def _is_dry_run(command_flags: dict[str, Any]) -> bool:
     can request a safe dry run on a per-comment basis even when
     ``DRY_RUN=false`` is in effect for production.
     """
-    return dry_run_enabled() or bool(command_flags.get("dry_run"))
+    return dry_run_enabled(cfg) or bool(command_flags.get("dry_run"))
 
 
 async def _build_adapter_context(
@@ -140,6 +167,7 @@ async def _build_adapter_context(
     session: dict[str, Any] | None = None,
     audit_id: str | None = None,
     phase: str = "implementer",
+    cfg: Any | None = None,
 ) -> AdapterExecutionContext:
     installation_token: str | None = None
     if getattr(adapter, "requires_installation_token", False) is True and not is_dry_run:
@@ -148,15 +176,23 @@ async def _build_adapter_context(
             repository=repository,
         )
     session = session or {}
+    assembly = getattr(cfg, "assembly", None)
     return AdapterExecutionContext(
         repository=repository,
-        workdir=_path_env(ASSEMBLY_PI_WORKDIR_ENV, ASSEMBLY_PI_DEFAULT_WORKDIR),
-        timeout_seconds=_positive_int_env(
+        workdir=_path_runtime(
+            ASSEMBLY_PI_WORKDIR_ENV,
+            getattr(assembly, "pi_workdir", None),
+            ASSEMBLY_PI_DEFAULT_WORKDIR,
+        ),
+        timeout_seconds=_positive_int_runtime(
             ASSEMBLY_PI_TIMEOUT_SECONDS_ENV,
+            getattr(assembly, "pi_timeout_seconds", None),
             ASSEMBLY_PI_DEFAULT_TIMEOUT_SECONDS,
         ),
-        command_path=(
-            os.environ.get(ASSEMBLY_PI_COMMAND_PATH_ENV) or ASSEMBLY_PI_DEFAULT_COMMAND_PATH
+        command_path=_string_runtime(
+            ASSEMBLY_PI_COMMAND_PATH_ENV,
+            getattr(assembly, "pi_command_path", None),
+            ASSEMBLY_PI_DEFAULT_COMMAND_PATH,
         ),
         installation_token=installation_token,
         resume_requested=bool(session.get("requested")),
@@ -601,16 +637,26 @@ async def dispatch_assembly_writeback(
     command_flags: dict[str, Any] = writeback.get("command_flags") or {}
     delivery_id = str(route.get("delivery_id") or "")
 
-    # Backend selection is env-only (`ASSEMBLY_EXECUTION_BACKEND`) per VOY-1817 D3.
-    # `command_flags` carries `dry_run` / `allow_missing_stack` / `resume`; there is
-    # no `--backend` command flag (closed by CHG-1819 F2; see VOY-1819).
-    phase_mode = PhaseMode.from_env()
-    global_backend = os.environ.get(ASSEMBLY_EXECUTION_BACKEND_ENV)
-    implementer_backend = select_phase_backend(global_backend, PhaseName.IMPLEMENTER)
+    # Backend selection keeps the legacy env-first contract. `command_flags`
+    # carries `dry_run` / `allow_missing_stack` / `resume`; there is no
+    # `--backend` command flag (closed by CHG-1819 F2; see VOY-1819).
+    cfg = _load_config_or_none()
+    phase_mode = PhaseMode.from_env(cfg)
+    global_backend_is_env = ASSEMBLY_EXECUTION_BACKEND_ENV in os.environ
+    if global_backend_is_env:
+        global_backend = os.environ.get(ASSEMBLY_EXECUTION_BACKEND_ENV)
+    else:
+        global_backend = getattr(getattr(cfg, "assembly", None), "execution_backend", None)
+    implementer_backend = select_phase_backend(
+        global_backend,
+        PhaseName.IMPLEMENTER,
+        cfg,
+        global_backend_is_env=global_backend_is_env,
+    )
     adapter = select_execution_adapter(implementer_backend)
     backend_name = adapter.name
 
-    is_dry_run = _is_dry_run(command_flags)
+    is_dry_run = _is_dry_run(command_flags, cfg)
 
     base_result: dict[str, Any] = {
         "applied": False,
@@ -726,6 +772,7 @@ async def dispatch_assembly_writeback(
                 is_dry_run=is_dry_run,
                 session=base_result.get("session"),
                 audit_id=base_result.get("audit_id"),
+                cfg=cfg,
             )
             adapter_result = await _execute_adapter(adapter, contract, adapter_context)
         except NotImplementedError as exc:
@@ -856,7 +903,12 @@ async def dispatch_assembly_writeback(
         # TestPilot phase (two-phase mode only)
         # --------------------------------------------------------------
         if phase_mode == PhaseMode.TWO_PHASE and pr_ok:
-            testpilot_backend = select_phase_backend(global_backend, PhaseName.TESTPILOT)
+            testpilot_backend = select_phase_backend(
+                global_backend,
+                PhaseName.TESTPILOT,
+                cfg,
+                global_backend_is_env=global_backend_is_env,
+            )
             testpilot_adapter = select_execution_adapter(testpilot_backend)
             testpilot_context: AdapterExecutionContext | None = None
             try:
@@ -868,6 +920,7 @@ async def dispatch_assembly_writeback(
                     session=None,
                     audit_id=base_result.get("audit_id"),
                     phase="testpilot",
+                    cfg=cfg,
                 )
                 tp_result = await _execute_adapter(testpilot_adapter, contract, testpilot_context)
             except Exception as exc:
