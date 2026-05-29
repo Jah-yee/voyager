@@ -41,6 +41,7 @@ from voyager.bots.clearance.close_reason import (
     build_close_reason_comment,
     build_delegated_close_reason_comment,
     build_manual_close_required_comment,
+    build_thread_conclusion_comment,
 )
 from voyager.bots.clearance.constants import (
     CLEARANCE_AGENT_SLUG,
@@ -97,6 +98,38 @@ def _authorized_resolver_app_for_pr_author(pr_author_login: str | None) -> str |
 
 def _bot_login_for_app_slug(app_slug: str) -> str:
     return f"{app_slug}[bot]"
+
+
+def _is_clearance_comment(comment: dict[str, Any]) -> bool:
+    login = (comment.get("author") or {}).get("login")
+    return login in {CLEARANCE_AGENT_SLUG, CLEARANCE_BOT_LOGIN}
+
+
+def _has_current_head_verdict_comment(
+    comments: list[dict[str, Any]],
+    *,
+    thread_id: str,
+    head_sha: str,
+    verdict: Verdict,
+) -> bool:
+    """Return true when Clearance already posted this head's verdict comment."""
+    head_prefix = head_sha[:12]
+    if verdict == Verdict.RESOLVED:
+        marker_prefix = f"<!-- clearance-close-reason:{thread_id}:{head_prefix}"
+        verdict_token = None
+    else:
+        marker_prefix = f"<!-- clearance-thread-conclusion:{thread_id}:{head_prefix}"
+        verdict_token = f"Verdict: `{verdict.value}`"
+
+    for comment in comments:
+        if not _is_clearance_comment(comment):
+            continue
+        body = str(comment.get("body") or "")
+        if not body.startswith(marker_prefix):
+            continue
+        if verdict_token is None or verdict_token in body:
+            return True
+    return False
 
 
 async def _app_can_resolve_thread(
@@ -482,12 +515,6 @@ async def _process_thread(
 
     path = thread_dict.get("path") or "unknown"
     line = thread_dict.get("line")
-    existing_close_marker = f"clearance-close-reason:{thread_dict['id']}:{head_sha[:12]}"
-    existing_close_reason_marker = any(
-        ((comment.get("author") or {}).get("login") in {CLEARANCE_AGENT_SLUG, CLEARANCE_BOT_LOGIN})
-        and (comment.get("body") or "").startswith(f"<!-- {existing_close_marker} -->")
-        for comment in comments_nodes
-    )
 
     # Issue #63: State A threads where the Codex comment predates the most
     # recent push may have been addressed in a newer commit, even though
@@ -510,6 +537,7 @@ async def _process_thread(
     # review predates the most recent push (codex_review_stale=True).
     llm_decision: InvestigationDecision | None = None
     llm_error_str: str | None = None
+    llm_model_name: str | None = None
     investigator_eligible = state == ThreadState.B or (
         state == ThreadState.A and codex_review_stale
     )
@@ -519,7 +547,9 @@ async def _process_thread(
         and investigator_eligible
         and decision.verdict != Verdict.RESOLVED  # skip if already deterministically RESOLVED
     ):
-        model_name = getattr(getattr(investigator, "_client", None), "model", "unknown")
+        raw_model_name = getattr(getattr(investigator, "_client", None), "model", None)
+        llm_model_name = str(raw_model_name) if raw_model_name else None
+        model_name = llm_model_name or "unknown"
         started = time.monotonic()
         failure_type: str | None = None
         try:
@@ -607,6 +637,19 @@ async def _process_thread(
                 ),
             )
 
+    existing_close_reason_marker = _has_current_head_verdict_comment(
+        comments_nodes,
+        thread_id=thread_dict["id"],
+        head_sha=head_sha,
+        verdict=Verdict.RESOLVED,
+    )
+    existing_thread_conclusion_marker = _has_current_head_verdict_comment(
+        comments_nodes,
+        thread_id=thread_dict["id"],
+        head_sha=head_sha,
+        verdict=decision.verdict,
+    )
+
     thread_model = Thread(
         id=thread_dict["id"],
         comment_id=comment_id,
@@ -622,11 +665,13 @@ async def _process_thread(
         author_reply_substantive=decision.substantive,
         code_changed=None,
         llm_verdict=llm_decision.verdict if llm_decision else None,
+        llm_model=llm_model_name if llm_decision else None,
         llm_confidence=llm_decision.confidence if llm_decision else None,
         llm_reason=llm_decision.reason if llm_decision else None,
         clean_codex_review_id=(clean_codex_evidence.get("id") if clean_codex_evidence else None),
         clean_codex_signal_source=clean_codex_evidence_source,
         existing_close_reason_marker=existing_close_reason_marker,
+        existing_thread_conclusion_marker=existing_thread_conclusion_marker,
     )
 
     snapshot = ThreadSnapshot(
@@ -662,6 +707,7 @@ async def _process_thread(
             clean_codex_review_submitted_at=clean_codex_evidence_ts or None,
             clean_codex_signal_source=clean_codex_evidence_source,
             llm_verdict=llm_decision.verdict if llm_decision else None,
+            llm_model=llm_model_name if llm_decision else None,
             llm_confidence=llm_decision.confidence if llm_decision else None,
             llm_reason=llm_decision.reason if llm_decision else None,
             llm_evidence=llm_decision.evidence if llm_decision else None,
@@ -752,6 +798,101 @@ def _stage15_visual_unresolved_skipped_count(sync_actions: list[Stage15Action]) 
         and (action.result or {}).get("skipped") is True
         and (action.result or {}).get("skip_reason") == "viewerCanResolve is false"
     )
+
+
+async def _maybe_post_thread_verdict_comments(
+    *,
+    client: GitHubAppClient,
+    repository: str,
+    threads: list[Thread],
+    snapshots: list[ThreadSnapshot],
+    pr: int,
+    head_sha: str,
+    dry_run: bool,
+    model: str | None = None,
+) -> list[dict[str, Any]]:
+    """Post per-head verdict comments for unresolved non-RESOLVED threads.
+
+    Stage 1.5 owns RESOLVED close comments because it also performs the
+    resolveReviewThread mutation. This helper covers the remaining unresolved
+    OPEN / NEEDS_HUMAN_JUDGMENT cases so each current-head decision is visible
+    on the conversation it judged.
+    """
+    actions: list[dict[str, Any]] = []
+    snap_by_id = {s.thread_id: s for s in snapshots}
+
+    for thread in threads:
+        if thread.verdict == Verdict.RESOLVED:
+            continue
+        snap = snap_by_id.get(thread.id)
+        if not snap or not snap.github_state or snap.github_state.isResolved:
+            continue
+
+        base_result: dict[str, Any] = {
+            "operation": "createReviewThreadReply",
+            "repo": repository,
+            "pr": pr,
+            "thread_id": thread.id,
+            "comment_id": thread.comment_id,
+            "head_sha": head_sha,
+            "verdict": thread.verdict.value,
+        }
+
+        if thread.existing_thread_conclusion_marker:
+            actions.append(
+                {
+                    **base_result,
+                    "skipped": True,
+                    "skip_reason": "existing verdict reply for current head and verdict",
+                }
+            )
+            continue
+
+        if dry_run:
+            actions.append({**base_result, "dry_run": True})
+            continue
+
+        comment_body = build_thread_conclusion_comment(
+            thread,
+            snap,
+            head_sha=head_sha,
+            model=model,
+        )
+        try:
+            reply = await client.create_review_thread_reply(
+                CLEARANCE_AGENT_SLUG,
+                repository,
+                pr,
+                thread.comment_id,
+                body=comment_body,
+            )
+        except (httpx.HTTPError, GitHubGraphQLError, RuntimeError, TimeoutError) as exc:
+            failure = build_writeback_failure(
+                operation="createReviewThreadReply",
+                exc=exc,
+                repository=repository,
+                pr=pr,
+                thread_id=thread.id,
+            )
+            _log.warning(
+                "thread verdict reply failed for thread %s on %s#%s: %s",
+                thread.id,
+                repository,
+                pr,
+                json.dumps(failure),
+            )
+            actions.append({**base_result, "applied": False, **failure})
+            continue
+
+        actions.append(
+            {
+                **base_result,
+                "posted": True,
+                "url": (reply or {}).get("html_url"),
+            }
+        )
+
+    return actions
 
 
 async def _maybe_sync_stage_15(
@@ -1144,29 +1285,51 @@ async def _maybe_sync_stage_15(
         # isn't actually resolved (Codex PR #9 P2): if the mutation fails, this
         # block never runs, and the next webhook re-enters the same branch with
         # a fresh snapshot — no spurious comment lingers from a partial attempt.
-        try:
-            await client.create_review_thread_reply(
-                CLEARANCE_AGENT_SLUG,
-                repository,
-                pr,
-                thread.comment_id,
-                body=comment_body,
-            )
-        except (httpx.HTTPError, RuntimeError) as exc:
-            safe = _safe_exception_fields(exc)
-            _log.warning(
-                "in-thread reply suppressed for thread %s "
-                "(Stage 1.5 mutation already applied): class=%s status=%s",
-                thread.id,
-                safe["error_class"],
-                safe["status"],
-            )
+        if not thread.existing_close_reason_marker:
+            try:
+                await client.create_review_thread_reply(
+                    CLEARANCE_AGENT_SLUG,
+                    repository,
+                    pr,
+                    thread.comment_id,
+                    body=comment_body,
+                )
+            except (httpx.HTTPError, RuntimeError) as exc:
+                safe = _safe_exception_fields(exc)
+                _log.warning(
+                    "in-thread reply suppressed for thread %s "
+                    "(Stage 1.5 mutation already applied): class=%s status=%s",
+                    thread.id,
+                    safe["error_class"],
+                    safe["status"],
+                )
 
     return actions
 
 
-def _stage15_writeback_failures(sync_actions: list[Stage15Action]) -> dict[str, Any]:
-    """Collect Stage 1.5 writeback failures from sync action results.
+def _thread_verdict_counts(threads: list[Thread]) -> dict[str, int]:
+    return {verdict.value: sum(1 for t in threads if t.verdict == verdict) for verdict in Verdict}
+
+
+def _thread_verdict_comment_counts(actions: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"posted": 0, "skipped": 0, "failed": 0, "dry_run": 0}
+    for action in actions:
+        if action.get("posted") is True:
+            counts["posted"] += 1
+        elif action.get("skipped") is True:
+            counts["skipped"] += 1
+        elif action.get("dry_run") is True:
+            counts["dry_run"] += 1
+        elif action.get("applied") is False:
+            counts["failed"] += 1
+    return counts
+
+
+def _writeback_failures(
+    sync_actions: list[Stage15Action],
+    thread_verdict_comment_actions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Collect structured writeback failures from mutation/comment results.
 
     Returns a dict with ``writeback_failures``, ``writeback_failure_count``,
     and ``writeback_failure_reason`` only when failures are present.
@@ -1175,6 +1338,9 @@ def _stage15_writeback_failures(sync_actions: list[Stage15Action]) -> dict[str, 
     failures: list[dict[str, Any]] = []
     for action in sync_actions:
         result = action.result or {}
+        if result.get("applied") is False and result.get("operation"):
+            failures.append(result)
+    for result in thread_verdict_comment_actions or []:
         if result.get("applied") is False and result.get("operation"):
             failures.append(result)
 
@@ -1454,6 +1620,16 @@ async def compute_clearance_automation(
             "head_sha": head_sha_fresh,
         }
 
+    thread_verdict_comment_actions = await _maybe_post_thread_verdict_comments(
+        client=client,
+        repository=repository,
+        threads=threads,
+        snapshots=snapshots,
+        pr=pr_number,
+        head_sha=head_sha,
+        dry_run=dry_run,
+    )
+
     sync_actions = await _maybe_sync_stage_15(
         client=client,
         repository=repository,
@@ -1483,10 +1659,12 @@ async def compute_clearance_automation(
     semantic_blockers = _semantic_blocker_count(threads)
     visual_unresolved_threads = _stage15_resolved_visual_thread_count(sync_actions)
     visual_unresolved_skipped_threads = _stage15_visual_unresolved_skipped_count(sync_actions)
+    thread_verdict_counts = _thread_verdict_counts(threads)
+    thread_verdict_comment_counts = _thread_verdict_comment_counts(thread_verdict_comment_actions)
 
     # CHG-1813: Aggregate Stage 1.5 writeback failures before persistence so
     # state/history consumers see the same error status as the readiness panel.
-    wb_failures = _stage15_writeback_failures(sync_actions)
+    wb_failures = _writeback_failures(sync_actions, thread_verdict_comment_actions)
     persisted_status = status
     persisted_reason = reason
     if persisted_status == Status.READY and visual_unresolved_skipped_threads:
@@ -1528,6 +1706,13 @@ async def compute_clearance_automation(
         "semantic_blocker_count": semantic_blockers,
         "visual_unresolved_thread_count": visual_unresolved_threads,
         "visual_unresolved_skipped_thread_count": visual_unresolved_skipped_threads,
+        "thread_verdict_counts": thread_verdict_counts,
+        "thread_verdict_comment_actions": thread_verdict_comment_actions,
+        "thread_verdict_comment_actions_count": len(thread_verdict_comment_actions),
+        "thread_verdict_comment_posted_count": thread_verdict_comment_counts["posted"],
+        "thread_verdict_comment_skipped_count": thread_verdict_comment_counts["skipped"],
+        "thread_verdict_comment_failed_count": thread_verdict_comment_counts["failed"],
+        "thread_verdict_comment_dry_run_count": thread_verdict_comment_counts["dry_run"],
     }
     if investigator_failures:
         result_dict["investigator_error_count"] = len(investigator_failures)

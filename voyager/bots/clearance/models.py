@@ -81,11 +81,13 @@ class Thread(BaseModel):
     github_resolvedBy: str | None = None  # noqa: N815 — mirrors GitHub GraphQL field name
     stage15_synced_at: datetime | None = None
     llm_verdict: str | None = None
+    llm_model: str | None = None
     llm_confidence: float | None = None
     llm_reason: str | None = None
     clean_codex_review_id: int | None = None
     clean_codex_signal_source: str | None = None
     existing_close_reason_marker: bool = False
+    existing_thread_conclusion_marker: bool = False
 
 
 class PollRecord(BaseModel):
@@ -143,6 +145,7 @@ class Evidence(BaseModel):
     codex_followed_up: bool | None = None
     codex_reaction: str | None = None
     llm_verdict: str | None = None
+    llm_model: str | None = None
     llm_confidence: float | None = None
     llm_reason: str | None = None
     llm_evidence: list[str] | None = None

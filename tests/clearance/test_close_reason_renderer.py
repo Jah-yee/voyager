@@ -24,6 +24,7 @@ def _thread(
     *,
     verdict_reason: str | None = None,
     llm_reason: str | None = None,
+    llm_model: str | None = None,
     llm_confidence: float | None = None,
 ) -> Thread:
     return Thread(
@@ -38,6 +39,7 @@ def _thread(
         author_reply_id=3254250516,
         code_changed=True,
         llm_reason=llm_reason,
+        llm_model=llm_model,
         llm_confidence=llm_confidence,
     )
 
@@ -198,6 +200,29 @@ def test_investigator_open_comment_uses_compact_card() -> None:
     assert "⏳ Action: left open" in body
     assert "- Verdict: `OPEN`" in body
     assert "- Missing fix: requested guard is absent" in body
+
+
+def test_investigator_comment_uses_persisted_llm_model_without_explicit_model() -> None:
+    thread = _thread(
+        Verdict.OPEN,
+        llm_reason="the diff changes nearby code but does not add the requested guard",
+        llm_model="deepseek-v4-flash",
+        llm_confidence=0.84,
+    )
+    snapshot = _snapshot(
+        evidence=Evidence(
+            llm_verdict="OPEN",
+            llm_model="deepseek-v4-flash",
+            llm_confidence=0.84,
+            llm_reason="the diff changes nearby code but does not add the requested guard",
+            llm_evidence=["Missing fix: requested guard is absent"],
+        )
+    )
+
+    body = build_thread_conclusion_comment(thread, snapshot, head_sha="abc1234def567890")
+
+    assert "🤖 Check: Clearance Investigator (`deepseek-v4-flash`)" in body
+    assert "- Model: `deepseek-v4-flash`" in body
 
 
 def test_needs_human_judgment_comment_uses_compact_card() -> None:
