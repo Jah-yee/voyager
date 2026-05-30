@@ -8,6 +8,29 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+## [0.4.9] — 2026-05-30
+
+### Fixed — Clearance Assembly evidence and per-thread verdicts ([#141](https://github.com/iterwheel/voyager/issues/141), [#143](https://github.com/iterwheel/voyager/pull/143), [#142](https://github.com/iterwheel/voyager/issues/142), [#144](https://github.com/iterwheel/voyager/pull/144))
+
+- Clearance now recognizes Assembly-authored fix evidence across GitHub REST
+  and GraphQL login forms, so `iterwheel-assembly[bot]` and
+  `iterwheel-assembly` are treated as the same App actor when matching PR
+  author replies.
+- Current-head clean Codex issue comments can now resolve fresh or
+  cross-file review-thread uncertainty when they are newer than the current PR
+  head and newer than the review thread, while newer non-clean Codex signals
+  continue to override older clean signals.
+- Clearance now posts current-head in-thread verdict comments for unresolved
+  `OPEN` and `NEEDS_HUMAN_JUDGMENT` Codex review threads, with verdict,
+  confidence, evidence, head SHA, and duplicate prevention keyed by
+  `thread_id + head_sha + verdict`.
+- The top-level Clearance readiness comment now summarizes per-thread verdict
+  counts and verdict-comment writeback counts, making each run auditable
+  without opening every GitHub conversation.
+- Investigator-backed verdict comments persist and render the underlying LLM
+  model name instead of the configured profile name, avoiding misleading
+  public labels such as `pro` or `canary`.
+
 ## [0.4.8] — 2026-05-28
 
 ### Added — Bridge runtime TOML fallback ([#89](https://github.com/iterwheel/voyager/issues/89), [#138](https://github.com/iterwheel/voyager/pull/138))
@@ -487,7 +510,8 @@ auth, FastAPI webhook bridge, DeepSeek LLM adapter, rocket-factory
 pipeline state machine, SWM-1101 per-thread verdict pipeline. See
 `b2e4ca1` and prior history.
 
-[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.4.9...HEAD
+[0.4.9]: https://github.com/iterwheel/voyager/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/iterwheel/voyager/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/iterwheel/voyager/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/iterwheel/voyager/compare/v0.4.5...v0.4.6
