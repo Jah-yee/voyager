@@ -215,6 +215,36 @@ async def test_assembly_author_resolver_fallback_closes_resolved_thread() -> Non
     assert actions[0].result["fallback"] is True
     assert actions[0].result["resolver_app"] == "iterwheel-assembly"
     assert thread.github_isResolved is True
+    # First-time resolver fallback posts the close-reason reply
+    assert len(client.reply_calls) == 1
+    assert client.reply_calls[0][4].startswith("<!-- clearance-close-reason:")
+
+
+@pytest.mark.asyncio
+async def test_direct_resolve_suppresses_close_reason_reply_with_existing_marker() -> None:
+    """Direct RESOLVED path with existing close-reason marker still resolves
+    the thread but skips the duplicate close-reason reply."""
+    client = _WritebackClient()
+    thread = _thread(Verdict.RESOLVED, existing_close_reason_marker=True)
+    snapshot = _snapshot(viewer_can_resolve=True)
+
+    _ = await _maybe_sync_stage_15(
+        client=client,  # type: ignore[arg-type]
+        repository="iterwheel/sandbox",
+        threads=[thread],
+        snapshots=[snapshot],
+        pr=49,
+        head_sha="head-sha-abc1234",
+        dry_run=False,
+        now=datetime.now(UTC).replace(microsecond=0),
+    )
+
+    # Resolve mutation should still happen
+    assert client.resolve_calls == [("iterwheel-clearance", "iterwheel/sandbox", "PRRT_alpha")]
+    assert thread.github_isResolved is True
+
+    # No in-thread reply because existing_close_reason_marker suppresses it
+    assert client.reply_calls == []
 
 
 def test_freshness_allows_verdict_transition_with_newer_evidence() -> None:
