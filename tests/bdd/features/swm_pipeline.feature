@@ -741,7 +741,10 @@ Feature: Clearance pipeline — webhook-driven SWM-1101 per-thread verdict orche
     And the automation visual-unresolved skipped thread count is 0
     And the sync actions count is 0
     And exactly 0 resolveReviewThread mutations were invoked
-    And no in-thread reply was posted
+    And exactly 1 in-thread reply was posted under the Codex review comment
+    And the in-thread reply body contains "OPEN"
+    And the in-thread reply body contains "clearance-thread-conclusion"
+    And the in-thread reply body contains "left open"
 
   Scenario: Issue #118 outdated resolved thread syncs when Clearance can resolve it
     Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
@@ -818,3 +821,53 @@ Feature: Clearance pipeline — webhook-driven SWM-1101 per-thread verdict orche
     And the thread verdict is "RESOLVED"
     And the thread llm_verdict is None
     And exactly 1 resolveReviewThread mutation was invoked
+
+  # ---------------------------------------------------------------------------
+  # Issue #142: per-thread verdict comments after each head
+  # ---------------------------------------------------------------------------
+
+  Scenario: Issue #142 OPEN verdict posts a thread-local evidence comment
+    Given the stub PR "iterwheel/sandbox" #49 has 1 fresh Codex thread (State A) at path "app.py"
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "blocked"
+    And the sync actions count is 0
+    And exactly 1 in-thread reply was posted under the Codex review comment
+    And the in-thread reply body contains "OPEN"
+    And the in-thread reply body contains "Clearance: still open"
+    And the in-thread reply body contains "head-sha-abc"
+    And the automation thread verdict count for "OPEN" is 1
+    And the automation thread verdict comment posted count is 1
+
+  Scenario: Issue #142 NEEDS_HUMAN_JUDGMENT verdict posts a thread-local evidence comment
+    Given the stub PR "iterwheel/sandbox" #49 has 1 outdated Codex thread at path "app.py" line 10
+    And a fake investigator returning verdict "NEEDS_HUMAN_JUDGMENT" confidence 0.60 reason "Ambiguous evidence"
+    And the fake investigator client model is "deepseek-v4-flash"
+    And the stub client returns a sample diff for "app.py"
+    When compute_clearance_automation runs with investigator and DRY_RUN false
+    Then the automation status is "pending"
+    And the sync actions count is 0
+    And exactly 1 in-thread reply was posted under the Codex review comment
+    And the in-thread reply body contains "NEEDS_HUMAN_JUDGMENT"
+    And the in-thread reply body contains "Clearance: needs human judgment"
+    And the in-thread reply body contains "deepseek-v4-flash"
+    And the in-thread reply body contains "0.60"
+    And the automation thread verdict count for "NEEDS_HUMAN_JUDGMENT" is 1
+    And the automation thread verdict comment posted count is 1
+    And the thread llm_model is "deepseek-v4-flash"
+
+  Scenario: Issue #142 duplicate current-head verdict comment is skipped
+    Given the stub PR "iterwheel/sandbox" #49 has 1 fresh Codex thread (State A) at path "app.py"
+    And the thread already has a Clearance conclusion reply for the current head with verdict "OPEN"
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "blocked"
+    And no in-thread reply was posted
+    And the automation thread verdict comment posted count is 0
+    And the automation thread verdict comment skipped count is 1
+
+  Scenario: Issue #142 previous-head verdict comment does not suppress the current head
+    Given the stub PR "iterwheel/sandbox" #49 has 1 fresh Codex thread (State A) at path "app.py"
+    And the thread already has a Clearance conclusion reply for head "old-head-sha0000" with verdict "OPEN"
+    When compute_clearance_automation runs with DRY_RUN false
+    Then the automation status is "blocked"
+    And exactly 1 in-thread reply was posted under the Codex review comment
+    And the automation thread verdict comment posted count is 1

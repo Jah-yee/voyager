@@ -186,9 +186,12 @@ def _automation_status_line(automation: dict[str, Any] | None) -> str:
         else "⏳"
     )
     sync_summary = _stage15_sync_summary_text(automation)
+    verdict_summary = _thread_verdict_counts_text(automation)
+    verdict_comment_summary = _thread_verdict_comment_counts_text(automation)
     return (
         f"{icon} Automation: {status.replace('_', ' ')}; "
         f"thread sync actions: {automation.get('sync_actions_count', 0)}{sync_summary}"
+        f"{verdict_summary}{verdict_comment_summary}"
     )
 
 
@@ -231,6 +234,38 @@ def _stage15_sync_summary_text(automation: dict[str, Any] | None) -> str:
     if counts["dry_run"]:
         parts.append(f"dry-run: {counts['dry_run']}")
     return f" ({', '.join(parts)})"
+
+
+def _thread_verdict_counts_text(automation: dict[str, Any] | None) -> str:
+    if not automation:
+        return ""
+    counts = automation.get("thread_verdict_counts")
+    if not isinstance(counts, dict):
+        return ""
+    ordered = ("RESOLVED", "OPEN", "NEEDS_HUMAN_JUDGMENT")
+    parts = [f"{name}: {int(counts.get(name) or 0)}" for name in ordered]
+    return f"; verdicts: {', '.join(parts)}"
+
+
+def _thread_verdict_comment_counts_text(automation: dict[str, Any] | None) -> str:
+    if not automation:
+        return ""
+    required = (
+        "thread_verdict_comment_posted_count",
+        "thread_verdict_comment_skipped_count",
+        "thread_verdict_comment_failed_count",
+    )
+    if not all(key in automation for key in required):
+        return ""
+    parts = [
+        f"posted: {int(automation.get('thread_verdict_comment_posted_count') or 0)}",
+        f"skipped: {int(automation.get('thread_verdict_comment_skipped_count') or 0)}",
+        f"failed: {int(automation.get('thread_verdict_comment_failed_count') or 0)}",
+    ]
+    dry_run = int(automation.get("thread_verdict_comment_dry_run_count") or 0)
+    if dry_run:
+        parts.append(f"dry-run: {dry_run}")
+    return f"; verdict comments: {', '.join(parts)}"
 
 
 def _stage15_skip_detail_lines(automation: dict[str, Any] | None) -> list[str]:
@@ -332,6 +367,12 @@ def _automation_details(automation: dict[str, Any] | None) -> str:
         f"thread sync actions: {automation.get('sync_actions_count', 0)}"
         f"{_stage15_sync_summary_text(automation)}",
     ]
+    verdict_summary = _thread_verdict_counts_text(automation)
+    if verdict_summary:
+        parts.append(verdict_summary.removeprefix("; "))
+    verdict_comment_summary = _thread_verdict_comment_counts_text(automation)
+    if verdict_comment_summary:
+        parts.append(verdict_comment_summary.removeprefix("; "))
     if "dry_run" in automation:
         parts.append(f"dry-run: {str(bool(automation.get('dry_run'))).lower()}")
     reason = automation.get("reason")

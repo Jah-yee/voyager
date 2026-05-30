@@ -321,6 +321,41 @@ def test_issue_124_readiness_comment_does_not_call_visual_unresolved_zero_unreso
     assert "outdated visual-unresolved thread still visible" in comment
 
 
+def test_issue_142_readiness_comment_summarizes_thread_verdicts_and_comments() -> None:
+    from voyager.bots.clearance.enrichment import build_clearance_comment
+
+    automation = {
+        **_automation(status="blocked"),
+        "reason": "1 high-priority thread still OPEN",
+        "sync_actions": [],
+        "sync_actions_count": 0,
+        "thread_verdict_counts": {
+            "RESOLVED": 2,
+            "OPEN": 1,
+            "NEEDS_HUMAN_JUDGMENT": 1,
+        },
+        "thread_verdict_comment_posted_count": 2,
+        "thread_verdict_comment_skipped_count": 1,
+        "thread_verdict_comment_failed_count": 0,
+        "thread_verdict_comment_dry_run_count": 0,
+    }
+
+    comment = build_clearance_comment(
+        _evaluation(status="clearance_blocked", label="clearance-2-blocked"),
+        automation=automation,
+        provenance={"updated_at": "2026-05-17T00:00:00Z"},
+    )
+
+    verdicts = "verdicts: RESOLVED: 2, OPEN: 1, NEEDS_HUMAN_JUDGMENT: 1"
+    verdict_comments = "verdict comments: posted: 2, skipped: 1, failed: 0"
+    assert (
+        f"❌ Automation: blocked; thread sync actions: 0; {verdicts}; {verdict_comments}" in comment
+    )
+    assert (
+        f"- Automation: blocked; thread sync actions: 0; {verdicts}; {verdict_comments}" in comment
+    )
+
+
 def test_thread_success_summary_requires_final_ready_status() -> None:
     from voyager.bots.clearance.enrichment import build_clearance_comment
 

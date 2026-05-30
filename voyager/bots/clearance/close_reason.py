@@ -163,6 +163,7 @@ def build_thread_conclusion_comment(
     """
     evidence = snapshot.evidence if snapshot else None
     llm_reason = thread.llm_reason or (evidence.llm_reason if evidence else None)
+    model = model or thread.llm_model or (evidence.llm_model if evidence else None)
     verdict = _verdict_value(thread)
     resolved = verdict == "RESOLVED"
     reason = (

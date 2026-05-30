@@ -512,6 +512,7 @@ class _FakeInvestigator:
         # decisions may be a list of InvestigationDecision, or an InvestigationError
         # instance to raise, or a list that may contain an error sentinel.
         self._decisions = decisions
+        self._client: Any | None = None
         self.calls: list[Any] = []
 
     async def investigate(self, item: Any) -> Any:
@@ -814,6 +815,34 @@ def then_visual_unresolved_thread_count(ctx, count: int) -> None:
     assert actual == count, f"visual_unresolved_thread_count={actual!r}, expected {count}"
 
 
+@then(parsers.parse('the automation thread verdict count for "{verdict}" is {count:d}'))
+def then_automation_thread_verdict_count(ctx, verdict: str, count: int) -> None:
+    assert ctx["automation"] is not None
+    counts = ctx["automation"].get("thread_verdict_counts") or {}
+    actual = counts.get(verdict, 0)
+    assert actual == count, f"thread_verdict_counts={counts!r}, expected {verdict}={count}"
+
+
+@then(parsers.parse("the automation thread verdict comment posted count is {count:d}"))
+def then_automation_thread_verdict_comment_posted_count(ctx, count: int) -> None:
+    assert ctx["automation"] is not None
+    actual = ctx["automation"].get("thread_verdict_comment_posted_count")
+    assert actual == count, (
+        f"thread_verdict_comment_posted_count={actual!r}, expected {count}; "
+        f"actions={ctx['automation'].get('thread_verdict_comment_actions')!r}"
+    )
+
+
+@then(parsers.parse("the automation thread verdict comment skipped count is {count:d}"))
+def then_automation_thread_verdict_comment_skipped_count(ctx, count: int) -> None:
+    assert ctx["automation"] is not None
+    actual = ctx["automation"].get("thread_verdict_comment_skipped_count")
+    assert actual == count, (
+        f"thread_verdict_comment_skipped_count={actual!r}, expected {count}; "
+        f"actions={ctx['automation'].get('thread_verdict_comment_actions')!r}"
+    )
+
+
 @then(parsers.parse('the planned sync action mutation is "{mutation}"'))
 def then_planned_mutation(ctx, mutation: str) -> None:
     actions = ctx["automation"]["sync_actions"]
@@ -1046,6 +1075,18 @@ def given_fake_investigator_multi(ctx, verdict: str, confidence: float, reason: 
     ctx["investigator"] = _FakeInvestigator(decisions)
 
 
+@given(parsers.parse('the fake investigator client model is "{model}"'))
+def given_fake_investigator_client_model(ctx, model: str) -> None:
+    assert ctx.get("investigator") is not None, "configure fake investigator before model"
+
+    class _Client:
+        pass
+
+    client = _Client()
+    client.model = model
+    ctx["investigator"]._client = client
+
+
 @given(parsers.parse('a fake investigator that raises InvestigationError "{message}"'))
 def given_fake_investigator_error(ctx, message: str) -> None:
     from voyager.bots.clearance.investigator import InvestigationError
@@ -1201,6 +1242,12 @@ def then_llm_verdict_none(ctx) -> None:
 def then_llm_verdict(ctx, expected: str) -> None:
     t = _first_thread(ctx)
     assert t.llm_verdict == expected, f"thread.llm_verdict={t.llm_verdict!r}, expected {expected!r}"
+
+
+@then(parsers.parse('the thread llm_model is "{expected}"'))
+def then_llm_model(ctx, expected: str) -> None:
+    t = _first_thread(ctx)
+    assert t.llm_model == expected, f"thread.llm_model={t.llm_model!r}, expected {expected!r}"
 
 
 @then(parsers.parse("the thread llm_confidence is {expected:g}"))
@@ -1965,6 +2012,51 @@ def given_non_clearance_reply_contains_close_reason_marker(ctx) -> None:
             "databaseId": CODEX_COMMENT_ID + 2,
             "author": {"login": "some-maintainer"},
             "body": f"Copied old bot output for discussion:\n\n{marker}\nNot a Clearance reply.",
+            "url": "https://example/c/3",
+            "createdAt": "2026-05-11T12:45:00Z",
+        }
+    )
+
+
+@given(
+    parsers.parse(
+        'the thread already has a Clearance conclusion reply for the current head with verdict "{verdict}"'
+    )
+)
+def given_thread_existing_current_head_conclusion_reply(ctx, verdict: str) -> None:
+    threads = ctx["client"].threads
+    assert threads, "no threads configured"
+    head_sha = ctx["client"].pr_payload["head"]["sha"]
+    _append_clearance_conclusion_reply(threads[0], head_sha=head_sha, verdict=verdict)
+
+
+@given(
+    parsers.parse(
+        'the thread already has a Clearance conclusion reply for head "{head_sha}" with verdict "{verdict}"'
+    )
+)
+def given_thread_existing_specific_head_conclusion_reply(ctx, head_sha: str, verdict: str) -> None:
+    threads = ctx["client"].threads
+    assert threads, "no threads configured"
+    _append_clearance_conclusion_reply(threads[0], head_sha=head_sha, verdict=verdict)
+
+
+def _append_clearance_conclusion_reply(
+    thread: dict[str, Any], *, head_sha: str, verdict: str
+) -> None:
+    marker = f"<!-- clearance-thread-conclusion:{thread['id']}:{head_sha[:12]} -->"
+    thread["comments"]["nodes"].append(
+        {
+            "databaseId": CODEX_COMMENT_ID + 2,
+            "author": {"login": "iterwheel-clearance"},
+            "body": (
+                f"{marker}\n"
+                "👀 **Clearance: still open**\n\n"
+                "<details>\n"
+                "<summary>Evidence</summary>\n\n"
+                f"- Verdict: `{verdict}`\n\n"
+                "</details>"
+            ),
             "url": "https://example/c/3",
             "createdAt": "2026-05-11T12:45:00Z",
         }
