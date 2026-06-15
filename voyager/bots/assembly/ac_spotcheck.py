@@ -41,6 +41,9 @@ _REMOVAL_LIST_CHILD_PREFIX_RE = re.compile(
     re.I,
 )
 _REMOVAL_LIST_CHILD_LABEL_RE = re.compile(r"^\s*[A-Za-z0-9][A-Za-z0-9 ._-]{0,80}:\s*$")
+_REMOVAL_LIST_LABEL_GENERIC_WORDS = frozenset(
+    {"a", "an", "entry", "field", "item", "mode", "option", "the", "token", "value"}
+)
 _REPLACEMENT_SOURCE_PREFIX_RE = re.compile(
     r"\b(?:chang(?:e|ed|es|ing)|updat(?:e|ed|es|ing))\b",
     re.I,
@@ -274,10 +277,23 @@ def _is_removal_list_child(criterion: str) -> bool:
     if match is None:
         return False
     prefix = criterion[: match.start()]
-    return (
-        _REMOVAL_LIST_CHILD_PREFIX_RE.fullmatch(prefix) is not None
-        or _REMOVAL_LIST_CHILD_LABEL_RE.fullmatch(prefix) is not None
-    )
+    if _REMOVAL_LIST_CHILD_PREFIX_RE.fullmatch(prefix) is not None:
+        return True
+    return _label_describes_token(prefix, match.group(1))
+
+
+def _label_describes_token(label_prefix: str, raw_token: str) -> bool:
+    if _REMOVAL_LIST_CHILD_LABEL_RE.fullmatch(label_prefix) is None:
+        return False
+    label_words = _removal_label_words(label_prefix[:-1])
+    token = _normalize_token(raw_token) or raw_token
+    token_words = _removal_label_words(token)
+    return not label_words or label_words.issubset(token_words)
+
+
+def _removal_label_words(value: str) -> set[str]:
+    words = set(re.findall(r"[A-Za-z0-9]+", value.lower()))
+    return words - _REMOVAL_LIST_LABEL_GENERIC_WORDS
 
 
 def _append_required_token_group(

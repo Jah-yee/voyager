@@ -291,6 +291,25 @@ def test_spotcheck_applies_removal_context_to_labeled_children() -> None:
     assert result.ok
 
 
+def test_spotcheck_keeps_required_action_labels_under_removal_headings_required() -> None:
+    result = check_acceptance_exact_tokens(
+        issue_body="",
+        acceptance_criteria=[
+            "Remove deprecated modes:",
+            "Add mode: `new-mode`",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated modes:", "depth": 0},
+            {"text": "Add mode: `new-mode`", "depth": 1},
+        ],
+        changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+    )
+
+    assert not result.ok
+    assert result.findings[0].required_tokens == ("new-mode",)
+    assert result.findings[0].missing_tokens == ("new-mode",)
+
+
 def test_spotcheck_matches_values_colon_headings_in_value_groups() -> None:
     issue_body = """## Acceptance Criteria
 
