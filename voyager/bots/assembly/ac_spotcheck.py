@@ -40,6 +40,7 @@ _REMOVAL_LIST_CHILD_PREFIX_RE = re.compile(
     r"^\s*(?:[-\u2014:;,().]|\s)*(?:(?:the\s+)?(?:value|mode|token|entry|item)\s+)?$",
     re.I,
 )
+_REMOVAL_LIST_CHILD_LABEL_RE = re.compile(r"^\s*[A-Za-z0-9][A-Za-z0-9 ._-]{0,80}:\s*$")
 _REPLACEMENT_SOURCE_PREFIX_RE = re.compile(
     r"\b(?:chang(?:e|ed|es|ing)|updat(?:e|ed|es|ing))\b",
     re.I,
@@ -272,7 +273,11 @@ def _is_removal_list_child(criterion: str) -> bool:
     match = _INLINE_CODE_RE.search(criterion or "")
     if match is None:
         return False
-    return _REMOVAL_LIST_CHILD_PREFIX_RE.fullmatch(criterion[: match.start()]) is not None
+    prefix = criterion[: match.start()]
+    return (
+        _REMOVAL_LIST_CHILD_PREFIX_RE.fullmatch(prefix) is not None
+        or _REMOVAL_LIST_CHILD_LABEL_RE.fullmatch(prefix) is not None
+    )
 
 
 def _append_required_token_group(
