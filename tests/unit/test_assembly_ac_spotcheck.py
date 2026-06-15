@@ -243,16 +243,35 @@ def test_spotcheck_applies_removal_context_to_children_without_verb_allow_list()
         issue_body="",
         acceptance_criteria=[
             "Remove deprecated values:",
-            "Document `legacy-mode` removal",
+            "`legacy-mode` removal note",
         ],
         acceptance_criteria_items=[
             {"text": "Remove deprecated values:", "depth": 0},
-            {"text": "Document `legacy-mode` removal", "depth": 1},
+            {"text": "`legacy-mode` removal note", "depth": 1},
         ],
         changed_text='SUPPORTED_VALUES = ["modern-mode"]',
     )
 
     assert result.ok
+
+
+def test_spotcheck_keeps_required_children_under_removal_headings_required() -> None:
+    result = check_acceptance_exact_tokens(
+        issue_body="",
+        acceptance_criteria=[
+            "Remove deprecated modes:",
+            "Add `new-mode`",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated modes:", "depth": 0},
+            {"text": "Add `new-mode`", "depth": 1},
+        ],
+        changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+    )
+
+    assert not result.ok
+    assert result.findings[0].required_tokens == ("new-mode",)
+    assert result.findings[0].missing_tokens == ("new-mode",)
 
 
 def test_spotcheck_matches_values_colon_headings_in_value_groups() -> None:

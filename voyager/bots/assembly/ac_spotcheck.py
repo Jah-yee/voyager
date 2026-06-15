@@ -36,6 +36,10 @@ _REMOVAL_STATUS_PREFIX_RE = re.compile(
     r"(?:is|are|becomes?|should\s+be|must\s+be)\s*$",
     re.I,
 )
+_REMOVAL_LIST_CHILD_PREFIX_RE = re.compile(
+    r"^\s*(?:[-\u2014:;,().]|\s)*(?:(?:the\s+)?(?:value|mode|token|entry|item)\s+)?$",
+    re.I,
+)
 _REPLACEMENT_SOURCE_PREFIX_RE = re.compile(
     r"\b(?:chang(?:e|ed|es|ing)|updat(?:e|ed|es|ing))\b",
     re.I,
@@ -204,7 +208,12 @@ def _removal_contexts_by_item(items: list[_CriterionItem]) -> list[tuple[str, st
             ),
             None,
         )
-        contexts.append((item.text, removal_parent))
+        context = (
+            removal_parent
+            if removal_parent is not None and _is_removal_list_child(item.text)
+            else None
+        )
+        contexts.append((item.text, context))
         stack.append(idx)
     return contexts
 
@@ -257,6 +266,13 @@ def _starts_removal_list_context(criterion: str) -> bool:
     if not text or _REMOVAL_PREFIX_RE.search(text) is None:
         return False
     return text.endswith(":") or _INLINE_CODE_RE.search(text) is None
+
+
+def _is_removal_list_child(criterion: str) -> bool:
+    match = _INLINE_CODE_RE.search(criterion or "")
+    if match is None:
+        return False
+    return _REMOVAL_LIST_CHILD_PREFIX_RE.fullmatch(criterion[: match.start()]) is not None
 
 
 def _append_required_token_group(
