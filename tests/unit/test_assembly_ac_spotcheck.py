@@ -169,6 +169,35 @@ def test_spotcheck_ignores_removed_value_lists() -> None:
     assert result.ok
 
 
+def test_spotcheck_skips_value_groups_started_by_removal_headings() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  - `legacy-mode`
+  - `old-mode`
+- [ ] Add `new-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=[
+            "Remove deprecated values:",
+            "`legacy-mode`",
+            "`old-mode`",
+            "Add `new-mode`",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+            {"text": "`legacy-mode`", "depth": 1},
+            {"text": "`old-mode`", "depth": 1},
+            {"text": "Add `new-mode`", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["new-mode"]',
+    )
+
+    assert result.ok
+
+
 def test_spotcheck_applies_removal_context_to_nested_value_list_children() -> None:
     issue_body = """## Acceptance Criteria
 
@@ -217,6 +246,166 @@ def test_spotcheck_does_not_apply_removal_context_to_sibling_criteria() -> None:
     assert result.findings[0].missing_tokens == ("new-mode",)
 
 
+def test_spotcheck_keeps_unlisted_verb_sibling_required_from_structural_items() -> None:
+    result = check_acceptance_exact_tokens(
+        issue_body="",
+        acceptance_criteria=[
+            "Remove deprecated values:",
+            "`legacy-mode`",
+            "Audit `new-mode` behavior",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+            {"text": "`legacy-mode`", "depth": 1},
+            {"text": "Audit `new-mode` behavior", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+    )
+
+    assert not result.ok
+    assert result.findings[0].required_tokens == ("new-mode",)
+    assert result.findings[0].missing_tokens == ("new-mode",)
+
+
+def test_spotcheck_applies_removal_context_to_children_without_verb_allow_list() -> None:
+    result = check_acceptance_exact_tokens(
+        issue_body="",
+        acceptance_criteria=[
+            "Remove deprecated values:",
+            "`legacy-mode` removal note",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+            {"text": "`legacy-mode` removal note", "depth": 1},
+        ],
+        changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+    )
+
+    assert result.ok
+
+
+def test_spotcheck_keeps_required_children_under_removal_headings_required() -> None:
+    result = check_acceptance_exact_tokens(
+        issue_body="",
+        acceptance_criteria=[
+            "Remove deprecated modes:",
+            "Add `new-mode`",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated modes:", "depth": 0},
+            {"text": "Add `new-mode`", "depth": 1},
+        ],
+        changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+    )
+
+    assert not result.ok
+    assert result.findings[0].required_tokens == ("new-mode",)
+    assert result.findings[0].missing_tokens == ("new-mode",)
+
+
+def test_spotcheck_applies_removal_context_to_labeled_children() -> None:
+    for child in (
+        "legacy mode: `legacy-mode`",
+        "legacy mode `legacy-mode`",
+        "legacy value: `old-mode`",
+        "default: `old-mode`",
+        "api/v1: `legacy-mode`",
+        "allow-list `legacy-mode`",
+        "allow list: `legacy-mode`",
+        "audit log: `legacy-mode`",
+        "support matrix: `legacy-mode`",
+    ):
+        result = check_acceptance_exact_tokens(
+            issue_body="",
+            acceptance_criteria=[
+                "Remove deprecated values:",
+                child,
+            ],
+            acceptance_criteria_items=[
+                {"text": "Remove deprecated values:", "depth": 0},
+                {"text": child, "depth": 1},
+            ],
+            changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+        )
+
+        assert result.ok
+
+
+def test_spotcheck_keeps_required_action_labels_under_removal_headings_required() -> None:
+    for child in (
+        "Add mode: `new-mode`",
+        "Add mode `new-mode`",
+        "Add api/v1: `new-mode`",
+        "Add/support `new-mode`",
+        "Support mode: `new-mode`",
+        "Audit mode: `new-mode`",
+        "Describe mode: `new-mode`",
+        "Must support `new-mode`",
+        "The implementation must add `new-mode`",
+        "Tests verify `new-mode`",
+        "Integration tests validate `new-mode`",
+        "Test suite validates `new-mode`",
+    ):
+        result = check_acceptance_exact_tokens(
+            issue_body="",
+            acceptance_criteria=[
+                "Remove deprecated modes:",
+                child,
+            ],
+            acceptance_criteria_items=[
+                {"text": "Remove deprecated modes:", "depth": 0},
+                {"text": child, "depth": 1},
+            ],
+            changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+        )
+
+        assert not result.ok
+        assert result.findings[0].required_tokens == ("new-mode",)
+        assert result.findings[0].missing_tokens == ("new-mode",)
+
+
+def test_spotcheck_stops_removal_context_at_required_child_headings() -> None:
+    result = check_acceptance_exact_tokens(
+        issue_body="",
+        acceptance_criteria=[
+            "Remove deprecated values:",
+            "Add replacement values:",
+            "`new-mode`",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+            {"text": "Add replacement values:", "depth": 1},
+            {"text": "`new-mode`", "depth": 2},
+        ],
+        changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+    )
+
+    assert not result.ok
+    assert result.findings[0].required_tokens == ("new-mode",)
+    assert result.findings[0].missing_tokens == ("new-mode",)
+
+
+def test_spotcheck_stops_removal_context_at_subject_required_headings() -> None:
+    result = check_acceptance_exact_tokens(
+        issue_body="",
+        acceptance_criteria=[
+            "Remove deprecated values:",
+            "Tests verify replacement values:",
+            "`new-mode`",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+            {"text": "Tests verify replacement values:", "depth": 1},
+            {"text": "`new-mode`", "depth": 2},
+        ],
+        changed_text='SUPPORTED_VALUES = ["modern-mode"]',
+    )
+
+    assert not result.ok
+    assert result.findings[0].required_tokens == ("new-mode",)
+    assert result.findings[0].missing_tokens == ("new-mode",)
+
+
 def test_spotcheck_matches_values_colon_headings_in_value_groups() -> None:
     issue_body = """## Acceptance Criteria
 
@@ -240,6 +429,184 @@ def test_spotcheck_matches_values_colon_headings_in_value_groups() -> None:
         "inherit-only",
     )
     assert value_group.missing_tokens == ("mandatory-bind", "inherit-only")
+
+
+def test_spotcheck_keeps_mixed_removal_value_groups_checkable() -> None:
+    for action in ("register", "document"):
+        issue_body = f"""## Acceptance Criteria
+
+- [ ] Remove legacy table and {action} values:
+  `mandatory-bind`, `optional-overlay`
+"""
+
+        result = check_acceptance_exact_tokens(
+            issue_body=issue_body,
+            acceptance_criteria=[f"Remove legacy table and {action} values:"],
+            acceptance_criteria_items=[
+                {"text": f"Remove legacy table and {action} values:", "depth": 0},
+            ],
+            changed_text='SUPPORTED_VALUES = ["inherit-only"]',
+        )
+
+        assert not result.ok
+        value_group = next(
+            finding for finding in result.findings if "mandatory-bind" in finding.required_tokens
+        )
+        assert value_group.required_tokens == ("mandatory-bind", "optional-overlay")
+        assert value_group.missing_tokens == ("mandatory-bind", "optional-overlay")
+
+
+def test_spotcheck_keeps_replacement_value_groups_under_removal_headings_checkable() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  Add replacement values:
+  `new-mode`, `modern-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=["Remove deprecated values:"],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["legacy-mode"]',
+    )
+
+    assert not result.ok
+    value_group = next(
+        finding for finding in result.findings if "new-mode" in finding.required_tokens
+    )
+    assert value_group.required_tokens == ("new-mode", "modern-mode")
+    assert value_group.missing_tokens == ("new-mode", "modern-mode")
+
+
+def test_spotcheck_keeps_neutral_replacement_value_groups_checkable() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  Replacement:
+  `new-mode`, `modern-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=["Remove deprecated values:"],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["legacy-mode"]',
+    )
+
+    assert not result.ok
+    value_group = next(
+        finding for finding in result.findings if "new-mode" in finding.required_tokens
+    )
+    assert value_group.required_tokens == ("new-mode", "modern-mode")
+    assert value_group.missing_tokens == ("new-mode", "modern-mode")
+
+
+def test_spotcheck_keeps_same_line_replacement_values_checkable() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  Replacement: `new-mode`, `modern-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=["Remove deprecated values:"],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["legacy-mode"]',
+    )
+
+    assert not result.ok
+    value_group = next(
+        finding for finding in result.findings if "new-mode" in finding.required_tokens
+    )
+    assert value_group.required_tokens == ("new-mode", "modern-mode")
+    assert value_group.missing_tokens == ("new-mode", "modern-mode")
+
+
+def test_spotcheck_keeps_bullet_replacement_values_checkable() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  Replacement:
+  - `new-mode`
+  - `modern-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=["Remove deprecated values:"],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["new-mode"]',
+    )
+
+    assert not result.ok
+    value_group = next(
+        finding for finding in result.findings if "new-mode" in finding.required_tokens
+    )
+    assert value_group.required_tokens == ("new-mode", "modern-mode")
+    assert value_group.missing_tokens == ("modern-mode",)
+
+
+def test_spotcheck_filters_removed_children_from_replacement_value_groups() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  - `legacy-mode`
+  - `old-mode`
+  Replacement:
+  `new-mode`, `modern-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=["Remove deprecated values:"],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["new-mode"]',
+    )
+
+    assert not result.ok
+    value_group = next(
+        finding for finding in result.findings if "new-mode" in finding.required_tokens
+    )
+    assert value_group.required_tokens == ("new-mode", "modern-mode")
+    assert value_group.missing_tokens == ("modern-mode",)
+
+
+def test_spotcheck_filters_removed_continuations_from_replacement_value_groups() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  `legacy-mode`, `old-mode`
+  Replacement:
+  `new-mode`, `modern-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=["Remove deprecated values:"],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["new-mode"]',
+    )
+
+    assert not result.ok
+    value_group = next(
+        finding for finding in result.findings if "new-mode" in finding.required_tokens
+    )
+    assert value_group.required_tokens == ("new-mode", "modern-mode")
+    assert value_group.missing_tokens == ("modern-mode",)
 
 
 def test_spotcheck_filters_removed_value_lines_without_skipping_required_values() -> None:
