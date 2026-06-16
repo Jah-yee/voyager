@@ -169,6 +169,35 @@ def test_spotcheck_ignores_removed_value_lists() -> None:
     assert result.ok
 
 
+def test_spotcheck_skips_value_groups_started_by_removal_headings() -> None:
+    issue_body = """## Acceptance Criteria
+
+- [ ] Remove deprecated values:
+  - `legacy-mode`
+  - `old-mode`
+- [ ] Add `new-mode`
+"""
+
+    result = check_acceptance_exact_tokens(
+        issue_body=issue_body,
+        acceptance_criteria=[
+            "Remove deprecated values:",
+            "`legacy-mode`",
+            "`old-mode`",
+            "Add `new-mode`",
+        ],
+        acceptance_criteria_items=[
+            {"text": "Remove deprecated values:", "depth": 0},
+            {"text": "`legacy-mode`", "depth": 1},
+            {"text": "`old-mode`", "depth": 1},
+            {"text": "Add `new-mode`", "depth": 0},
+        ],
+        changed_text='SUPPORTED_VALUES = ["new-mode"]',
+    )
+
+    assert result.ok
+
+
 def test_spotcheck_applies_removal_context_to_nested_value_list_children() -> None:
     issue_body = """## Acceptance Criteria
 

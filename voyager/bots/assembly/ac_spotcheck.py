@@ -283,7 +283,8 @@ def _is_removal_list_child(criterion: str) -> bool:
     prefix = criterion[: match.start()]
     if _REMOVAL_LIST_CHILD_PREFIX_RE.fullmatch(prefix) is not None:
         return True
-    if _REMOVAL_LIST_CHILD_LABEL_RE.fullmatch(prefix) is None:
+    label_match = _REMOVAL_LIST_CHILD_LABEL_RE.fullmatch(prefix)
+    if label_match is None:
         return False
     return _REQUIRED_ACTION_LABEL_RE.search(prefix) is None
 
@@ -306,6 +307,10 @@ def _value_groups(issue_body: str) -> list[tuple[str, tuple[str, ...]]]:
     groups: list[tuple[str, tuple[str, ...]]] = []
     for idx, line in enumerate(lines):
         if not _VALUES_HINT_RE.search(line):
+            continue
+        bullet_match = _BULLET_LINE_RE.match(line)
+        criterion = bullet_match.group(2).strip() if bullet_match is not None else line.strip()
+        if _starts_removal_list_context(criterion):
             continue
         window: list[str] = [line]
         for follow in lines[idx + 1 : idx + 10]:
