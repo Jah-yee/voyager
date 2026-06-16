@@ -72,7 +72,7 @@ _REMOVAL_NOUN_LABEL_RE = re.compile(
     re.I,
 )
 _REQUIRED_VALUE_LABEL_RE = re.compile(
-    r"^\s*(?:replacement(?:s|\s+values?)?|new\s+values?)\s*:\s*$",
+    r"^\s*(?:replacement(?:s|\s+values?)?|new\s+values?)\s*:",
     re.I,
 )
 _REPLACEMENT_SOURCE_PREFIX_RE = re.compile(
