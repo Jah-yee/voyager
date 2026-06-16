@@ -283,6 +283,11 @@ def _starts_removal_list_context(criterion: str) -> bool:
     return text.endswith(":") or _INLINE_CODE_RE.search(text) is None
 
 
+def _is_pure_removal_list_context(criterion: str) -> bool:
+    text = (criterion or "").strip()
+    return _starts_removal_list_context(text) and _REQUIRED_TARGET_PREFIX_RE.search(text) is None
+
+
 def _is_removal_list_child(criterion: str) -> bool:
     match = _INLINE_CODE_RE.search(criterion or "")
     if match is None:
@@ -321,7 +326,7 @@ def _value_groups(
             continue
         bullet_match = _BULLET_LINE_RE.match(line)
         criterion = bullet_match.group(2).strip() if bullet_match is not None else line.strip()
-        if skip_removal_headings and _starts_removal_list_context(criterion):
+        if skip_removal_headings and _is_pure_removal_list_context(criterion):
             continue
         window: list[str] = [line]
         for follow in lines[idx + 1 : idx + 10]:
