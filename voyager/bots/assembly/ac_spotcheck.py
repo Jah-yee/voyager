@@ -47,8 +47,17 @@ _REQUIRED_ACTION_VERBS = (
     r"require|set|support|surface|track|updat(?:e|ed|es|ing)|use|"
     r"validat(?:e|ed|es|ing)|verify|wire|write"
 )
+_REQUIRED_ACTION_BOUNDARY = r"(?=\s|:|$)"
+_REQUIRED_MODAL_ACTION = (
+    rf"(?:must|should|shall|will|need(?:s|ed)?\s+to|has\s+to|have\s+to)\s+"
+    rf"(?:{_REQUIRED_ACTION_VERBS}){_REQUIRED_ACTION_BOUNDARY}"
+)
 _REQUIRED_ACTION_LABEL_RE = re.compile(
-    rf"^\s*(?:{_REQUIRED_ACTION_VERBS})(?=\s|:|$)",
+    rf"^\s*(?:{_REQUIRED_ACTION_VERBS}){_REQUIRED_ACTION_BOUNDARY}",
+    re.I,
+)
+_REQUIRED_MODAL_ACTION_RE = re.compile(
+    rf"\b{_REQUIRED_MODAL_ACTION}",
     re.I,
 )
 _REQUIRED_VALUE_LABEL_RE = re.compile(
@@ -61,7 +70,8 @@ _REPLACEMENT_SOURCE_PREFIX_RE = re.compile(
 )
 _REPLACEMENT_SOURCE_SUFFIX_RE = re.compile(r"^\s*(?:as|to|with)\s+`[^`\n]+`", re.I)
 _REQUIRED_TARGET_PREFIX_RE = re.compile(
-    rf"(?:\b(?:and|then|but)|[;,.])\s+(?:{_REQUIRED_ACTION_VERBS})(?=\s|:|$)|"
+    rf"(?:\b(?:and|then|but)|[;,.])\s+"
+    rf"(?:(?:{_REQUIRED_ACTION_VERBS}){_REQUIRED_ACTION_BOUNDARY}|{_REQUIRED_MODAL_ACTION})|"
     r"\b(?:as|to|with)\s*$",
     re.I,
 )
@@ -293,6 +303,7 @@ def _has_required_action_context(text: str) -> bool:
     return (
         _REQUIRED_TARGET_PREFIX_RE.search(text or "") is not None
         or _REQUIRED_ACTION_LABEL_RE.search(text or "") is not None
+        or _REQUIRED_MODAL_ACTION_RE.search(text or "") is not None
     )
 
 
@@ -318,7 +329,7 @@ def _is_removal_list_child(criterion: str) -> bool:
     label_match = _REMOVAL_LIST_CHILD_LABEL_RE.fullmatch(prefix)
     if label_match is None:
         return False
-    return _REQUIRED_ACTION_LABEL_RE.search(prefix) is None
+    return not _has_required_action_context(prefix)
 
 
 def _append_required_token_group(
@@ -361,7 +372,7 @@ def _value_groups(
             if not follow.strip() and len(window) > 1:
                 break
             window.append(follow)
-        if skip_removal_headings and _is_pure_removal_value_group(criterion, window):
+        if _should_skip_removal_value_group(skip_removal_headings, criterion, window):
             continue
         tokens = tuple(
             token
@@ -373,6 +384,14 @@ def _value_groups(
         if len(tokens) >= 2:
             groups.append((line.strip(), tokens))
     return groups
+
+
+def _should_skip_removal_value_group(
+    skip_removal_headings: bool,
+    criterion: str,
+    window: list[str],
+) -> bool:
+    return skip_removal_headings and _is_pure_removal_value_group(criterion, window)
 
 
 def _is_pure_removal_value_group(criterion: str, window: list[str]) -> bool:
