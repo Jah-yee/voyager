@@ -56,6 +56,10 @@ _REQUIRED_ACTION_LABEL_RE = re.compile(
     rf"^\s*(?:{_REQUIRED_ACTION_VERBS}){_REQUIRED_ACTION_BOUNDARY}",
     re.I,
 )
+_REQUIRED_ACTION_CONTEXT_RE = re.compile(
+    rf"\b(?:{_REQUIRED_ACTION_VERBS}){_REQUIRED_ACTION_BOUNDARY}",
+    re.I,
+)
 _REQUIRED_MODAL_ACTION_RE = re.compile(
     rf"\b{_REQUIRED_MODAL_ACTION}",
     re.I,
@@ -314,6 +318,13 @@ def _has_required_value_context(text: str) -> bool:
     )
 
 
+def _has_required_child_context(text: str) -> bool:
+    return (
+        _has_required_action_context(text)
+        or _REQUIRED_ACTION_CONTEXT_RE.search(text or "") is not None
+    )
+
+
 def _is_pure_removal_list_context(criterion: str) -> bool:
     text = (criterion or "").strip()
     return _starts_removal_list_context(text) and not _has_required_action_context(text)
@@ -329,7 +340,7 @@ def _is_removal_list_child(criterion: str) -> bool:
     label_match = _REMOVAL_LIST_CHILD_LABEL_RE.fullmatch(prefix)
     if label_match is None:
         return False
-    return not _has_required_action_context(prefix)
+    return not _has_required_child_context(prefix)
 
 
 def _append_required_token_group(

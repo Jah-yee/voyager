@@ -339,6 +339,7 @@ def test_spotcheck_keeps_required_action_labels_under_removal_headings_required(
         "Describe mode: `new-mode`",
         "Must support `new-mode`",
         "The implementation must add `new-mode`",
+        "Tests verify `new-mode`",
     ):
         result = check_acceptance_exact_tokens(
             issue_body="",
