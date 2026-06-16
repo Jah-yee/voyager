@@ -8,6 +8,48 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-17
+
+### Added — Assembly acceptance-criteria exact-token spot-check ([#151](https://github.com/iterwheel/voyager/issues/151), [#152](https://github.com/iterwheel/voyager/pull/152))
+
+- Assembly now runs a conservative acceptance-criteria spot-check after backend
+  verification and before publish. When a checked acceptance criterion (or an
+  AC value list) states exact machine-readable tokens that are absent from the
+  changed files, Assembly returns a `blocked` terminal result and retains a
+  failure bundle instead of publishing.
+- The check is intentionally narrow: it only blocks on exact-token misses;
+  uncertain prose stays non-blocking and falls through to normal review.
+- Failure comments now surface the concrete check/command and whether a local
+  patch was left behind.
+- New env kill switch `ASSEMBLY_AC_SPOTCHECK` — set to `0` / `false` / `off` to
+  disable the gate.
+- Secret-shaped config keys (e.g. `OPENAI_API_KEY`) are preserved during token
+  matching (only the value is redacted), so a correct key addition is not
+  misreported as missing.
+
+### Changed — Structural AC nesting for the spot-check ([#153](https://github.com/iterwheel/voyager/issues/153), [#154](https://github.com/iterwheel/voyager/pull/154))
+
+- The Assembly job contract now preserves acceptance-criteria bullet structure
+  (`acceptance_criteria_items` with nesting depth + parent index) instead of a
+  flattened list only.
+- Removal-list attribution in the spot-check follows the real parent/child
+  nesting depth, replacing the previous verb allow-list heuristic for child
+  attribution. This removes the class of false negatives where a sibling
+  criterion using an unlisted verb (e.g. `Audit \`new-mode\``) lost its required
+  token.
+
+### Changed — Dependencies
+
+- Bump FastAPI to `>=0.136,<0.137.2` ([#150](https://github.com/iterwheel/voyager/pull/150), [#155](https://github.com/iterwheel/voyager/pull/155)).
+
+### Known limitations
+
+- Parent/child-shape classification (distinguishing removal headings from
+  required-value headings, and recognizing value-list child lines) is still
+  phrasing-bound. Unrecognized phrasings fall through to normal review — a
+  false-negative (non-blocking) direction, by design. The spot-check is a
+  conservative best-effort gate, not a semantic acceptance-criteria verifier.
+
 ## [0.4.10] — 2026-05-30
 
 ### Fixed — Clearance per-thread verdict comment dedupe ([#146](https://github.com/iterwheel/voyager/issues/146))
