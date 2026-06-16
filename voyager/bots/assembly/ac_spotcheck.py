@@ -158,13 +158,17 @@ def _required_token_groups(
 ) -> list[tuple[str, str, tuple[str, ...]]]:
     groups: list[tuple[str, str, tuple[str, ...]]] = []
     seen: set[tuple[str, ...]] = set()
-    removal_contexts = _removal_contexts_for_criteria(
+    criteria_removal_contexts = _removal_contexts_for_criteria(
         issue_body,
         acceptance_criteria,
         acceptance_criteria_items,
     )
 
-    for criterion, removal_context in zip(acceptance_criteria, removal_contexts, strict=False):
+    for criterion, removal_context in zip(
+        acceptance_criteria,
+        criteria_removal_contexts,
+        strict=False,
+    ):
         contextual_criterion = criterion
         if removal_context is not None:
             contextual_criterion = f"{removal_context} {criterion}"
@@ -173,7 +177,10 @@ def _required_token_groups(
         _append_required_token_group(groups, seen, "acceptance_criterion", criterion, tokens)
 
     ac_section = _acceptance_section(issue_body)
-    for criterion, tokens in _value_groups(ac_section, skip_removal_headings=True):
+    for criterion, tokens in _value_groups(
+        ac_section,
+        skip_removal_headings=bool(criteria_removal_contexts),
+    ):
         _append_required_token_group(groups, seen, "issue_value_group", criterion, tokens)
 
     return groups
