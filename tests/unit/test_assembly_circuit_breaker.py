@@ -308,3 +308,66 @@ def test_dispatch_threshold_not_exceeded_proceeds_normally() -> None:
         if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
     ]
     assert len(comment_calls) == 0, "No escalation comment expected"
+
+
+def test_dispatch_threshold_dry_run_makes_no_mutations() -> None:
+    """A threshold-hit breaker on a dry-run invocation performs NO GitHub
+    mutations: no label, no escalation comment, no progress comment (Codex P2).
+    """
+    from voyager.bots.assembly.writeback import dispatch_assembly_writeback
+
+    round_labels = [f"{ASSEMBLY_FIX_ROUND_LABEL_PREFIX}8"]
+    client = _mock_client(get_issue_labels=["blueprint-ready", "stack-type-feature", *round_labels])
+    adapter = _adapter_executed()
+    with (
+        patch("voyager.bots.assembly.writeback.select_execution_adapter", return_value=adapter),
+        patch("voyager.bots.assembly.writeback.dry_run_enabled", return_value=True),
+        patch("voyager.bots.assembly.writeback._max_fix_rounds_threshold", return_value=8),
+    ):
+        result = asyncio.run(dispatch_assembly_writeback(client, _route(), repository=_REPO))
+
+    assert result.get("applied") is False
+    assert (result.get("pull_request") or {}).get("action") == "circuit_broken_dry_run"
+    adapter.execute.assert_not_called()
+    client.add_labels.assert_not_called()
+    client.upsert_issue_comment.assert_not_called()
+
+
+def test_dispatch_circuit_broken_already_retries_escalation() -> None:
+    """On the already-broken path (non-dry-run), the escalation comment is
+    retried because the label is idempotent but the comment is not (Codex P2).
+    """
+    from voyager.bots.assembly.writeback import dispatch_assembly_writeback
+
+    labels = ["blueprint-ready", "stack-type-feature", LOOP_CIRCUIT_BROKEN_LABEL]
+    client = _mock_client(get_issue_labels=labels)
+    adapter = _adapter_executed()
+    with (
+        patch("voyager.bots.assembly.writeback.select_execution_adapter", return_value=adapter),
+        patch("voyager.bots.assembly.writeback.dry_run_enabled", return_value=False),
+    ):
+        result = asyncio.run(dispatch_assembly_writeback(client, _route(), repository=_REPO))
+
+    assert (result.get("pull_request") or {}).get("action") == "circuit_broken_already"
+    adapter.execute.assert_not_called()
+    escalation_calls = [
+        call
+        for call in client.upsert_issue_comment.await_args_list
+        if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
+    ]
+    assert len(escalation_calls) == 1, "escalation comment should be retried"
+
+
+async def test_circuit_breaker_escalation_mentions_round_labels() -> None:
+    """The escalation comment tells operators to remove the fix-round labels
+    too, so the documented resume path actually clears the breaker (Codex P2).
+    """
+    from voyager.bots.assembly.writeback import _apply_circuit_breaker
+
+    client = _mock_client()
+    result: dict[str, Any] = {"writeback_failures": []}
+    await _apply_circuit_breaker(client, _REPO, _ISSUE_NUMBER, result)
+
+    body = client.upsert_issue_comment.await_args.kwargs["body"]
+    assert "assembly-fix-round-" in body
+    assert LOOP_CIRCUIT_BROKEN_LABEL in body

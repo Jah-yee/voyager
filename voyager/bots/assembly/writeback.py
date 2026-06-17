@@ -796,6 +796,29 @@ async def dispatch_assembly_writeback(
                 "action": "circuit_broken_already",
             }
             base_result["applied"] = False
+            if is_dry_run:
+                # Dry-run contract: skip all GitHub mutations on the
+                # already-broken path as well.
+                base_result.setdefault("circuit_breaker", {})["dry_run"] = True
+                _persist_session_metadata(
+                    contract=contract,
+                    result=base_result,
+                    repository=repository,
+                )
+                _write_audit_manifest(
+                    contract=contract,
+                    result=base_result,
+                    delivery_id=delivery_id,
+                    repository=repository,
+                )
+                return base_result
+            # Codex P2: the breaker label is idempotent but the escalation
+            # comment is not. If a prior run added the label but its comment
+            # upsert failed, retry it here (marker-based upsert => at most one
+            # comment) so the required human escalation is never dropped.
+            await _upsert_circuit_breaker_escalation(
+                client, repository, contract.issue_number, base_result
+            )
             _persist_session_metadata(
                 contract=contract,
                 result=base_result,
@@ -813,12 +836,32 @@ async def dispatch_assembly_writeback(
         current_round = _read_current_fix_round(current_labels)
         max_rounds = _max_fix_rounds_threshold(cfg)
         if current_round >= max_rounds:
+            if is_dry_run:
+                # Dry-run contract (Codex P2): a threshold-hit breaker performs
+                # NO GitHub mutations — no label, no escalation comment, and no
+                # progress comment. Mirror the normal ``dry_run_skipped`` path
+                # below, which returns before every GitHub mutation.
+                base_result["pull_request"] = {
+                    "number": None,
+                    "url": None,
+                    "action": "circuit_broken_dry_run",
+                }
+                base_result["applied"] = False
+                base_result.setdefault("circuit_breaker", {})["dry_run"] = True
+                _persist_session_metadata(
+                    contract=contract,
+                    result=base_result,
+                    repository=repository,
+                )
+                _write_audit_manifest(
+                    contract=contract,
+                    result=base_result,
+                    delivery_id=delivery_id,
+                    repository=repository,
+                )
+                return base_result
             base_result = await _apply_circuit_breaker(
-                client,
-                repository,
-                contract.issue_number,
-                base_result,
-                is_dry_run=is_dry_run,
+                client, repository, contract.issue_number, base_result
             )
             base_result["pull_request"] = {
                 "number": None,
@@ -1210,8 +1253,6 @@ async def _apply_circuit_breaker(
     repository: str,
     issue_number: int,
     result: dict[str, Any],
-    *,
-    is_dry_run: bool = False,
 ) -> dict[str, Any]:
     """Apply ``loop-circuit-broken`` label and exactly one escalation comment.
 
@@ -1219,15 +1260,9 @@ async def _apply_circuit_breaker(
     exists, skipping the comment is safe because the upsert marker
     guarantees at most one escalation comment in all cases.
 
-    Honors the dry-run contract (Codex P2): when ``is_dry_run`` is set the
-    breaker performs no GitHub mutations (no label, no escalation comment) and
-    returns early. The progress comment still reports that the breaker *would*
-    fire, matching the dry-run reporting surface used elsewhere.
+    Dry-run handling lives at the call site: a dry-run invocation returns
+    before reaching this helper, so no GitHub mutation occurs here.
     """
-    if is_dry_run:
-        result.setdefault("circuit_breaker", {})["dry_run"] = True
-        return result
-
     # Apply the label (idempotent — POST /labels is a no-op if the label
     # already exists on the issue).
     try:
@@ -1247,7 +1282,22 @@ async def _apply_circuit_breaker(
             )
         )
 
-    # Post exactly one escalation comment via marker-based upsert.
+    await _upsert_circuit_breaker_escalation(client, repository, issue_number, result)
+    return result
+
+
+async def _upsert_circuit_breaker_escalation(
+    client: GitHubAppClient,
+    repository: str,
+    issue_number: int,
+    result: dict[str, Any],
+) -> None:
+    """Post (or refresh) the single circuit-breaker escalation comment.
+
+    Extracted so the ``circuit_broken_already`` path can retry the comment
+    when a prior run added the label but the comment upsert failed (Codex P2).
+    The marker-based upsert guarantees at most one comment in all cases.
+    """
     escalation_body = (
         f"{_CIRCUIT_BREAKER_COMMENT_MARKER}\n\n"
         "## 🛑 Circuit Breaker Activated\n\n"
@@ -1257,8 +1307,11 @@ async def _apply_circuit_breaker(
         "**Next steps for a human operator:**\n"
         "- Review the PR history and decide whether to merge, close, or "
         "request additional manual changes.\n"
-        "- To resume automated fixes, remove the `loop-circuit-broken` "
-        "label and re-run `/assembly`.\n"
+        "- To resume automated fixes, remove **both** the "
+        "`loop-circuit-broken` label **and** the `assembly-fix-round-*` "
+        "labels, then re-run `/assembly`. Removing only `loop-circuit-broken` "
+        "leaves the fix-round counter at the threshold, so the breaker trips "
+        "again immediately before any adapter runs.\n"
     )
     try:
         await client.upsert_issue_comment(
@@ -1277,8 +1330,6 @@ async def _apply_circuit_breaker(
                 issue=issue_number,
             )
         )
-
-    return result
 
 
 async def _ensure_branch(
