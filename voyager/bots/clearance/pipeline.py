@@ -647,6 +647,23 @@ async def _process_thread(
         fp = compute_fingerprint(expr_path, expr_line, body_raw)
         kl_entry = known_limitation_store.lookup(fp)
         if kl_entry is not None:
+            existing_close_reason_marker = _has_current_head_verdict_comment(
+                comments_nodes,
+                thread_id=thread_dict["id"],
+                head_sha=head_sha,
+                verdict=Verdict.RESOLVED,
+            )
+            existing_thread_conclusion_marker = _has_current_head_verdict_comment(
+                comments_nodes,
+                thread_id=thread_dict["id"],
+                head_sha=head_sha,
+                verdict=Verdict.RESOLVED,
+            )
+            existing_head_verdict_marker = _has_current_head_final_verdict_comment(
+                comments_nodes,
+                thread_id=thread_dict["id"],
+                head_sha=head_sha,
+            )
             _log.info(
                 "known_limitation_suppressed: %s",
                 json.dumps(
@@ -672,6 +689,9 @@ async def _process_thread(
                 verdict_reason=f"accepted known limitation — {kl_entry.decision_link}",
                 github_isResolved=bool(thread_dict.get("isResolved")),
                 known_limitation_link=kl_entry.decision_link,
+                existing_head_verdict_marker=existing_head_verdict_marker,
+                existing_close_reason_marker=existing_close_reason_marker,
+                existing_thread_conclusion_marker=existing_thread_conclusion_marker,
             )
             snapshot = ThreadSnapshot(
                 thread_id=thread_dict["id"],

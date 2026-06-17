@@ -181,7 +181,7 @@ class KnownLimitationStore:
                     continue
                 try:
                     yield KnownLimitationEntry.from_json(line)
-                except (json.JSONDecodeError, KeyError) as exc:
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                     _log.warning(
                         "known_limitations: skipping malformed line: %s",
                         exc,

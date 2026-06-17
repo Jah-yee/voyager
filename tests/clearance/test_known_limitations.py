@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from voyager.bots.clearance.known_limitations import (
     KnownLimitationStore,
     compute_fingerprint,
 )
+from voyager.bots.clearance.models import Verdict
+from voyager.bots.clearance.pipeline import _process_thread
 
 # ---------------------------------------------------------------------------
 # Fingerprint tests
@@ -153,12 +156,21 @@ class TestKnownLimitationStore:
         """A corrupt line in the JSONL file is skipped without crashing the store."""
         store_path = tmp_path / "known_limitations.jsonl"
         store_path.parent.mkdir(parents=True, exist_ok=True)
-        # Write a good line, then a malformed one
         fp = compute_fingerprint("a.py", 1, "good finding")
         good_line = KnownLimitationEntry(fp, "link1").to_json()
-        store_path.write_text(good_line + "\nnot-json\n")
+        invalid_object = "[]"
+        invalid_timestamp = json.dumps(
+            {
+                "created_at": "not-a-date",
+                "decision_link": "link2",
+                "fingerprint": compute_fingerprint("b.py", 2, "bad finding"),
+            }
+        )
+        store_path.write_text(
+            "\n".join([invalid_object, invalid_timestamp, good_line, "not-json"]) + "\n",
+            encoding="utf-8",
+        )
         store = KnownLimitationStore(path=store_path)
-        # The good entry is still found
         assert store.lookup(fp) is not None
 
 
@@ -187,6 +199,68 @@ def test_matched_fingerprint_is_suppressed(tmp_store: KnownLimitationStore) -> N
     # A different finding is NOT matched
     fp_other = compute_fingerprint("src/safe.py", 1, "Other issue")
     assert tmp_store.lookup(fp_other) is None
+
+
+@pytest.mark.asyncio
+async def test_known_limitation_fast_path_preserves_existing_marker_flags(
+    tmp_store: KnownLimitationStore,
+) -> None:
+    """Suppressed threads retain current-head marker flags used by reply dedupe."""
+    thread_id = "PRRT_known_limitation"
+    head_sha = "abcdef1234567890abcdef1234567890abcdef12"
+    body = "**P2** accepted known limitation."
+    fp = compute_fingerprint("app.py", 10, body)
+    tmp_store.record(fp, "https://github.com/org/repo/issues/42")
+    thread_dict = {
+        "id": thread_id,
+        "isResolved": False,
+        "isOutdated": False,
+        "viewerCanResolve": True,
+        "path": "app.py",
+        "line": 10,
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": 101,
+                    "author": {"login": "chatgpt-codex-connector"},
+                    "body": body,
+                    "url": "https://example/comments/101",
+                    "createdAt": "2026-06-17T00:00:00Z",
+                },
+                {
+                    "databaseId": 102,
+                    "author": {"login": "iterwheel-clearance"},
+                    "body": (
+                        f"<!-- clearance-close-reason:{thread_id}:{head_sha[:12]} -->\n"
+                        "**Clearance: resolved**"
+                    ),
+                    "url": "https://example/comments/102",
+                    "createdAt": "2026-06-17T00:01:00Z",
+                },
+            ]
+        },
+    }
+
+    processed = await _process_thread(
+        thread_dict,
+        repo="org/repo",
+        pr=42,
+        head_sha=head_sha,
+        pr_title="Test PR",
+        now=datetime.now(UTC),
+        base_branch="main",
+        branch_protected_state=True,
+        client=object(),  # not used by the known-limitation fast path
+        known_limitation_store=tmp_store,
+    )
+
+    assert processed is not None
+    thread, _snapshot = processed
+    assert thread.verdict == Verdict.RESOLVED
+    assert thread.known_limitation_link == "https://github.com/org/repo/issues/42"
+    assert thread.existing_close_reason_marker is True
+    assert thread.existing_thread_conclusion_marker is True
+    assert thread.existing_head_verdict_marker is True
 
 
 def test_unrecorded_finding_handled_normally(tmp_store: KnownLimitationStore) -> None:
