@@ -779,7 +779,7 @@ async def dispatch_assembly_writeback(
             locked_issue = await client.get_issue(
                 ASSEMBLY_AGENT_SLUG, repository, contract.issue_number
             )
-            locked_labels = locked_issue.get("labels")
+            locked_labels = locked_issue.get("labels") if isinstance(locked_issue, dict) else None
         except (httpx.HTTPError, TimeoutError):
             locked_labels = None
         # Only trust an authoritative label list; on any non-list (fetch
@@ -1030,22 +1030,33 @@ async def dispatch_assembly_writeback(
         # --------------------------------------------------------------
         if pr_ok:
             next_round = current_round + 1
-            try:
-                await client.add_labels(
-                    ASSEMBLY_AGENT_SLUG,
-                    repository,
-                    contract.issue_number,
-                    [f"{ASSEMBLY_FIX_ROUND_LABEL_PREFIX}{next_round}"],
-                )
-            except (httpx.HTTPError, TimeoutError) as exc:
-                base_result["writeback_failures"].append(
-                    build_writeback_failure(
-                        operation="incrementFixRound",
-                        exc=exc,
-                        repository=repository,
-                        issue=contract.issue_number,
+            next_round_label = f"{ASSEMBLY_FIX_ROUND_LABEL_PREFIX}{next_round}"
+            if await _ensure_repository_label(
+                client,
+                repository,
+                contract.issue_number,
+                next_round_label,
+                base_result,
+                operation="ensureFixRoundLabel",
+                color="cfd3d7",
+                description="Assembly automated fix round marker.",
+            ):
+                try:
+                    await client.add_labels(
+                        ASSEMBLY_AGENT_SLUG,
+                        repository,
+                        contract.issue_number,
+                        [next_round_label],
                     )
-                )
+                except (httpx.HTTPError, TimeoutError) as exc:
+                    base_result["writeback_failures"].append(
+                        build_writeback_failure(
+                            operation="incrementFixRound",
+                            exc=exc,
+                            repository=repository,
+                            issue=contract.issue_number,
+                        )
+                    )
 
         # --------------------------------------------------------------
 
@@ -1248,6 +1259,42 @@ def _max_fix_rounds_threshold(cfg: Any | None) -> int:
     return ASSEMBLY_MAX_FIX_ROUNDS_DEFAULT
 
 
+async def _ensure_repository_label(
+    client: GitHubAppClient,
+    repository: str,
+    issue_number: int,
+    label: str,
+    result: dict[str, Any],
+    *,
+    operation: str,
+    color: str,
+    description: str,
+) -> bool:
+    """Create a repository label if needed before attaching it to an issue."""
+    ensure_label = getattr(client, "ensure_label", None)
+    if ensure_label is None:
+        return True
+    try:
+        await ensure_label(
+            ASSEMBLY_AGENT_SLUG,
+            repository,
+            label,
+            color=color,
+            description=description,
+        )
+        return True
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation=operation,
+                exc=exc,
+                repository=repository,
+                issue=issue_number,
+            )
+        )
+        return False
+
+
 async def _apply_circuit_breaker(
     client: GitHubAppClient,
     repository: str,
@@ -1265,22 +1312,32 @@ async def _apply_circuit_breaker(
     """
     # Apply the label (idempotent — POST /labels is a no-op if the label
     # already exists on the issue).
-    try:
-        await client.add_labels(
-            ASSEMBLY_AGENT_SLUG,
-            repository,
-            issue_number,
-            [LOOP_CIRCUIT_BROKEN_LABEL],
-        )
-    except (httpx.HTTPError, TimeoutError) as exc:
-        result["writeback_failures"].append(
-            build_writeback_failure(
-                operation="applyCircuitBreakerLabel",
-                exc=exc,
-                repository=repository,
-                issue=issue_number,
+    if await _ensure_repository_label(
+        client,
+        repository,
+        issue_number,
+        LOOP_CIRCUIT_BROKEN_LABEL,
+        result,
+        operation="ensureCircuitBreakerLabel",
+        color="d73a4a",
+        description="Assembly automated fix loop halted pending human review.",
+    ):
+        try:
+            await client.add_labels(
+                ASSEMBLY_AGENT_SLUG,
+                repository,
+                issue_number,
+                [LOOP_CIRCUIT_BROKEN_LABEL],
             )
-        )
+        except (httpx.HTTPError, TimeoutError) as exc:
+            result["writeback_failures"].append(
+                build_writeback_failure(
+                    operation="applyCircuitBreakerLabel",
+                    exc=exc,
+                    repository=repository,
+                    issue=issue_number,
+                )
+            )
 
     await _upsert_circuit_breaker_escalation(client, repository, issue_number, result)
     return result

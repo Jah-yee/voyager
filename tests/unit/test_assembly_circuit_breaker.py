@@ -43,14 +43,25 @@ def _mock_client(*, get_issue_labels: list[str] | None = None) -> AsyncMock:
     )
     client.branch_ref_exists = AsyncMock(return_value=True)
     client.find_pull_request_by_head = AsyncMock(
-        return_value={"number": 1234, "html_url": "https://example/pr/1234"}
+        return_value={
+            "number": 1234,
+            "html_url": "https://example/pr/1234",
+            "head": {"repo": {"full_name": _REPO}},
+            "base": {"repo": {"full_name": _REPO}},
+        }
     )
     client.create_pull_request = AsyncMock(
-        return_value={"number": 1234, "html_url": "https://example/pr/1234"}
+        return_value={
+            "number": 1234,
+            "html_url": "https://example/pr/1234",
+            "head": {"repo": {"full_name": _REPO}},
+            "base": {"repo": {"full_name": _REPO}},
+        }
     )
     client.update_pull_request = AsyncMock(return_value={"html_url": "https://example/pr/1234"})
     client.create_issue_comment = AsyncMock(return_value={"id": 999})
     client.upsert_issue_comment = AsyncMock(return_value={"id": 777})
+    client.ensure_label = AsyncMock(return_value=None)
     client.add_labels = AsyncMock(return_value=None)
     client.installation_token = AsyncMock(return_value="")
     return client
@@ -181,6 +192,13 @@ async def test_apply_circuit_breaker_adds_label_and_comment() -> None:
 
     returned = await _apply_circuit_breaker(client, _REPO, _ISSUE_NUMBER, result)
 
+    client.ensure_label.assert_awaited_once_with(
+        "iterwheel-assembly",
+        _REPO,
+        LOOP_CIRCUIT_BROKEN_LABEL,
+        color="d73a4a",
+        description="Assembly automated fix loop halted pending human review.",
+    )
     # Label was applied
     client.add_labels.assert_awaited_once_with(
         "iterwheel-assembly", _REPO, _ISSUE_NUMBER, [LOOP_CIRCUIT_BROKEN_LABEL]
@@ -204,6 +222,20 @@ async def test_apply_circuit_breaker_http_error_is_recorded() -> None:
 
     assert len(returned["writeback_failures"]) >= 1
     assert returned["writeback_failures"][0]["operation"] == "applyCircuitBreakerLabel"
+
+
+async def test_apply_circuit_breaker_label_provisioning_failure_is_recorded() -> None:
+    from voyager.bots.assembly.writeback import _apply_circuit_breaker
+
+    client = _mock_client()
+    client.ensure_label = AsyncMock(side_effect=TimeoutError("label create timeout"))
+    result: dict[str, Any] = {"writeback_failures": []}
+
+    returned = await _apply_circuit_breaker(client, _REPO, _ISSUE_NUMBER, result)
+
+    assert returned["writeback_failures"][0]["operation"] == "ensureCircuitBreakerLabel"
+    client.add_labels.assert_not_awaited()
+    client.upsert_issue_comment.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +340,59 @@ def test_dispatch_threshold_not_exceeded_proceeds_normally() -> None:
         if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
     ]
     assert len(comment_calls) == 0, "No escalation comment expected"
+
+
+def test_dispatch_successful_push_provisions_fix_round_label() -> None:
+    """A successful push creates the next dynamic round label before attaching it."""
+    from voyager.bots.assembly.writeback import dispatch_assembly_writeback
+
+    client = _mock_client(get_issue_labels=["blueprint-ready", "stack-type-feature"])
+    adapter = _adapter_executed()
+    with (
+        patch(
+            "voyager.bots.assembly.writeback.select_execution_adapter",
+            return_value=adapter,
+        ),
+        patch("voyager.bots.assembly.writeback.dry_run_enabled", return_value=False),
+    ):
+        result = asyncio.run(dispatch_assembly_writeback(client, _route(), repository=_REPO))
+
+    assert result.get("applied") is True
+    next_round_label = f"{ASSEMBLY_FIX_ROUND_LABEL_PREFIX}1"
+    client.ensure_label.assert_any_await(
+        "iterwheel-assembly",
+        _REPO,
+        next_round_label,
+        color="cfd3d7",
+        description="Assembly automated fix round marker.",
+    )
+    client.add_labels.assert_any_await(
+        "iterwheel-assembly", _REPO, _ISSUE_NUMBER, [next_round_label]
+    )
+
+
+def test_dispatch_fix_round_label_provisioning_failure_records_failure() -> None:
+    """If the dynamic counter label cannot be created, do not attach a
+    possibly missing label and report the counter writeback failure.
+    """
+    from voyager.bots.assembly.writeback import dispatch_assembly_writeback
+
+    client = _mock_client(get_issue_labels=["blueprint-ready", "stack-type-feature"])
+    client.ensure_label = AsyncMock(side_effect=TimeoutError("label create timeout"))
+    adapter = _adapter_executed()
+    with (
+        patch(
+            "voyager.bots.assembly.writeback.select_execution_adapter",
+            return_value=adapter,
+        ),
+        patch("voyager.bots.assembly.writeback.dry_run_enabled", return_value=False),
+    ):
+        result = asyncio.run(dispatch_assembly_writeback(client, _route(), repository=_REPO))
+
+    assert any(
+        failure["operation"] == "ensureFixRoundLabel" for failure in result["writeback_failures"]
+    )
+    client.add_labels.assert_not_awaited()
 
 
 def test_dispatch_threshold_dry_run_makes_no_mutations() -> None:
