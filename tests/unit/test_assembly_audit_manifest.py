@@ -280,3 +280,101 @@ def test_latest_omp_session_jsonl_skips_transient_stat_failures(
     monkeypatch.setattr(Path, "stat", fake_stat)
 
     assert _latest_omp_session_jsonl(checkout_dir) == str(newest)
+
+
+# ---------------------------------------------------------------------------
+# Loop Summary telemetry (VOY-1817 Surface 20 / per-PR round tracking)
+# ---------------------------------------------------------------------------
+
+
+def test_loop_summary_round_trip(monkeypatch, tmp_path: Path) -> None:
+    """A LoopSummary written to JSONL can be read back with identical fields."""
+    from voyager.bots.assembly.audit import (
+        LoopSummary,
+        append_loop_summary,
+        load_loop_summaries,
+    )
+
+    monkeypatch.setenv(ASSEMBLY_AUDIT_DIR_ENV, str(tmp_path / "audit"))
+    summary = LoopSummary(
+        repository="iterwheel/voyager",
+        issue_number=42,
+        pr_number=42,
+        rounds=1,
+        commits=3,
+        est_tokens=1500,
+        timestamp="2026-06-17T12:00:00",
+        audit_id="asmb-0011223344556677",
+    )
+    append_loop_summary(summary)
+
+    loaded = load_loop_summaries(repository="iterwheel/voyager", issue_number=42)
+    assert len(loaded) == 1
+    assert loaded[0] == summary
+
+
+def test_loop_summary_round_counts_increment(tmp_path: Path) -> None:
+    """After N simulated runs, each record has the expected round number."""
+    from voyager.bots.assembly.audit import (
+        LoopSummary,
+        append_loop_summary,
+        load_loop_summaries,
+    )
+
+    root = tmp_path / "audit-root"
+    repo = "iterwheel/voyager"
+    issue = 42
+
+    for i in range(1, 5):
+        summary = LoopSummary(
+            repository=repo,
+            issue_number=issue,
+            pr_number=issue,
+            rounds=i,
+            commits=i,
+            est_tokens=100 * i,
+            timestamp=f"2026-06-17T12:0{i}:00",
+        )
+        append_loop_summary(summary, root=root)
+
+    loaded = load_loop_summaries(repository=repo, issue_number=issue, root=root)
+    assert len(loaded) == 4
+    for idx, record in enumerate(loaded, start=1):
+        assert record.rounds == idx
+        assert record.commits == idx
+
+
+def test_loop_summary_file_is_jsonl(tmp_path: Path) -> None:
+    """The underlying file is valid JSONL — one JSON object per line."""
+    from voyager.bots.assembly.audit import (
+        LoopSummary,
+        append_loop_summary,
+        loop_summary_path,
+    )
+
+    repo = "iterwheel/voyager"
+    issue = 99
+    root = tmp_path / "audit-root"
+
+    for i in range(1, 4):
+        summary = LoopSummary(
+            repository=repo,
+            issue_number=issue,
+            pr_number=issue,
+            rounds=i,
+            commits=0,
+            est_tokens=0,
+            timestamp="2026-06-17T00:00:00",
+        )
+        append_loop_summary(summary, root=root)
+
+    path = loop_summary_path(repository=repo, issue_number=issue, root=root)
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 3
+
+    import json
+
+    for idx, raw in enumerate(lines, start=1):
+        data = json.loads(raw)
+        assert data["rounds"] == idx
+        assert data["commits"] == 0

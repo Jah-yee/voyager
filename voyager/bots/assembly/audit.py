@@ -313,3 +313,147 @@ def find_session_metadata(
         root=root,
     )
     return path if path.exists() else None
+
+
+_LOOP_SUMMARY_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class LoopSummary:
+    """One Assembly writeback loop summary record (per-PR telemetry).
+
+    Appended as a JSONL line after each ``dispatch_assembly_writeback`` run so
+    the circuit breaker and cost monitoring can read the cumulative record.
+
+    ``repository`` and ``issue_number`` are used to derive the storage path
+    and identify which PR the run belongs to. ``pr_number`` is the GitHub PR
+    number (may differ from the issue number on fork-PR workflows).
+    """
+
+    repository: str
+    issue_number: int
+    pr_number: int | None
+    rounds: int
+    commits: int
+    est_tokens: int
+    timestamp: str
+    audit_id: str | None = None
+    schema_version: int = _LOOP_SUMMARY_SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LoopSummary:
+        return cls(
+            repository=str(data.get("repository") or ""),
+            issue_number=int(data.get("issue_number") or 0),
+            pr_number=data.get("pr_number"),
+            rounds=int(data.get("rounds") or 0),
+            commits=int(data.get("commits") or 0),
+            est_tokens=int(data.get("est_tokens") or 0),
+            timestamp=str(data.get("timestamp") or ""),
+            audit_id=data.get("audit_id"),
+            schema_version=int(data.get("schema_version") or _LOOP_SUMMARY_SCHEMA_VERSION),
+        )
+
+
+def loop_summary_path(
+    *,
+    repository: str,
+    issue_number: int,
+    root: Path | None = None,
+) -> Path:
+    """Return the JSONL path for this PR's loop summary records."""
+    owner, _, repo = repository.partition("/")
+    if not owner or not repo:
+        owner, repo = "unknown", repository or "unknown"
+    return (root or audit_storage_root()) / owner / repo / str(issue_number) / "loop-summary.jsonl"
+
+
+def append_loop_summary(summary: LoopSummary, *, root: Path | None = None) -> Path:
+    """Append one *summary* record to the per-PR JSONL log."""
+    path = loop_summary_path(
+        repository=summary.repository,
+        issue_number=summary.issue_number,
+        root=root,
+    )
+    _append_jsonl(path, summary.to_dict())
+    return path
+
+
+def load_loop_summaries(
+    *,
+    repository: str,
+    issue_number: int,
+    root: Path | None = None,
+) -> list[LoopSummary]:
+    """Return all LoopSummary records for a given PR, in order."""
+    path = loop_summary_path(repository=repository, issue_number=issue_number, root=root)
+    if not path.exists():
+        return []
+    records: list[LoopSummary] = []
+    for raw in _read_jsonl_lines(path):
+        try:
+            data = json.loads(raw)
+            records.append(LoopSummary.from_dict(data))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+    return records
+
+
+def _read_jsonl_lines(path: Path) -> list[str]:
+    """Return non-blank lines from a JSONL file (no validation)."""
+    if not path.exists():
+        return []
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _estimate_tokens_from_session(omp_session_jsonl_path: str | None) -> int:
+    """Rough token estimate from an OMP session transcript (~4 chars/token)."""
+    if not omp_session_jsonl_path:
+        return 0
+    try:
+        path = Path(omp_session_jsonl_path)
+        if not path.exists():
+            return 0
+        total_chars = 0
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            # Sum text from common OMP transcript fields
+            for key in ("content", "text", "message", "output", "prompt"):
+                value = record.get(key)
+                if isinstance(value, str):
+                    total_chars += len(value)
+        return max(1, total_chars // 4)
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+
+def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
+    """Atomic append of a JSON line to *path*, same pattern as clearance StateStore."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, sort_keys=True) + "\n"
+    with path.open("a") as f:
+        import fcntl
+
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            size = os.fstat(f.fileno()).st_size
+            if size > 0:
+                with path.open("rb") as r:
+                    r.seek(size - 1)
+                    last = r.read(1)
+                if last != b"\n":
+                    payload = "\n" + payload
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)

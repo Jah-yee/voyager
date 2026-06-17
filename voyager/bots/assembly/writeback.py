@@ -29,8 +29,12 @@ from .adapters import AdapterExecutionContext, AdapterResult, select_execution_a
 from .audit import (
     AssemblyAuditManifest,
     AssemblySessionMetadata,
+    LoopSummary,
+    _estimate_tokens_from_session,
+    append_loop_summary,
     find_session_metadata,
     generate_audit_id,
+    load_loop_summaries,
     load_session_metadata,
     utc_now_iso,
     write_audit_manifest,
@@ -551,6 +555,53 @@ def _write_audit_manifest(
         )
 
 
+def _record_loop_summary(
+    *,
+    repository: str,
+    issue_number: int,
+    pr_number: int | None,
+    adapter_result: dict[str, Any] | None,
+    audit_id: str | None = None,
+    root: Path | None = None,
+) -> None:
+    """Append a LoopSummary record after a completed loop run.
+
+    The round counter is the number of existing summary records for this PR
+    plus one — this is the same value the circuit breaker would read.
+    """
+    existing = load_loop_summaries(
+        repository=repository,
+        issue_number=issue_number,
+        root=root,
+    )
+    next_round = len(existing) + 1
+    details = adapter_result.get("details") if isinstance(adapter_result, dict) else {}
+    details = details if isinstance(details, dict) else {}
+    commits = (
+        len(adapter_result.get("commit_shas") or ()) if isinstance(adapter_result, dict) else 0
+    )
+    omp_session_path = details.get("omp_session_jsonl_path")
+    est_tokens = _estimate_tokens_from_session(omp_session_path)
+    summary = LoopSummary(
+        repository=repository,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        rounds=next_round,
+        commits=commits,
+        est_tokens=est_tokens,
+        timestamp=utc_now_iso(),
+        audit_id=audit_id,
+    )
+    try:
+        append_loop_summary(summary, root=root)
+    except OSError:
+        _log.warning(
+            "failed to record loop summary",
+            extra={"repository": repository, "issue": issue_number, "round": next_round},
+            exc_info=True,
+        )
+
+
 async def _live_issue_from_route(
     client: GitHubAppClient,
     repository: str,
@@ -854,6 +905,13 @@ async def dispatch_assembly_writeback(
                 delivery_id=delivery_id,
                 repository=repository,
             )
+            _record_loop_summary(
+                repository=repository,
+                issue_number=contract.issue_number,
+                pr_number=contract.issue_number,
+                adapter_result=base_result.get("adapter_result"),
+                audit_id=base_result.get("audit_id"),
+            )
             return base_result
 
         base_result["applied"] = True
@@ -889,6 +947,13 @@ async def dispatch_assembly_writeback(
                 repository=repository,
             )
             await _upsert_progress_comments(client, contract, repository, base_result)
+            _record_loop_summary(
+                repository=repository,
+                issue_number=contract.issue_number,
+                pr_number=contract.issue_number,
+                adapter_result=base_result.get("adapter_result"),
+                audit_id=base_result.get("audit_id"),
+            )
             return base_result
 
         # --------------------------------------------------------------
@@ -982,6 +1047,13 @@ async def dispatch_assembly_writeback(
             repository=repository,
         )
         await _upsert_progress_comments(client, contract, repository, base_result)
+        _record_loop_summary(
+            repository=repository,
+            issue_number=contract.issue_number,
+            pr_number=contract.issue_number,
+            adapter_result=base_result.get("adapter_result"),
+            audit_id=base_result.get("audit_id"),
+        )
         return base_result
 
 
