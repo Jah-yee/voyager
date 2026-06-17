@@ -320,8 +320,8 @@ def test_l1_gate_findings_reach_progress_comment_and_manifest(
                             {
                                 "source": "acceptance_criterion",
                                 "criterion": "Add value `mandatory-bind`",
-                                "required_tokens": ["mandatory-bind"],
-                                "missing_tokens": ["mandatory-bind"],
+                                "required_tokens": ("mandatory-bind",),
+                                "missing_tokens": ("mandatory-bind",),
                                 "direction": "block",
                             }
                         ],

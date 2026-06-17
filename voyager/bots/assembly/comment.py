@@ -103,7 +103,7 @@ def _format_advisory_gate_findings(adapter_result: dict[str, Any]) -> list[str]:
         if not isinstance(finding, dict):
             continue
         missing_tokens = finding.get("missing_tokens")
-        if isinstance(missing_tokens, list):
+        if isinstance(missing_tokens, (list, tuple)):
             missing = ", ".join(
                 sanitize_public_text(str(token), limit=80) for token in missing_tokens
             )
