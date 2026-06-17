@@ -796,6 +796,10 @@ async def dispatch_assembly_writeback(
                 "action": "circuit_broken_already",
             }
             base_result["applied"] = False
+            _mark_circuit_breaker_halted(
+                base_result,
+                summary="Circuit breaker is already active; automated fixes remain halted.",
+            )
             if is_dry_run:
                 # Dry-run contract: skip all GitHub mutations on the
                 # already-broken path as well.
@@ -869,6 +873,10 @@ async def dispatch_assembly_writeback(
                 "action": "circuit_broken",
             }
             base_result["applied"] = False
+            _mark_circuit_breaker_halted(
+                base_result,
+                summary="Circuit breaker threshold reached; automated fixes were halted.",
+            )
             _persist_session_metadata(
                 contract=contract,
                 result=base_result,
@@ -1257,6 +1265,19 @@ def _max_fix_rounds_threshold(cfg: Any | None) -> int:
         if assembly is not None:
             return getattr(assembly, "max_fix_rounds", ASSEMBLY_MAX_FIX_ROUNDS_DEFAULT)
     return ASSEMBLY_MAX_FIX_ROUNDS_DEFAULT
+
+
+def _mark_circuit_breaker_halted(result: dict[str, Any], *, summary: str) -> None:
+    """Surface circuit-breaker halts as blocked progress, not applied work."""
+    result["adapter_result"] = {
+        "status": "blocked",
+        "commit_shas": [],
+        "summary": summary,
+        "details": {
+            "circuit_breaker": True,
+            "pull_request_action": (result.get("pull_request") or {}).get("action"),
+        },
+    }
 
 
 async def _ensure_repository_label(

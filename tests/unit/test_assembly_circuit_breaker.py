@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 from voyager.bots.assembly.constants import (
+    ASSEMBLY_COMMENT_MARKER,
     ASSEMBLY_FIX_ROUND_LABEL_PREFIX,
     ASSEMBLY_MAX_FIX_ROUNDS_ENV,
     LOOP_CIRCUIT_BROKEN_LABEL,
@@ -312,6 +313,14 @@ def test_dispatch_threshold_exceeded_halts_with_label_and_comment() -> None:
         if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
     ]
     assert len(comment_calls) == 1, "Expected exactly one escalation comment"
+    progress_calls = [
+        call
+        for call in client.upsert_issue_comment.await_args_list
+        if call.kwargs.get("marker") == ASSEMBLY_COMMENT_MARKER
+    ]
+    assert len(progress_calls) == 1
+    assert "status: `blocked`" in progress_calls[0].kwargs["body"]
+    assert "Circuit breaker threshold reached" in progress_calls[0].kwargs["body"]
 
 
 def test_dispatch_threshold_not_exceeded_proceeds_normally() -> None:
@@ -441,6 +450,14 @@ def test_dispatch_circuit_broken_already_retries_escalation() -> None:
         if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
     ]
     assert len(escalation_calls) == 1, "escalation comment should be retried"
+    progress_calls = [
+        call
+        for call in client.upsert_issue_comment.await_args_list
+        if call.kwargs.get("marker") == ASSEMBLY_COMMENT_MARKER
+    ]
+    assert len(progress_calls) == 1
+    assert "status: `blocked`" in progress_calls[0].kwargs["body"]
+    assert "already active" in progress_calls[0].kwargs["body"]
 
 
 async def test_circuit_breaker_escalation_mentions_round_labels() -> None:
