@@ -285,6 +285,15 @@ class TestKnownLimitationStore:
         assert entry is not None
         assert entry.decision_link == "https://github.com/org/repo/issues/1"
 
+    def test_unreadable_store_fails_open(self, tmp_path: Path) -> None:
+        """A bad store path disables suppression instead of crashing Clearance."""
+        store_path = tmp_path / "known_limitations.jsonl"
+        store_path.mkdir()
+        store = KnownLimitationStore(path=store_path)
+
+        assert store.lookup("missing") is None
+        assert store.all() == []
+
     def test_append_separates_new_record_after_unterminated_corrupt_tail(
         self, tmp_path: Path
     ) -> None:

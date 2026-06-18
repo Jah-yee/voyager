@@ -242,20 +242,28 @@ class KnownLimitationStore:
         return self._ensure_index()
 
     def _iter(self) -> Iterator[KnownLimitationEntry]:
-        if not self._store_path().exists():
+        store_path = self._store_path()
+        if not store_path.exists():
             return
-        with self._store_path().open() as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    yield KnownLimitationEntry.from_json(line)
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-                    _log.warning(
-                        "known_limitations: skipping malformed line: %s",
-                        exc,
-                    )
+        try:
+            with store_path.open() as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield KnownLimitationEntry.from_json(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                        _log.warning(
+                            "known_limitations: skipping malformed line: %s",
+                            exc,
+                        )
+        except OSError as exc:
+            _log.warning(
+                "known_limitations: unable to read store %s: %s",
+                store_path,
+                exc,
+            )
 
     def _append(self, entry: KnownLimitationEntry) -> None:
         store_path = self._store_path()
