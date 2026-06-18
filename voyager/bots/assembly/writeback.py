@@ -962,7 +962,7 @@ async def dispatch_assembly_writeback(
                 "url": None,
                 "action": "skipped_no_changes",
             }
-            await _preserve_existing_pr_context_for_no_changes(
+            await _preserve_existing_pr_context_for_no_commit_terminal(
                 client, repository, contract, base_result
             )
             _persist_session_metadata(
@@ -1352,15 +1352,15 @@ async def _ensure_pull_request(
         return False
 
 
-async def _preserve_existing_pr_context_for_no_changes(
+async def _preserve_existing_pr_context_for_no_commit_terminal(
     client: GitHubAppClient,
     repository: str,
     contract: AssemblyJobContract,
     result: dict[str, Any],
 ) -> None:
-    """Keep duplicate no_changes runs from erasing an already-open PR context."""
+    """Keep no-commit terminal runs from erasing an already-open PR context."""
     adapter_result = result.get("adapter_result") or {}
-    if adapter_result.get("status") != "no_changes":
+    if adapter_result.get("status") not in {"no_changes", "failed", "blocked"}:
         return
 
     try:
@@ -1369,9 +1369,9 @@ async def _preserve_existing_pr_context_for_no_changes(
         )
     except (httpx.HTTPError, TimeoutError):
         # This lookup is only for monotonic progress rendering. If it is
-        # unavailable, keep the original first-run no_changes surface.
+        # unavailable, keep the original first-run no-PR surface.
         _log.warning(
-            "Assembly no_changes PR-context lookup failed",
+            "Assembly no-commit PR-context lookup failed",
             extra={"repository": repository, "issue": contract.issue_number},
             exc_info=True,
         )
@@ -1402,6 +1402,9 @@ async def _preserve_existing_pr_context_for_no_changes(
         "url": existing.get("html_url"),
         "action": "updated",
     }
+
+
+_preserve_existing_pr_context_for_no_changes = _preserve_existing_pr_context_for_no_commit_terminal
 
 
 async def _post_codex_trigger(
