@@ -8,6 +8,15 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+### Added — Release readiness checks ([#162](https://github.com/iterwheel/voyager/issues/162))
+
+- The existing pytest CI job now runs a release-readiness gate that finds
+  shippable merged PRs since the latest `vX.Y.Z` tag and fails when
+  `CHANGELOG.md` has an empty `[Unreleased]` section.
+- The checker reports the merged PR numbers/titles that need changelog coverage,
+  emits a GitHub annotation line from the CLI, and has fixture-style tests for
+  empty and populated `[Unreleased]` sections.
+
 ## [0.5.0] — 2026-06-17
 
 ### Added — Assembly acceptance-criteria exact-token spot-check ([#151](https://github.com/iterwheel/voyager/issues/151), [#152](https://github.com/iterwheel/voyager/pull/152))
