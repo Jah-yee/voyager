@@ -47,7 +47,7 @@ def _mock_client(*, get_issue_labels: list[str] | None = None) -> AsyncMock:
         return_value={
             "number": 1234,
             "html_url": "https://example/pr/1234",
-            "head": {"repo": {"full_name": _REPO}},
+            "head": {"repo": {"full_name": _REPO}, "sha": "approvedsha"},
             "base": {"repo": {"full_name": _REPO}},
         }
     )
@@ -55,10 +55,11 @@ def _mock_client(*, get_issue_labels: list[str] | None = None) -> AsyncMock:
         return_value={
             "number": 1234,
             "html_url": "https://example/pr/1234",
-            "head": {"repo": {"full_name": _REPO}},
+            "head": {"repo": {"full_name": _REPO}, "sha": "approvedsha"},
             "base": {"repo": {"full_name": _REPO}},
         }
     )
+    client.pull_request_reviews = AsyncMock(return_value=[])
     client.update_pull_request = AsyncMock(return_value={"html_url": "https://example/pr/1234"})
     client.create_issue_comment = AsyncMock(return_value={"id": 999})
     client.upsert_issue_comment = AsyncMock(return_value={"id": 777})
@@ -297,6 +298,7 @@ def test_dispatch_threshold_exceeded_halts_with_label_and_comment() -> None:
     assert result.get("applied") is False
     pr_action = (result.get("pull_request") or {}).get("action")
     assert pr_action == "circuit_broken"
+    assert (result.get("pull_request") or {}).get("number") == 1234
 
     # The adapter should never have been called
     adapter.execute.assert_not_called()
@@ -312,15 +314,68 @@ def test_dispatch_threshold_exceeded_halts_with_label_and_comment() -> None:
         for call in client.upsert_issue_comment.await_args_list
         if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
     ]
-    assert len(comment_calls) == 1, "Expected exactly one escalation comment"
+    assert len(comment_calls) == 2, "Expected issue and PR escalation comments"
+    assert [call.args[2] for call in comment_calls] == [_ISSUE_NUMBER, 1234]
     progress_calls = [
         call
         for call in client.upsert_issue_comment.await_args_list
         if call.kwargs.get("marker") == ASSEMBLY_COMMENT_MARKER
     ]
-    assert len(progress_calls) == 1
+    assert len(progress_calls) == 2
+    assert [call.args[2] for call in progress_calls] == [_ISSUE_NUMBER, 1234]
     assert "status: `blocked`" in progress_calls[0].kwargs["body"]
     assert "Circuit breaker threshold reached" in progress_calls[0].kwargs["body"]
+
+
+def test_dispatch_threshold_with_current_human_approval_proceeds_normally() -> None:
+    """Human approval on the current PR head satisfies the stop-rule gate."""
+    from voyager.bots.assembly.writeback import dispatch_assembly_writeback
+
+    round_labels = [f"{ASSEMBLY_FIX_ROUND_LABEL_PREFIX}8"]
+    client = _mock_client(get_issue_labels=["blueprint-ready", "stack-type-feature", *round_labels])
+    client.pull_request_reviews.return_value = [
+        {
+            "id": 100,
+            "state": "APPROVED",
+            "commit_id": "approvedsha",
+            "submitted_at": "2026-06-18T00:00:00Z",
+            "user": {"login": "human-reviewer"},
+        },
+        {
+            "id": 101,
+            "state": "COMMENTED",
+            "commit_id": "approvedsha",
+            "submitted_at": "2026-06-18T00:05:00Z",
+            "user": {"login": "human-reviewer"},
+        },
+    ]
+    adapter = _adapter_executed()
+    with (
+        patch("voyager.bots.assembly.writeback.select_execution_adapter", return_value=adapter),
+        patch("voyager.bots.assembly.writeback.dry_run_enabled", return_value=False),
+        patch("voyager.bots.assembly.writeback._max_fix_rounds_threshold", return_value=8),
+    ):
+        result = asyncio.run(dispatch_assembly_writeback(client, _route(), repository=_REPO))
+
+    adapter.execute.assert_called()
+    assert result.get("applied") is True
+    assert (result.get("circuit_breaker") or {}).get("human_approval_bypass") is True
+    assert not any(
+        call.args
+        == (
+            "iterwheel-assembly",
+            _REPO,
+            _ISSUE_NUMBER,
+            [LOOP_CIRCUIT_BROKEN_LABEL],
+        )
+        for call in client.add_labels.await_args_list
+    )
+    escalation_calls = [
+        call
+        for call in client.upsert_issue_comment.await_args_list
+        if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
+    ]
+    assert escalation_calls == []
 
 
 def test_dispatch_threshold_not_exceeded_proceeds_normally() -> None:
@@ -449,13 +504,15 @@ def test_dispatch_circuit_broken_already_retries_escalation() -> None:
         for call in client.upsert_issue_comment.await_args_list
         if call.kwargs.get("marker") == _CIRCUIT_BREAKER_MARKER
     ]
-    assert len(escalation_calls) == 1, "escalation comment should be retried"
+    assert len(escalation_calls) == 2, "issue and PR escalation comments should be retried"
+    assert [call.args[2] for call in escalation_calls] == [_ISSUE_NUMBER, 1234]
     progress_calls = [
         call
         for call in client.upsert_issue_comment.await_args_list
         if call.kwargs.get("marker") == ASSEMBLY_COMMENT_MARKER
     ]
-    assert len(progress_calls) == 1
+    assert len(progress_calls) == 2
+    assert [call.args[2] for call in progress_calls] == [_ISSUE_NUMBER, 1234]
     assert "status: `blocked`" in progress_calls[0].kwargs["body"]
     assert "already active" in progress_calls[0].kwargs["body"]
 

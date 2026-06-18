@@ -790,11 +790,21 @@ async def dispatch_assembly_writeback(
         current_labels = _issue_labels_simple({"labels": locked_labels})
 
         if LOOP_CIRCUIT_BROKEN_LABEL in current_labels:
-            base_result["pull_request"] = {
-                "number": None,
-                "url": None,
-                "action": "circuit_broken_already",
-            }
+            pr_context = None
+            if not is_dry_run:
+                pr_context = await _find_existing_pull_request_context(
+                    client,
+                    repository,
+                    contract,
+                    base_result,
+                    operation="findPullRequestForCircuitBreaker",
+                )
+            _set_circuit_breaker_pull_request_context(
+                base_result,
+                contract,
+                pr_context,
+                action="circuit_broken_already",
+            )
             base_result["applied"] = False
             _mark_circuit_breaker_halted(
                 base_result,
@@ -820,7 +830,7 @@ async def dispatch_assembly_writeback(
             # comment is not. If a prior run added the label but its comment
             # upsert failed, retry it here (marker-based upsert => at most one
             # comment) so the required human escalation is never dropped.
-            await _upsert_circuit_breaker_escalation(
+            await _upsert_circuit_breaker_escalation_targets(
                 client, repository, contract.issue_number, base_result
             )
             _persist_session_metadata(
@@ -864,32 +874,57 @@ async def dispatch_assembly_writeback(
                     repository=repository,
                 )
                 return base_result
-            base_result = await _apply_circuit_breaker(
-                client, repository, contract.issue_number, base_result
-            )
-            base_result["pull_request"] = {
-                "number": None,
-                "url": None,
-                "action": "circuit_broken",
-            }
-            base_result["applied"] = False
-            _mark_circuit_breaker_halted(
+            pr_context = await _find_existing_pull_request_context(
+                client,
+                repository,
+                contract,
                 base_result,
-                summary="Circuit breaker threshold reached; automated fixes were halted.",
+                operation="findPullRequestForCircuitBreaker",
             )
-            _persist_session_metadata(
-                contract=contract,
-                result=base_result,
-                repository=repository,
-            )
-            _write_audit_manifest(
-                contract=contract,
-                result=base_result,
-                delivery_id=delivery_id,
-                repository=repository,
-            )
-            await _upsert_progress_comments(client, contract, repository, base_result)
-            return base_result
+            approved = False
+            if pr_context:
+                approved = await _has_current_human_approval(
+                    client,
+                    repository,
+                    contract,
+                    int(pr_context["number"]),
+                    pr_context.get("head_sha"),
+                    base_result,
+                )
+            if approved:
+                base_result.setdefault("circuit_breaker", {})["human_approval_bypass"] = True
+            else:
+                base_result = await _apply_circuit_breaker(
+                    client, repository, contract.issue_number, base_result
+                )
+                _set_circuit_breaker_pull_request_context(
+                    base_result,
+                    contract,
+                    pr_context,
+                    action="circuit_broken",
+                )
+                if pr_context:
+                    await _upsert_circuit_breaker_escalation(
+                        client, repository, int(pr_context["number"]), base_result
+                    )
+                base_result["applied"] = False
+                _mark_circuit_breaker_halted(
+                    base_result,
+                    summary="Circuit breaker threshold reached; automated fixes were halted.",
+                )
+                _persist_session_metadata(
+                    contract=contract,
+                    result=base_result,
+                    repository=repository,
+                )
+                _write_audit_manifest(
+                    contract=contract,
+                    result=base_result,
+                    delivery_id=delivery_id,
+                    repository=repository,
+                )
+                await _upsert_progress_comments(client, contract, repository, base_result)
+                return base_result
 
         # --------------------------------------------------------------
         # Adapter execution.  Failures are captured but do NOT abort the
@@ -1410,6 +1445,23 @@ async def _upsert_circuit_breaker_escalation(
         )
 
 
+async def _upsert_circuit_breaker_escalation_targets(
+    client: GitHubAppClient,
+    repository: str,
+    issue_number: int,
+    result: dict[str, Any],
+) -> None:
+    """Refresh the breaker escalation on the source issue and current PR."""
+    await _upsert_circuit_breaker_escalation(client, repository, issue_number, result)
+    pull_request = result.get("pull_request") or {}
+    try:
+        pr_number = int(pull_request.get("number") or 0)
+    except (TypeError, ValueError):
+        pr_number = 0
+    if pr_number > 0 and pr_number != issue_number:
+        await _upsert_circuit_breaker_escalation(client, repository, pr_number, result)
+
+
 async def _ensure_branch(
     client: GitHubAppClient,
     repository: str,
@@ -1608,6 +1660,142 @@ async def _ensure_pull_request(
             )
         )
         return False
+
+
+async def _find_existing_pull_request_context(
+    client: GitHubAppClient,
+    repository: str,
+    contract: AssemblyJobContract,
+    result: dict[str, Any],
+    *,
+    operation: str,
+) -> dict[str, Any] | None:
+    """Return same-repo PR metadata for the managed branch when available."""
+    try:
+        existing = await client.find_pull_request_by_head(
+            ASSEMBLY_AGENT_SLUG, repository, contract.branch_name
+        )
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation=operation,
+                exc=exc,
+                repository=repository,
+                issue=contract.issue_number,
+            )
+        )
+        return None
+    if not existing:
+        return None
+
+    if not await _verify_pr_head_repo(existing, repository, result):
+        return None
+
+    try:
+        pr_number = int(existing.get("number") or 0)
+    except (TypeError, ValueError):
+        return None
+    if pr_number <= 0:
+        return None
+
+    return {
+        "number": pr_number,
+        "url": existing.get("html_url"),
+        "head_sha": (existing.get("head") or {}).get("sha"),
+    }
+
+
+def _set_circuit_breaker_pull_request_context(
+    result: dict[str, Any],
+    contract: AssemblyJobContract,
+    pr_context: dict[str, Any] | None,
+    *,
+    action: str,
+) -> None:
+    if pr_context:
+        result["branch"] = {
+            "name": contract.branch_name,
+            "created": False,
+            "sha": pr_context.get("head_sha"),
+        }
+        result["pull_request"] = {
+            "number": pr_context["number"],
+            "url": pr_context.get("url"),
+            "action": action,
+        }
+        return
+
+    result["pull_request"] = {
+        "number": None,
+        "url": None,
+        "action": action,
+    }
+
+
+def _review_sort_key(review: dict[str, Any]) -> tuple[str, int]:
+    submitted_at = str(review.get("submitted_at") or review.get("submittedAt") or "")
+    try:
+        review_id = int(review.get("id") or 0)
+    except (TypeError, ValueError):
+        review_id = 0
+    return submitted_at, review_id
+
+
+def _review_login(review: dict[str, Any]) -> str:
+    user = review.get("user") or review.get("author") or {}
+    if not isinstance(user, dict):
+        return ""
+    return str(user.get("login") or "")
+
+
+def _review_commit_id(review: dict[str, Any]) -> str:
+    return str(review.get("commit_id") or review.get("commitId") or "")
+
+
+def _is_bot_login(login: str) -> bool:
+    normalized = login.strip().lower()
+    return not normalized or normalized.endswith("[bot]")
+
+
+async def _has_current_human_approval(
+    client: GitHubAppClient,
+    repository: str,
+    contract: AssemblyJobContract,
+    pr_number: int,
+    head_sha: str | None,
+    result: dict[str, Any],
+) -> bool:
+    """Return True when the current PR head has a live human approval."""
+    if not head_sha:
+        return False
+
+    try:
+        reviews = await client.pull_request_reviews(ASSEMBLY_AGENT_SLUG, repository, pr_number)
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation="pullRequestReviewsForCircuitBreaker",
+                exc=exc,
+                repository=repository,
+                pr=pr_number,
+                issue=contract.issue_number,
+            )
+        )
+        return False
+
+    latest_state_by_human: dict[str, str] = {}
+    for review in sorted(reviews, key=_review_sort_key):
+        if not isinstance(review, dict):
+            continue
+        if _review_commit_id(review) != head_sha:
+            continue
+        login = _review_login(review)
+        if _is_bot_login(login):
+            continue
+        state = str(review.get("state") or "").upper()
+        if state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            latest_state_by_human[login.lower()] = state
+    return any(state == "APPROVED" for state in latest_state_by_human.values())
 
 
 async def _preserve_existing_pr_context_for_no_changes(
