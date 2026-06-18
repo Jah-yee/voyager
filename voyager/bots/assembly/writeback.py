@@ -32,10 +32,9 @@ from .audit import (
     AssemblySessionMetadata,
     LoopSummary,
     _estimate_tokens_from_session,
-    append_loop_summary,
+    append_loop_summary_with_next_round,
     find_session_metadata,
     generate_audit_id,
-    load_loop_summaries,
     load_session_metadata,
     utc_now_iso,
     write_audit_manifest,
@@ -572,15 +571,9 @@ def _record_loop_summary(
 ) -> None:
     """Append a LoopSummary record after a completed loop run.
 
-    The round counter is the number of existing summary records for this PR
-    plus one — this is the same value the circuit breaker would read.
+    The round counter is assigned while holding the summary file's append lock
+    so concurrent Assembly completions cannot write duplicate round values.
     """
-    existing = load_loop_summaries(
-        repository=repository,
-        issue_number=issue_number,
-        root=root,
-    )
-    next_round = len(existing) + 1
     result_parts = [adapter_result, testpilot_result]
     commits = sum(_adapter_commit_count(part) for part in result_parts)
     est_tokens = sum(_adapter_est_tokens(part) for part in result_parts)
@@ -588,19 +581,24 @@ def _record_loop_summary(
         repository=repository,
         issue_number=issue_number,
         pr_number=pr_number,
-        rounds=next_round,
+        rounds=0,
         commits=commits,
         est_tokens=est_tokens,
         timestamp=utc_now_iso(),
         audit_id=audit_id,
     )
     try:
-        append_loop_summary(summary, root=root)
+        _path, assigned = append_loop_summary_with_next_round(summary, root=root)
     except OSError:
         _log.warning(
             "failed to record loop summary",
-            extra={"repository": repository, "issue": issue_number, "round": next_round},
+            extra={"repository": repository, "issue": issue_number},
             exc_info=True,
+        )
+    else:
+        _log.debug(
+            "recorded loop summary",
+            extra={"repository": repository, "issue": issue_number, "round": assigned.rounds},
         )
 
 

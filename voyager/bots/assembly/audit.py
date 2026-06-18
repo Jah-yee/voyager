@@ -10,7 +10,8 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -382,6 +383,21 @@ def append_loop_summary(summary: LoopSummary, *, root: Path | None = None) -> Pa
     return path
 
 
+def append_loop_summary_with_next_round(
+    summary: LoopSummary,
+    *,
+    root: Path | None = None,
+) -> tuple[Path, LoopSummary]:
+    """Append *summary* with its round assigned under the JSONL file lock."""
+    path = loop_summary_path(
+        repository=summary.repository,
+        issue_number=summary.issue_number,
+        root=root,
+    )
+    assigned = _append_loop_summary_with_next_round(path, summary)
+    return path, assigned
+
+
 def load_loop_summaries(
     *,
     repository: str,
@@ -392,14 +408,7 @@ def load_loop_summaries(
     path = loop_summary_path(repository=repository, issue_number=issue_number, root=root)
     if not path.exists():
         return []
-    records: list[LoopSummary] = []
-    for raw in _read_jsonl_lines(path):
-        try:
-            data = json.loads(raw)
-            records.append(LoopSummary.from_dict(data))
-        except (json.JSONDecodeError, ValueError, TypeError):
-            continue
-    return records
+    return _loop_summaries_from_lines(_read_jsonl_lines(path))
 
 
 def _read_jsonl_lines(path: Path) -> list[str]:
@@ -500,3 +509,42 @@ def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
             os.fsync(f.fileno())
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _append_loop_summary_with_next_round(path: Path, summary: LoopSummary) -> LoopSummary:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as f:
+        import fcntl
+
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            existing = _loop_summaries_from_lines(
+                line.strip() for line in f.read().splitlines() if line.strip()
+            )
+            assigned = replace(summary, rounds=len(existing) + 1)
+            payload = json.dumps(assigned.to_dict(), sort_keys=True) + "\n"
+            size = os.fstat(f.fileno()).st_size
+            if size > 0:
+                f.seek(size - 1)
+                last = f.read(1)
+                if last != "\n":
+                    payload = "\n" + payload
+            f.seek(0, os.SEEK_END)
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+            return assigned
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _loop_summaries_from_lines(lines: Iterable[str]) -> list[LoopSummary]:
+    records: list[LoopSummary] = []
+    for raw in lines:
+        try:
+            data = json.loads(raw)
+            records.append(LoopSummary.from_dict(data))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+    return records

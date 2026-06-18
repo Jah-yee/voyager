@@ -396,6 +396,31 @@ def test_loop_summary_round_counts_increment(tmp_path: Path) -> None:
         assert record.commits == idx
 
 
+def test_loop_summary_round_assignment_ignores_stale_pre_append_reads(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Round assignment happens under the append lock, not from a stale read."""
+    import voyager.bots.assembly.writeback as writeback
+    from voyager.bots.assembly.audit import load_loop_summaries
+
+    root = tmp_path / "audit-root"
+    monkeypatch.setattr(writeback, "load_loop_summaries", lambda **_kwargs: [], raising=False)
+
+    for audit_id in ("asmb-0011223344556677", "asmb-8899aabbccddeeff"):
+        writeback._record_loop_summary(
+            repository="iterwheel/voyager",
+            issue_number=42,
+            pr_number=172,
+            adapter_result={"commit_shas": ["a" * 40]},
+            audit_id=audit_id,
+            root=root,
+        )
+
+    loaded = load_loop_summaries(repository="iterwheel/voyager", issue_number=42, root=root)
+    assert [record.rounds for record in loaded] == [1, 2]
+
+
 def test_loop_summary_file_is_jsonl(tmp_path: Path) -> None:
     """The underlying file is valid JSONL — one JSON object per line."""
     from voyager.bots.assembly.audit import (
