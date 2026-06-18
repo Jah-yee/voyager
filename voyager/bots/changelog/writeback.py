@@ -163,6 +163,54 @@ async def _create_changelog_pr(
     }
 
 
+async def _recover_existing_changelog_branch(
+    client: Any,
+    *,
+    repository: str,
+    branch: str,
+    base: str,
+    title: str,
+    body: str,
+    planned: dict[str, Any],
+) -> dict[str, Any]:
+    """Reuse an existing changelog branch without pushing over its commits."""
+    existing: dict[str, Any] | None = None
+    with contextlib.suppress(Exception):
+        maybe_existing = await client.find_pull_request_by_head(
+            CHANGELOG_APP_SLUG,
+            repository,
+            branch,
+        )
+        if isinstance(maybe_existing, dict):
+            existing = maybe_existing
+
+    result: dict[str, Any] = {
+        "applied": False,
+        "reason": "existing changelog draft branch",
+        "planned": planned,
+        "preserved_existing_branch": True,
+    }
+    if existing and existing.get("number"):
+        result["pr_number"] = int(existing["number"])
+        result["pr_url"] = existing.get("html_url")
+        return result
+
+    created = await _create_changelog_pr(
+        client,
+        repository=repository,
+        branch=branch,
+        base=base,
+        title=title,
+        body=body,
+    )
+    return {
+        **result,
+        **created,
+        "planned": planned,
+        "preserved_existing_branch": True,
+    }
+
+
 async def dispatch_changelog_writeback(
     client: Any,
     route: dict[str, Any],
@@ -196,7 +244,6 @@ async def dispatch_changelog_writeback(
     if dry_run_enabled():
         return {"applied": False, "dry_run": True, "planned": planned}
 
-    existing: dict[str, Any] | None = None
     try:
         branch_exists = await client.branch_ref_exists(
             CHANGELOG_APP_SLUG,
@@ -216,34 +263,15 @@ async def dispatch_changelog_writeback(
             "planned": planned,
         }
     if branch_exists:
-        with contextlib.suppress(Exception):
-            maybe_existing = await client.find_pull_request_by_head(
-                CHANGELOG_APP_SLUG,
-                repository,
-                branch,
-            )
-            if isinstance(maybe_existing, dict):
-                existing = maybe_existing
-        result: dict[str, Any] = {
-            "applied": False,
-            "reason": "existing changelog draft branch",
-            "planned": planned,
-            "preserved_existing_branch": True,
-        }
-        if existing and existing.get("number"):
-            result["pr_number"] = int(existing["number"])
-            result["pr_url"] = existing.get("html_url")
-        else:
-            created = await _create_changelog_pr(
-                client,
-                repository=repository,
-                branch=branch,
-                base=base,
-                title=title,
-                body=_pr_body(draft),
-            )
-            result.update(created)
-        return result
+        return await _recover_existing_changelog_branch(
+            client,
+            repository=repository,
+            branch=branch,
+            base=base,
+            title=title,
+            body=_pr_body(draft),
+            planned=planned,
+        )
 
     try:
         token = await client.installation_token(CHANGELOG_APP_SLUG, repository=repository)
