@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -29,6 +30,9 @@ from .adapters import AdapterExecutionContext, AdapterResult, select_execution_a
 from .audit import (
     AssemblyAuditManifest,
     AssemblySessionMetadata,
+    LoopSummary,
+    _estimate_tokens_from_session,
+    append_loop_summary_with_next_round,
     find_session_metadata,
     generate_audit_id,
     load_session_metadata,
@@ -42,6 +46,9 @@ from .constants import (
     ASSEMBLY_AGENT_SLUG,
     ASSEMBLY_COMMENT_MARKER,
     ASSEMBLY_EXECUTION_BACKEND_ENV,
+    ASSEMBLY_FIX_ROUND_LABEL_PREFIX,
+    ASSEMBLY_MAX_FIX_ROUNDS_DEFAULT,
+    ASSEMBLY_MAX_FIX_ROUNDS_ENV,
     ASSEMBLY_PI_COMMAND_PATH_ENV,
     ASSEMBLY_PI_DEFAULT_COMMAND_PATH,
     ASSEMBLY_PI_DEFAULT_TIMEOUT_SECONDS,
@@ -49,6 +56,7 @@ from .constants import (
     ASSEMBLY_PI_TIMEOUT_SECONDS_ENV,
     ASSEMBLY_PI_WORKDIR_ENV,
     CODEX_REVIEW_TRIGGER_BODY,
+    LOOP_CIRCUIT_BROKEN_LABEL,
 )
 from .job_contract import AssemblyJobContract, build_job_contract
 from .phase import (
@@ -578,6 +586,82 @@ def _advisory_gate_findings_from_details(details: dict[str, Any]) -> list[dict[s
     return normalized
 
 
+def _record_loop_summary(
+    *,
+    repository: str,
+    issue_number: int,
+    pr_number: int | None,
+    adapter_result: dict[str, Any] | None,
+    testpilot_result: dict[str, Any] | None = None,
+    audit_id: str | None = None,
+    root: Path | None = None,
+) -> None:
+    """Append a LoopSummary record after a completed loop run.
+
+    The round counter is assigned while holding the summary file's append lock
+    so concurrent Assembly completions cannot write duplicate round values.
+    """
+    result_parts = [adapter_result, testpilot_result]
+    commits = sum(_adapter_commit_count(part) for part in result_parts)
+    est_tokens = sum(_adapter_est_tokens(part) for part in result_parts)
+    summary = LoopSummary(
+        repository=repository,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        rounds=0,
+        commits=commits,
+        est_tokens=est_tokens,
+        timestamp=utc_now_iso(),
+        audit_id=audit_id,
+    )
+    try:
+        _path, assigned = append_loop_summary_with_next_round(summary, root=root)
+    except OSError:
+        _log.warning(
+            "failed to record loop summary",
+            extra={"repository": repository, "issue": issue_number},
+            exc_info=True,
+        )
+    else:
+        _log.debug(
+            "recorded loop summary",
+            extra={"repository": repository, "issue": issue_number, "round": assigned.rounds},
+        )
+
+
+def _adapter_commit_count(adapter_result: dict[str, Any] | None) -> int:
+    if not isinstance(adapter_result, dict):
+        return 0
+    commit_shas = adapter_result.get("commit_shas")
+    if isinstance(commit_shas, (list, tuple)):
+        return len(commit_shas)
+    return 0
+
+
+def _adapter_est_tokens(adapter_result: dict[str, Any] | None) -> int:
+    if not isinstance(adapter_result, dict):
+        return 0
+    details = adapter_result.get("details")
+    if not isinstance(details, dict):
+        return 0
+    omp_session_path = details.get("omp_session_jsonl_path")
+    return _estimate_tokens_from_session(
+        omp_session_path if isinstance(omp_session_path, str) else None
+    )
+
+
+def _pull_request_number_from_result(result: dict[str, Any]) -> int | None:
+    pull_request = result.get("pull_request")
+    if not isinstance(pull_request, dict):
+        return None
+    number = pull_request.get("number")
+    if isinstance(number, int):
+        return number
+    if isinstance(number, str) and number.strip().isdigit():
+        return int(number)
+    return None
+
+
 async def _live_issue_from_route(
     client: GitHubAppClient,
     repository: str,
@@ -785,6 +869,202 @@ async def dispatch_assembly_writeback(
             command_flags=command_flags,
         )
         # --------------------------------------------------------------
+        # Circuit breaker — stop unbounded fix loops (issue #157).
+        # Check before every adapter execution so we don't waste compute
+        # on a PR that has already exceeded the threshold.
+        #
+        # Re-fetch authoritative labels now that we hold the per-branch lock
+        # (Codex P2). ``snapshot_labels`` were captured *before* the lock, so
+        # two concurrent same-branch deliveries could both observe a pre-
+        # threshold round; the second to enter the lock would then compute its
+        # round from stale labels and execute another fix the breaker should
+        # have stopped. A fresh ``get_issue`` inside the lock closes that
+        # window. On fetch failure we fall back to the pre-lock snapshot.
+        # --------------------------------------------------------------
+        try:
+            locked_issue = await client.get_issue(
+                ASSEMBLY_AGENT_SLUG, repository, contract.issue_number
+            )
+            locked_labels = locked_issue.get("labels") if isinstance(locked_issue, dict) else None
+        except (httpx.HTTPError, TimeoutError):
+            locked_labels = None
+        # Only trust an authoritative label list; on any non-list (fetch
+        # failure, partial payload) fall back to the pre-lock snapshot so the
+        # breaker decision never derives from an unusable value.
+        if not isinstance(locked_labels, list):
+            locked_labels = snapshot_labels
+        current_labels = _issue_labels_simple({"labels": locked_labels})
+
+        if LOOP_CIRCUIT_BROKEN_LABEL in current_labels:
+            pr_context = None
+            if not is_dry_run:
+                pr_context = await _find_existing_pull_request_context(
+                    client,
+                    repository,
+                    contract,
+                    base_result,
+                    operation="findPullRequestForCircuitBreaker",
+                )
+            _set_circuit_breaker_pull_request_context(
+                base_result,
+                contract,
+                pr_context,
+                action="circuit_broken_already",
+            )
+            base_result["applied"] = False
+            _mark_circuit_breaker_halted(
+                base_result,
+                summary="Circuit breaker is already active; automated fixes remain halted.",
+            )
+            if is_dry_run:
+                # Dry-run contract: skip all GitHub mutations on the
+                # already-broken path as well.
+                base_result.setdefault("circuit_breaker", {})["dry_run"] = True
+                _persist_session_metadata(
+                    contract=contract,
+                    result=base_result,
+                    repository=repository,
+                )
+                _write_audit_manifest(
+                    contract=contract,
+                    result=base_result,
+                    delivery_id=delivery_id,
+                    repository=repository,
+                )
+                _record_loop_summary(
+                    repository=repository,
+                    issue_number=contract.issue_number,
+                    pr_number=_pull_request_number_from_result(base_result),
+                    adapter_result=base_result.get("adapter_result"),
+                    testpilot_result=base_result.get("testpilot_result"),
+                    audit_id=base_result.get("audit_id"),
+                )
+                return base_result
+            # Codex P2: the breaker label is idempotent but the escalation
+            # comment is not. If a prior run added the label but its comment
+            # upsert failed, retry it here (marker-based upsert => at most one
+            # comment) so the required human escalation is never dropped.
+            await _upsert_circuit_breaker_escalation_targets(
+                client, repository, contract.issue_number, base_result
+            )
+            _persist_session_metadata(
+                contract=contract,
+                result=base_result,
+                repository=repository,
+            )
+            _write_audit_manifest(
+                contract=contract,
+                result=base_result,
+                delivery_id=delivery_id,
+                repository=repository,
+            )
+            await _upsert_progress_comments(client, contract, repository, base_result)
+            _record_loop_summary(
+                repository=repository,
+                issue_number=contract.issue_number,
+                pr_number=_pull_request_number_from_result(base_result),
+                adapter_result=base_result.get("adapter_result"),
+                testpilot_result=base_result.get("testpilot_result"),
+                audit_id=base_result.get("audit_id"),
+            )
+            return base_result
+
+        current_round = _read_current_fix_round(current_labels)
+        max_rounds = _max_fix_rounds_threshold(cfg)
+        if current_round >= max_rounds:
+            if is_dry_run:
+                # Dry-run contract (Codex P2): a threshold-hit breaker performs
+                # NO GitHub mutations — no label, no escalation comment, and no
+                # progress comment. Mirror the normal ``dry_run_skipped`` path
+                # below, which returns before every GitHub mutation.
+                base_result["pull_request"] = {
+                    "number": None,
+                    "url": None,
+                    "action": "circuit_broken_dry_run",
+                }
+                base_result["applied"] = False
+                base_result.setdefault("circuit_breaker", {})["dry_run"] = True
+                _persist_session_metadata(
+                    contract=contract,
+                    result=base_result,
+                    repository=repository,
+                )
+                _write_audit_manifest(
+                    contract=contract,
+                    result=base_result,
+                    delivery_id=delivery_id,
+                    repository=repository,
+                )
+                _record_loop_summary(
+                    repository=repository,
+                    issue_number=contract.issue_number,
+                    pr_number=_pull_request_number_from_result(base_result),
+                    adapter_result=base_result.get("adapter_result"),
+                    testpilot_result=base_result.get("testpilot_result"),
+                    audit_id=base_result.get("audit_id"),
+                )
+                return base_result
+            pr_context = await _find_existing_pull_request_context(
+                client,
+                repository,
+                contract,
+                base_result,
+                operation="findPullRequestForCircuitBreaker",
+            )
+            approved = False
+            if pr_context:
+                approved = await _has_current_human_approval(
+                    client,
+                    repository,
+                    contract,
+                    int(pr_context["number"]),
+                    pr_context.get("head_sha"),
+                    base_result,
+                )
+            if approved:
+                base_result.setdefault("circuit_breaker", {})["human_approval_bypass"] = True
+            else:
+                base_result = await _apply_circuit_breaker(
+                    client, repository, contract.issue_number, base_result
+                )
+                _set_circuit_breaker_pull_request_context(
+                    base_result,
+                    contract,
+                    pr_context,
+                    action="circuit_broken",
+                )
+                if pr_context:
+                    await _upsert_circuit_breaker_escalation(
+                        client, repository, int(pr_context["number"]), base_result
+                    )
+                base_result["applied"] = False
+                _mark_circuit_breaker_halted(
+                    base_result,
+                    summary="Circuit breaker threshold reached; automated fixes were halted.",
+                )
+                _persist_session_metadata(
+                    contract=contract,
+                    result=base_result,
+                    repository=repository,
+                )
+                _write_audit_manifest(
+                    contract=contract,
+                    result=base_result,
+                    delivery_id=delivery_id,
+                    repository=repository,
+                )
+                await _upsert_progress_comments(client, contract, repository, base_result)
+                _record_loop_summary(
+                    repository=repository,
+                    issue_number=contract.issue_number,
+                    pr_number=_pull_request_number_from_result(base_result),
+                    adapter_result=base_result.get("adapter_result"),
+                    testpilot_result=base_result.get("testpilot_result"),
+                    audit_id=base_result.get("audit_id"),
+                )
+                return base_result
+
+        # --------------------------------------------------------------
         # Adapter execution.  Failures are captured but do NOT abort the
         # progress-comment step (D11 "always runs").
         # --------------------------------------------------------------
@@ -881,6 +1161,13 @@ async def dispatch_assembly_writeback(
                 delivery_id=delivery_id,
                 repository=repository,
             )
+            _record_loop_summary(
+                repository=repository,
+                issue_number=contract.issue_number,
+                pr_number=_pull_request_number_from_result(base_result),
+                adapter_result=base_result.get("adapter_result"),
+                audit_id=base_result.get("audit_id"),
+            )
             return base_result
 
         base_result["applied"] = True
@@ -901,7 +1188,7 @@ async def dispatch_assembly_writeback(
                 "url": None,
                 "action": "skipped_no_changes",
             }
-            await _preserve_existing_pr_context_for_no_changes(
+            await _preserve_existing_pr_context_for_no_commit_terminal(
                 client, repository, contract, base_result
             )
             _persist_session_metadata(
@@ -916,6 +1203,13 @@ async def dispatch_assembly_writeback(
                 repository=repository,
             )
             await _upsert_progress_comments(client, contract, repository, base_result)
+            _record_loop_summary(
+                repository=repository,
+                issue_number=contract.issue_number,
+                pr_number=_pull_request_number_from_result(base_result),
+                adapter_result=base_result.get("adapter_result"),
+                audit_id=base_result.get("audit_id"),
+            )
             return base_result
 
         # --------------------------------------------------------------
@@ -927,6 +1221,40 @@ async def dispatch_assembly_writeback(
             pr_ok = await _ensure_pull_request(client, repository, contract, base_result)
 
         # --------------------------------------------------------------
+        # Increment fix-round counter after a successful push.
+        # --------------------------------------------------------------
+        if pr_ok:
+            next_round = current_round + 1
+            next_round_label = f"{ASSEMBLY_FIX_ROUND_LABEL_PREFIX}{next_round}"
+            if await _ensure_repository_label(
+                client,
+                repository,
+                contract.issue_number,
+                next_round_label,
+                base_result,
+                operation="ensureFixRoundLabel",
+                color="cfd3d7",
+                description="Assembly automated fix round marker.",
+            ):
+                try:
+                    await client.add_labels(
+                        ASSEMBLY_AGENT_SLUG,
+                        repository,
+                        contract.issue_number,
+                        [next_round_label],
+                    )
+                except (httpx.HTTPError, TimeoutError) as exc:
+                    base_result["writeback_failures"].append(
+                        build_writeback_failure(
+                            operation="incrementFixRound",
+                            exc=exc,
+                            repository=repository,
+                            issue=contract.issue_number,
+                        )
+                    )
+
+        # --------------------------------------------------------------
+
         # TestPilot phase (two-phase mode only)
         # --------------------------------------------------------------
         if phase_mode == PhaseMode.TWO_PHASE and pr_ok:
@@ -1009,6 +1337,14 @@ async def dispatch_assembly_writeback(
             repository=repository,
         )
         await _upsert_progress_comments(client, contract, repository, base_result)
+        _record_loop_summary(
+            repository=repository,
+            issue_number=contract.issue_number,
+            pr_number=_pull_request_number_from_result(base_result),
+            adapter_result=base_result.get("adapter_result"),
+            testpilot_result=base_result.get("testpilot_result"),
+            audit_id=base_result.get("audit_id"),
+        )
         return base_result
 
 
@@ -1074,6 +1410,216 @@ async def _post_refusal_comment(
             )
         )
     return result
+
+
+# Circuit breaker marker — ensures exactly one escalation comment per PR.
+_CIRCUIT_BREAKER_COMMENT_MARKER = "<!-- iterwheel:assembly-circuit-breaker -->"
+_FIX_ROUND_LABEL_RE = re.compile(rf"^{re.escape(ASSEMBLY_FIX_ROUND_LABEL_PREFIX)}(\d+)$")
+
+
+def _issue_labels_simple(issue: dict[str, Any]) -> list[str]:
+    """Extract flat label names from an issue/PR snapshot."""
+    raw = issue.get("labels") or []
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            names.append(item)
+        elif isinstance(item, dict):
+            name = item.get("name")
+            if isinstance(name, str):
+                names.append(name)
+    return names
+
+
+def _read_current_fix_round(labels: list[str]) -> int:
+    """Return the current fix-round count from the label list (0 = first round)."""
+    max_round = 0
+    for label in labels:
+        m = _FIX_ROUND_LABEL_RE.match(label)
+        if m:
+            round_n = int(m.group(1))
+            if round_n > max_round:
+                max_round = round_n
+    return max_round
+
+
+def _max_fix_rounds_threshold(cfg: Any | None) -> int:
+    """Resolve the max fix rounds threshold: env var > config > default."""
+    raw = os.environ.get(ASSEMBLY_MAX_FIX_ROUNDS_ENV)
+    if raw is not None:
+        stripped = raw.strip()
+        if stripped:
+            try:
+                value = int(stripped)
+                if value >= 1:
+                    return value
+            except ValueError:
+                pass
+    if cfg is not None:
+        assembly = getattr(cfg, "assembly", None)
+        if assembly is not None:
+            return getattr(assembly, "max_fix_rounds", ASSEMBLY_MAX_FIX_ROUNDS_DEFAULT)
+    return ASSEMBLY_MAX_FIX_ROUNDS_DEFAULT
+
+
+def _mark_circuit_breaker_halted(result: dict[str, Any], *, summary: str) -> None:
+    """Surface circuit-breaker halts as blocked progress, not applied work."""
+    result["adapter_result"] = {
+        "status": "blocked",
+        "commit_shas": [],
+        "summary": summary,
+        "details": {
+            "circuit_breaker": True,
+            "pull_request_action": (result.get("pull_request") or {}).get("action"),
+        },
+    }
+
+
+async def _ensure_repository_label(
+    client: GitHubAppClient,
+    repository: str,
+    issue_number: int,
+    label: str,
+    result: dict[str, Any],
+    *,
+    operation: str,
+    color: str,
+    description: str,
+) -> bool:
+    """Create a repository label if needed before attaching it to an issue."""
+    ensure_label = getattr(client, "ensure_label", None)
+    if ensure_label is None:
+        return True
+    try:
+        await ensure_label(
+            ASSEMBLY_AGENT_SLUG,
+            repository,
+            label,
+            color=color,
+            description=description,
+        )
+        return True
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation=operation,
+                exc=exc,
+                repository=repository,
+                issue=issue_number,
+            )
+        )
+        return False
+
+
+async def _apply_circuit_breaker(
+    client: GitHubAppClient,
+    repository: str,
+    issue_number: int,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply ``loop-circuit-broken`` label and exactly one escalation comment.
+
+    Returns the updated *result* dict. Idempotent: if the label already
+    exists, skipping the comment is safe because the upsert marker
+    guarantees at most one escalation comment in all cases.
+
+    Dry-run handling lives at the call site: a dry-run invocation returns
+    before reaching this helper, so no GitHub mutation occurs here.
+    """
+    # Apply the label (idempotent — POST /labels is a no-op if the label
+    # already exists on the issue).
+    if await _ensure_repository_label(
+        client,
+        repository,
+        issue_number,
+        LOOP_CIRCUIT_BROKEN_LABEL,
+        result,
+        operation="ensureCircuitBreakerLabel",
+        color="d73a4a",
+        description="Assembly automated fix loop halted pending human review.",
+    ):
+        try:
+            await client.add_labels(
+                ASSEMBLY_AGENT_SLUG,
+                repository,
+                issue_number,
+                [LOOP_CIRCUIT_BROKEN_LABEL],
+            )
+        except (httpx.HTTPError, TimeoutError) as exc:
+            result["writeback_failures"].append(
+                build_writeback_failure(
+                    operation="applyCircuitBreakerLabel",
+                    exc=exc,
+                    repository=repository,
+                    issue=issue_number,
+                )
+            )
+
+    await _upsert_circuit_breaker_escalation(client, repository, issue_number, result)
+    return result
+
+
+async def _upsert_circuit_breaker_escalation(
+    client: GitHubAppClient,
+    repository: str,
+    issue_number: int,
+    result: dict[str, Any],
+) -> None:
+    """Post (or refresh) the single circuit-breaker escalation comment.
+
+    Extracted so the ``circuit_broken_already`` path can retry the comment
+    when a prior run added the label but the comment upsert failed (Codex P2).
+    The marker-based upsert guarantees at most one comment in all cases.
+    """
+    escalation_body = (
+        f"{_CIRCUIT_BREAKER_COMMENT_MARKER}\n\n"
+        "## 🛑 Circuit Breaker Activated\n\n"
+        "This PR has exceeded the maximum number of automated fix rounds "
+        "without receiving human approval. The loop has been halted to "
+        "prevent unbounded bot-driven commits.\n\n"
+        "**Next steps for a human operator:**\n"
+        "- Review the PR history and decide whether to merge, close, or "
+        "request additional manual changes.\n"
+        "- To resume automated fixes, remove **both** the "
+        "`loop-circuit-broken` label **and** the `assembly-fix-round-*` "
+        "labels, then re-run `/assembly`. Removing only `loop-circuit-broken` "
+        "leaves the fix-round counter at the threshold, so the breaker trips "
+        "again immediately before any adapter runs.\n"
+    )
+    try:
+        await client.upsert_issue_comment(
+            ASSEMBLY_AGENT_SLUG,
+            repository,
+            issue_number,
+            marker=_CIRCUIT_BREAKER_COMMENT_MARKER,
+            body=escalation_body,
+        )
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation="upsertCircuitBreakerComment",
+                exc=exc,
+                repository=repository,
+                issue=issue_number,
+            )
+        )
+
+
+async def _upsert_circuit_breaker_escalation_targets(
+    client: GitHubAppClient,
+    repository: str,
+    issue_number: int,
+    result: dict[str, Any],
+) -> None:
+    """Refresh the breaker escalation on the source issue and current PR."""
+    await _upsert_circuit_breaker_escalation(client, repository, issue_number, result)
+    pull_request = result.get("pull_request") or {}
+    try:
+        pr_number = int(pull_request.get("number") or 0)
+    except (TypeError, ValueError):
+        pr_number = 0
+    if pr_number > 0 and pr_number != issue_number:
+        await _upsert_circuit_breaker_escalation(client, repository, pr_number, result)
 
 
 async def _ensure_branch(
@@ -1276,15 +1822,151 @@ async def _ensure_pull_request(
         return False
 
 
-async def _preserve_existing_pr_context_for_no_changes(
+async def _find_existing_pull_request_context(
+    client: GitHubAppClient,
+    repository: str,
+    contract: AssemblyJobContract,
+    result: dict[str, Any],
+    *,
+    operation: str,
+) -> dict[str, Any] | None:
+    """Return same-repo PR metadata for the managed branch when available."""
+    try:
+        existing = await client.find_pull_request_by_head(
+            ASSEMBLY_AGENT_SLUG, repository, contract.branch_name
+        )
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation=operation,
+                exc=exc,
+                repository=repository,
+                issue=contract.issue_number,
+            )
+        )
+        return None
+    if not existing:
+        return None
+
+    if not await _verify_pr_head_repo(existing, repository, result):
+        return None
+
+    try:
+        pr_number = int(existing.get("number") or 0)
+    except (TypeError, ValueError):
+        return None
+    if pr_number <= 0:
+        return None
+
+    return {
+        "number": pr_number,
+        "url": existing.get("html_url"),
+        "head_sha": (existing.get("head") or {}).get("sha"),
+    }
+
+
+def _set_circuit_breaker_pull_request_context(
+    result: dict[str, Any],
+    contract: AssemblyJobContract,
+    pr_context: dict[str, Any] | None,
+    *,
+    action: str,
+) -> None:
+    if pr_context:
+        result["branch"] = {
+            "name": contract.branch_name,
+            "created": False,
+            "sha": pr_context.get("head_sha"),
+        }
+        result["pull_request"] = {
+            "number": pr_context["number"],
+            "url": pr_context.get("url"),
+            "action": action,
+        }
+        return
+
+    result["pull_request"] = {
+        "number": None,
+        "url": None,
+        "action": action,
+    }
+
+
+def _review_sort_key(review: dict[str, Any]) -> tuple[str, int]:
+    submitted_at = str(review.get("submitted_at") or review.get("submittedAt") or "")
+    try:
+        review_id = int(review.get("id") or 0)
+    except (TypeError, ValueError):
+        review_id = 0
+    return submitted_at, review_id
+
+
+def _review_login(review: dict[str, Any]) -> str:
+    user = review.get("user") or review.get("author") or {}
+    if not isinstance(user, dict):
+        return ""
+    return str(user.get("login") or "")
+
+
+def _review_commit_id(review: dict[str, Any]) -> str:
+    return str(review.get("commit_id") or review.get("commitId") or "")
+
+
+def _is_bot_login(login: str) -> bool:
+    normalized = login.strip().lower()
+    return not normalized or normalized.endswith("[bot]")
+
+
+async def _has_current_human_approval(
+    client: GitHubAppClient,
+    repository: str,
+    contract: AssemblyJobContract,
+    pr_number: int,
+    head_sha: str | None,
+    result: dict[str, Any],
+) -> bool:
+    """Return True when the current PR head has a live human approval."""
+    if not head_sha:
+        return False
+
+    try:
+        reviews = await client.pull_request_reviews(ASSEMBLY_AGENT_SLUG, repository, pr_number)
+    except (httpx.HTTPError, TimeoutError) as exc:
+        result["writeback_failures"].append(
+            build_writeback_failure(
+                operation="pullRequestReviewsForCircuitBreaker",
+                exc=exc,
+                repository=repository,
+                pr=pr_number,
+                issue=contract.issue_number,
+            )
+        )
+        return False
+
+    latest_state_by_human: dict[str, str] = {}
+    for review in sorted(reviews, key=_review_sort_key):
+        if not isinstance(review, dict):
+            continue
+        if _review_commit_id(review) != head_sha:
+            continue
+        login = _review_login(review)
+        if _is_bot_login(login):
+            continue
+        state = str(review.get("state") or "").upper()
+        if state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            latest_state_by_human[login.lower()] = state
+    return any(state == "APPROVED" for state in latest_state_by_human.values())
+
+
+async def _preserve_existing_pr_context_for_no_commit_terminal(
     client: GitHubAppClient,
     repository: str,
     contract: AssemblyJobContract,
     result: dict[str, Any],
 ) -> None:
-    """Keep duplicate no_changes runs from erasing an already-open PR context."""
+    """Keep no-commit terminal runs from erasing an already-open PR context."""
     adapter_result = result.get("adapter_result") or {}
-    if adapter_result.get("status") != "no_changes":
+    if adapter_result.get("status") not in {"no_changes", "failed", "blocked"}:
         return
 
     try:
@@ -1293,9 +1975,9 @@ async def _preserve_existing_pr_context_for_no_changes(
         )
     except (httpx.HTTPError, TimeoutError):
         # This lookup is only for monotonic progress rendering. If it is
-        # unavailable, keep the original first-run no_changes surface.
+        # unavailable, keep the original first-run no-PR surface.
         _log.warning(
-            "Assembly no_changes PR-context lookup failed",
+            "Assembly no-commit PR-context lookup failed",
             extra={"repository": repository, "issue": contract.issue_number},
             exc_info=True,
         )
@@ -1326,6 +2008,9 @@ async def _preserve_existing_pr_context_for_no_changes(
         "url": existing.get("html_url"),
         "action": "updated",
     }
+
+
+_preserve_existing_pr_context_for_no_changes = _preserve_existing_pr_context_for_no_commit_terminal
 
 
 async def _post_codex_trigger(
