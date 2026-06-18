@@ -409,6 +409,47 @@ def _read_jsonl_lines(path: Path) -> list[str]:
     return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _session_usage_tokens(value: Any) -> int:
+    """Return nested Pi/OMP usage.totalTokens values from a session record."""
+    if isinstance(value, dict):
+        total = 0
+        usage = value.get("usage")
+        if isinstance(usage, dict):
+            total_tokens = usage.get("totalTokens")
+            if type(total_tokens) is int and total_tokens > 0:
+                total += total_tokens
+        for child in value.values():
+            total += _session_usage_tokens(child)
+        return total
+    if isinstance(value, list):
+        return sum(_session_usage_tokens(item) for item in value)
+    return 0
+
+
+def _session_text_chars(value: Any) -> int:
+    """Return text chars from common Pi/OMP transcript shapes."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(_session_text_chars(item) for item in value)
+    if isinstance(value, dict):
+        total = 0
+        for key in (
+            "content",
+            "text",
+            "thinking",
+            "message",
+            "output",
+            "prompt",
+            "summary",
+            "command",
+        ):
+            if key in value:
+                total += _session_text_chars(value[key])
+        return total
+    return 0
+
+
 def _estimate_tokens_from_session(omp_session_jsonl_path: str | None) -> int:
     """Rough token estimate from an OMP session transcript (~4 chars/token)."""
     if not omp_session_jsonl_path:
@@ -417,6 +458,7 @@ def _estimate_tokens_from_session(omp_session_jsonl_path: str | None) -> int:
         path = Path(omp_session_jsonl_path)
         if not path.exists():
             return 0
+        explicit_tokens = 0
         total_chars = 0
         for raw in path.read_text(encoding="utf-8").splitlines():
             raw = raw.strip()
@@ -426,12 +468,13 @@ def _estimate_tokens_from_session(omp_session_jsonl_path: str | None) -> int:
                 record = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            # Sum text from common OMP transcript fields
-            for key in ("content", "text", "message", "output", "prompt"):
-                value = record.get(key)
-                if isinstance(value, str):
-                    total_chars += len(value)
-        return max(1, total_chars // 4)
+            usage_tokens = _session_usage_tokens(record)
+            if usage_tokens:
+                explicit_tokens += usage_tokens
+            else:
+                total_chars += _session_text_chars(record)
+        estimated_tokens = explicit_tokens + (total_chars // 4)
+        return max(1, estimated_tokens) if explicit_tokens or total_chars else 0
     except (OSError, json.JSONDecodeError):
         return 0
 

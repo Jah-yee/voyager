@@ -6,6 +6,7 @@ from pathlib import Path
 from voyager.bots.assembly.adapters import _latest_omp_session_jsonl
 from voyager.bots.assembly.audit import (
     AssemblyAuditManifest,
+    _estimate_tokens_from_session,
     audit_manifest_path,
     find_audit_manifest,
     generate_audit_id,
@@ -280,6 +281,57 @@ def test_latest_omp_session_jsonl_skips_transient_stat_failures(
     monkeypatch.setattr(Path, "stat", fake_stat)
 
     assert _latest_omp_session_jsonl(checkout_dir) == str(newest)
+
+
+def test_estimate_tokens_from_pi_session_uses_nested_usage_total_tokens(
+    tmp_path: Path,
+) -> None:
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text(
+        "\n".join(
+            [
+                '{"type":"session","version":3}',
+                (
+                    '{"type":"message","message":{"role":"assistant",'
+                    '"content":[{"type":"text","text":"not double counted"}],'
+                    '"usage":{"input":100,"output":23,"totalTokens":123}}}'
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _estimate_tokens_from_session(str(session_path)) == 123
+
+
+def test_estimate_tokens_from_pi_session_reads_nested_content_blocks(
+    tmp_path: Path,
+) -> None:
+    session_path = tmp_path / "session.jsonl"
+    text = "a" * 40
+    thinking = "b" * 20
+    output = "c" * 16
+    session_path.write_text(
+        "\n".join(
+            [
+                (
+                    '{"type":"message","message":{"role":"assistant",'
+                    f'"content":[{{"type":"text","text":"{text}"}},'
+                    f'{{"type":"thinking","thinking":"{thinking}"}}]}}}}'
+                ),
+                (
+                    '{"type":"message","message":{"role":"toolResult",'
+                    f'"content":[{{"type":"text","text":"{output}"}}],'
+                    '"isError":false}}'
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _estimate_tokens_from_session(str(session_path)) == (40 + 20 + 16) // 4
 
 
 # ---------------------------------------------------------------------------
