@@ -262,6 +262,28 @@ class TestKnownLimitationStore:
         store = KnownLimitationStore(path=store_path)
         assert store.lookup(fp) is not None
 
+    def test_append_separates_new_record_after_unterminated_corrupt_tail(
+        self, tmp_path: Path
+    ) -> None:
+        """A corrupt unterminated tail does not swallow the next appended record."""
+        store_path = tmp_path / "known_limitations.jsonl"
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        store_path.write_text('{"fingerprint":', encoding="utf-8")
+        fp = compute_fingerprint("a.py", 1, "new finding")
+
+        KnownLimitationStore(path=store_path).record(
+            fp,
+            "https://github.com/org/repo/issues/1",
+            repo="org/repo",
+            pr_number=1,
+        )
+
+        store = KnownLimitationStore(path=store_path)
+        entry = store.lookup(fp)
+        assert entry is not None
+        assert entry.decision_link == "https://github.com/org/repo/issues/1"
+        assert store_path.read_text(encoding="utf-8").startswith('{"fingerprint":\n{')
+
 
 # ---------------------------------------------------------------------------
 # Pipeline suppression integration test pattern

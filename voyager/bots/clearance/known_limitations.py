@@ -241,9 +241,17 @@ class KnownLimitationStore:
                     )
 
     def _append(self, entry: KnownLimitationEntry) -> None:
-        self._store_path().parent.mkdir(parents=True, exist_ok=True)
+        store_path = self._store_path()
+        store_path.parent.mkdir(parents=True, exist_ok=True)
         line = entry.to_json() + "\n"
-        with self._store_path().open("a") as f:
+        needs_separator = False
+        if store_path.exists() and store_path.stat().st_size > 0:
+            with store_path.open("rb") as f:
+                f.seek(-1, 2)
+                needs_separator = f.read(1) != b"\n"
+        with store_path.open("a") as f:
+            if needs_separator:
+                f.write("\n")
             f.write(line)
 
 
