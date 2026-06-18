@@ -88,13 +88,30 @@ class KnownLimitationEntry:
     @classmethod
     def from_json(cls, line: str) -> KnownLimitationEntry:
         data = json.loads(line)
-        created_at = datetime.fromisoformat(data["created_at"])
+        if not isinstance(data, dict):
+            raise TypeError("known limitation entry must be an object")
+        fingerprint = data.get("fingerprint")
+        if not isinstance(fingerprint, str):
+            raise TypeError("known limitation fingerprint must be a string")
+        decision_link = data.get("decision_link")
+        if not isinstance(decision_link, str):
+            raise TypeError("known limitation decision_link must be a string")
+        created_at_raw = data.get("created_at")
+        if not isinstance(created_at_raw, str):
+            raise TypeError("known limitation created_at must be a string")
+        repo = data.get("repo")
+        if repo is not None and not isinstance(repo, str):
+            raise TypeError("known limitation repo must be a string")
+        pr_number = data.get("pr_number")
+        if pr_number is not None and type(pr_number) is not int:
+            raise TypeError("known limitation pr_number must be an integer")
+        created_at = datetime.fromisoformat(created_at_raw)
         return cls(
-            fingerprint=data["fingerprint"],
-            decision_link=data["decision_link"],
+            fingerprint=fingerprint,
+            decision_link=decision_link,
             created_at=created_at,
-            repo=data.get("repo"),
-            pr_number=data.get("pr_number"),
+            repo=repo,
+            pr_number=pr_number,
         )
 
     def __repr__(self) -> str:

@@ -262,6 +262,29 @@ class TestKnownLimitationStore:
         store = KnownLimitationStore(path=store_path)
         assert store.lookup(fp) is not None
 
+    def test_non_string_fingerprint_line_skipped_before_indexing(self, tmp_path: Path) -> None:
+        """A structurally corrupt fingerprint cannot crash index construction."""
+        store_path = tmp_path / "known_limitations.jsonl"
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        fp = compute_fingerprint("a.py", 1, "good finding")
+        bad_line = json.dumps(
+            {
+                "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+                "decision_link": "https://github.com/org/repo/issues/bad",
+                "fingerprint": [],
+            }
+        )
+        good_line = KnownLimitationEntry(
+            fp,
+            "https://github.com/org/repo/issues/1",
+        ).to_json()
+        store_path.write_text(f"{bad_line}\n{good_line}\n", encoding="utf-8")
+
+        store = KnownLimitationStore(path=store_path)
+        entry = store.lookup(fp)
+        assert entry is not None
+        assert entry.decision_link == "https://github.com/org/repo/issues/1"
+
     def test_append_separates_new_record_after_unterminated_corrupt_tail(
         self, tmp_path: Path
     ) -> None:
