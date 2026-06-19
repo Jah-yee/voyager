@@ -977,6 +977,34 @@ class GitHubAppClient:
         )
         return max(timestamps) if timestamps else None
 
+    async def commit_check_runs(
+        self,
+        app_slug: str,
+        repo: str,
+        commit_sha: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch all check-run results for a commit via ``GET /commits/{sha}/check-runs``.
+
+        Paginates to collect every check run — the default page size is 100
+        and the limit is a single page fallthrough.  Each check run carries
+        ``name``, ``conclusion``, ``status``, ``id``, ``html_url``, etc.
+        """
+        owner, name = repo.split("/", 1)
+        all_runs: list[dict[str, Any]] = []
+        page = 1
+        per_page = 100
+        while True:
+            path = f"/repos/{owner}/{name}/commits/{commit_sha}/check-runs?per_page={per_page}&page={page}"
+            data = await self.request(app_slug, "GET", path, repository=repo)
+            items = list((data or {}).get("check_runs") or [])
+            all_runs.extend(items)
+            if len(items) < per_page:
+                break
+            page += 1
+            if page > 10:
+                break
+        return all_runs
+
     async def create_pull_request(
         self,
         app_slug: str,
