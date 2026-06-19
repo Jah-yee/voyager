@@ -1,12 +1,9 @@
 # REF-1825: Loop-Convergence Policy
 
 **Applies to:** Voyager Assembly bot, Clearance automation, and managed repositories
-**Last updated:** 2026-06-19
-**Last reviewed:** 2026-06-19
+**Last updated:** 2026-06-20
+**Last reviewed:** 2026-06-20
 **Status:** Active
-**Date:** 2026-06-19
-**Requested by:** Frank Xu (via issue #168)
-**Priority:** P2
 **Related:** VOY-1811, VOY-1822, VOY-1824, #152, #154, #157, #158
 
 ---
@@ -55,7 +52,7 @@ that consumed review rounds unnecessarily.
 ### Rule 2 — False Negative (Under-Block) = Acceptable
 
 **Definition:** A false negative occurs when a check passes an incorrect
-patch — the adoption criteria are not fully satisfied but the check does not
+patch — the acceptance criteria are not fully satisfied but the check does not
 catch the gap.
 
 **Policy:** False negatives are within the design tolerance of automated
@@ -130,13 +127,14 @@ The three rules form a decision table for any finding in the automated loop:
 | False negative (under-block) | **Accept** — fallback to review | Do not trigger auto-fix; do not increment round counter |
 | Round count exceeds threshold | **Halt** — no more auto-fix attempts | Apply `loop-circuit-broken` label to the source issue, post escalation comments; human unblock requires current PR approval and removal of any active source-issue breaker label |
 
-Current gates encode advisory behavior through the finding source and gate
-status. For example, AC spot-check findings are token-level findings; when the
-spot-check runs at L1 maturity, the adapter records
-`ac_spotcheck_maturity = "L1"` and treats the result as advisory rather than
-blocking. The direction-aware action task (#158) will make that policy explicit
-by adding a structural `direction` field (`block` or `advisory`) derived from a
-finding's source/type, not from prose patterns in the acceptance criteria.
+Current gates encode advisory behavior through configured gate maturity and gate
+status, not by searching prose patterns in the acceptance criteria. The AC
+spot-check gate is currently L3, so its token-level findings block publish. The
+same adapter path supports L1 advisory mode by recording
+`ac_spotcheck_maturity = "L1"` and continuing instead of blocking. The
+direction-aware action task (#158) will make this policy explicit by adding a
+structural `direction` field (`block` or `advisory`) derived from a finding's
+source/type.
 
 ---
 
@@ -183,3 +181,5 @@ Do not apply these rules to:
 | Date | Change | By |
 |------|--------|----|
 | 2026-06-19 | Initial policy document — FP-must-fix, FN-accept, circuit breaker | Assembly |
+| 2026-06-20 | Aligned circuit-breaker recovery with current approval, source-issue label, and round-counter behavior | Codex |
+| 2026-06-20 | Clarified current AC spot-check maturity as L3/blocking and preserved L1 advisory behavior as an adapter capability | Codex |
