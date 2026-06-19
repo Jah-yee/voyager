@@ -1,13 +1,13 @@
 # SOP-1824: Assembly Failure Diagnostics
 
 **Applies to:** Voyager Assembly bot operators and managed repositories
-**Last updated:** 2026-05-25
-**Last reviewed:** 2026-05-25
+**Last updated:** 2026-06-20
+**Last reviewed:** 2026-06-20
 **Status:** Active
 **Date:** 2026-05-25
 **Requested by:** Frank Xu (via issue #93)
 **Priority:** P1
-**Related:** VOY-1817, VOY-1821, VOY-1822, VOY-1823, #93
+**Related:** VOY-1817, VOY-1821, VOY-1822, VOY-1823, VOY-1825, #93
 
 ---
 
@@ -182,4 +182,5 @@ If the retained bundle exists but `repo/` is missing:
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-06-20 | Added VOY-1825 as the loop-convergence policy reference for failure-loop stop decisions. | Codex |
 | 2026-05-25 | Added Assembly subprocess backend failure diagnostics and retention SOP | Codex |
