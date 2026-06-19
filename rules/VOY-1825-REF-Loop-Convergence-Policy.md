@@ -82,8 +82,11 @@ edge cases within the design tolerance.
 
 ### Rule 3 — Circuit Breaker / Max Rounds
 
-**Definition:** The automated fix loop per PR is capped at a configurable
-number of rounds (default: 8). Beyond that threshold, the loop halts and
+**Definition:** The automated fix loop for a managed source issue is capped at
+a configurable number of rounds (default: 8). The cap is source-issue scoped:
+the loop reads and writes `assembly-fix-round-N` and `loop-circuit-broken`
+labels on the source issue, not on the PR. Closing or recreating a PR for the
+same issue does not reset the counter. Beyond the threshold, the loop halts and
 escalates to a human instead of continuing indefinitely.
 
 **Policy:** When `ASSEMBLY_MAX_FIX_ROUNDS` (default 8) is exceeded without
@@ -97,10 +100,11 @@ A human approval bypass is evaluated only on a threshold-hit run before the
 `loop-circuit-broken` label has been applied. If the source issue already has
 that label, the loop halts before checking PR approval; to resume, an operator
 must remove the source issue's active breaker label and then rely on a current
-human approval for the PR head, or start a new managed PR flow. A plain comment
-such as "continue" is not a bypass. The bypass does not automatically reset
-existing `assembly-fix-round-N` labels or the round counter, so operators who
-want a fresh counter must also clean up the source issue's fix-round labels.
+human approval for the PR head. Opening a replacement PR or branch for the same
+source issue is not a reset. A plain comment such as "continue" is not a bypass.
+The bypass does not automatically reset existing `assembly-fix-round-N` labels
+or the round counter, so operators who want a fresh counter must also clean up
+the source issue's fix-round labels.
 
 **Rationale:** Before #157, a single PR could accumulate ~24 bot-driven fix
 commits (#152 → #154). Each round consumed tokens, review attention, and CI
@@ -109,8 +113,9 @@ unbounded "keep trying" into bounded "halt and escalate," which is safer and
 more predictable.
 
 **Implementation reference:** The circuit breaker is implemented as
-`ASSEMBLY_MAX_FIX_ROUNDS` (env var, default 8) with `assembly-fix-round-N`
-label tracking. See issue #157 and `voyager/bots/assembly/writeback.py`.
+`ASSEMBLY_MAX_FIX_ROUNDS` (env var, default 8) with source-issue
+`assembly-fix-round-N` label tracking. See issue #157 and
+`voyager/bots/assembly/writeback.py`.
 
 ---
 
@@ -120,7 +125,7 @@ The three rules form a decision table for any finding in the automated loop:
 
 | Finding classification | Action | Loop behavior |
 |------------------------|--------|---------------|
-| True positive (correct block) | Block publish, trigger auto-fix | Normal fix round; round counter increments |
+| True positive (correct block) | Block publish, trigger auto-fix | Normal fix round; source issue round counter increments |
 | False positive (over-block) | **Must fix** the check | Escalate as a check bug; investigate after the immediate workaround |
 | False negative (under-block) | **Accept** — fallback to review | Do not trigger auto-fix; do not increment round counter |
 | Round count exceeds threshold | **Halt** — no more auto-fix attempts | Apply `loop-circuit-broken` label to the source issue, post escalation comments; human unblock requires current PR approval and removal of any active source-issue breaker label |
@@ -141,8 +146,8 @@ finding's source/type, not from prose patterns in the acceptance criteria.
 |------|-------|----------|
 | AC spot-check blocking | #152 | Originating case — introduced conservative token-level AC checking |
 | AC nesting preservation | #154 | Originating case — fixed AC structure for accurate spot-check attribution |
-| Circuit breaker | #157 | Implements Rule 3 — caps automated fix rounds per PR |
-| Direction-aware action | #158 | Implements Rules 1 and 2 structurally — findings carry `block`/`advisory` direction from their source |
+| Circuit breaker | #157 | Implements Rule 3 — caps automated fix rounds per source issue |
+| Direction-aware action | #158 | Future task for Rules 1 and 2 — findings will carry `block`/`advisory` direction from their source |
 | Decision memory | (planned) | Future task — will persist round-by-round decisions so the loop can reference past verdicts instead of re-deriving them |
 
 ---
