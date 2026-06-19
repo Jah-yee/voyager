@@ -18,6 +18,9 @@ subprocess-backed OMP adapter. It complements VOY-1823 audit lookup: VOY-1823
 finds the private audit manifest; this SOP explains the failure diagnostic and
 retained debug bundle stored by failed real-backend runs.
 
+When a failure investigation turns into a repeated fix loop or retry/stop
+decision, use VOY-1825 as the policy reference for convergence boundaries.
+
 On failure, Assembly records:
 
 - `phase`: where the backend failed, such as `clone`, `git_config`,
@@ -182,5 +185,6 @@ If the retained bundle exists but `repo/` is missing:
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-06-20 | Added an in-body VOY-1825 reference for repeated failure-loop stop decisions. | Codex |
 | 2026-06-20 | Added VOY-1825 as the loop-convergence policy reference for failure-loop stop decisions. | Codex |
 | 2026-05-25 | Added Assembly subprocess backend failure diagnostics and retention SOP | Codex |

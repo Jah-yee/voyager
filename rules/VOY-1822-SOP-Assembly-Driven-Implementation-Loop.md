@@ -28,6 +28,10 @@ Assembly now has a concrete runtime shape:
 6. CI, Codex, and Clearance converge.
 7. A human reviewer approves and merges.
 
+During the convergence step, use VOY-1825 for Assembly fix/accept/stop
+decisions: fix false-positive blockers, accept tolerated false negatives through
+normal review, and stop bounded loops at the documented circuit breaker.
+
 ## Why
 
 The goal is to make that loop direct, repeatable, and discoverable by future
@@ -919,6 +923,7 @@ this SOP by name: `VOY-1822 Assembly-Driven Implementation Loop`.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-06-20 | Added an in-body VOY-1825 reference for the Assembly convergence step. | Codex |
 | 2026-06-20 | Added VOY-1825 as the loop-convergence policy reference for Assembly fix/accept/stop decisions. | Codex |
 | 2026-05-24 | Initial SOP for issue #94, derived from VOY-1811 and specialized for Assembly's issue-to-PR implementation loop. | Codex |
 | 2026-05-24 | Added Codex review settle gate and final ready-for-approval checklist for issue #98. | Codex |
