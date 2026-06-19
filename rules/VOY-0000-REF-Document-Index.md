@@ -35,6 +35,7 @@
 | 1822 | SOP | Assembly Driven Implementation Loop |
 | 1823 | SOP | Assembly OMP Audit Lookup |
 | 1824 | SOP | Assembly Failure Diagnostics |
+| 1825 | REF | Loop Convergence Policy |
 
 ---
 
@@ -46,3 +47,4 @@
 | 2026-05-24 | Added VOY-1822 Assembly Driven Implementation Loop SOP | Codex |
 | 2026-05-24 | Added VOY-1823 Assembly OMP Audit Lookup SOP | Codex |
 | 2026-05-25 | Added VOY-1824 Assembly Failure Diagnostics SOP | Codex |
+| 2026-06-19 | Added VOY-1825 Loop Convergence Policy REF | Assembly |
