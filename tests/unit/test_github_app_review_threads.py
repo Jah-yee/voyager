@@ -65,3 +65,97 @@ async def test_review_threads_fetches_original_line_anchor() -> None:
     assert threads[0]["line"] is None
     assert threads[0]["originalLine"] == 42
     assert threads[0]["originalStartLine"] == 40
+
+
+@pytest.mark.asyncio
+async def test_review_threads_enriches_known_limitation_identity() -> None:
+    client = GitHubAppClient({})
+
+    async def fake_graphql(
+        self: GitHubAppClient,
+        app_slug: str,
+        repository: str,
+        *,
+        query: str,
+        variables: dict[str, Any],
+    ) -> dict[str, Any]:
+        _ = self, app_slug, repository, query, variables
+        return {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PRRT_title",
+                                "isResolved": False,
+                                "isOutdated": False,
+                                "viewerCanResolve": True,
+                                "path": "app.py",
+                                "line": 10,
+                                "originalLine": 10,
+                                "startLine": None,
+                                "originalStartLine": None,
+                                "diffSide": "RIGHT",
+                                "startDiffSide": None,
+                                "comments": {
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    "nodes": [
+                                        {
+                                            "databaseId": 101,
+                                            "author": {"login": "chatgpt-codex-connector"},
+                                            "body": (
+                                                "**<sub><sub>![P2 Badge](https://img.shields.io"
+                                                "/badge/P2-yellow)</sub></sub>  Avoid stale cache writes**"
+                                            ),
+                                            "url": "https://example/comments/101",
+                                            "createdAt": "2026-06-17T00:00:00Z",
+                                            "replyTo": None,
+                                        }
+                                    ],
+                                },
+                            },
+                            {
+                                "id": "PRRT_kind",
+                                "isResolved": False,
+                                "isOutdated": False,
+                                "viewerCanResolve": True,
+                                "path": "ci.yml",
+                                "line": 20,
+                                "originalLine": 20,
+                                "startLine": None,
+                                "originalStartLine": None,
+                                "diffSide": "RIGHT",
+                                "startDiffSide": None,
+                                "comments": {
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    "nodes": [
+                                        {
+                                            "databaseId": 102,
+                                            "author": {"login": "chatgpt-codex-connector"},
+                                            "body": "**P2** required check paths-ignore mismatch",
+                                            "url": "https://example/comments/102",
+                                            "createdAt": "2026-06-17T00:00:00Z",
+                                            "replyTo": None,
+                                        }
+                                    ],
+                                },
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+
+    client.graphql = types.MethodType(fake_graphql, client)  # type: ignore[method-assign]
+
+    threads = await client.pull_request_review_threads("test-app", "org/repo", 123)
+
+    assert threads[0]["ruleId"] == "codex-title:avoid stale cache writes"
+    assert threads[0]["comments"]["nodes"][0]["ruleId"] == "codex-title:avoid stale cache writes"
+    assert (
+        threads[1]["ruleId"]
+        == "required_check_coupling:codex-title:required check paths-ignore mismatch"
+    )
+    assert threads[1]["findingKind"] == "required_check_coupling"
+    assert threads[1]["comments"]["nodes"][0]["findingKind"] == "required_check_coupling"

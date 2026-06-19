@@ -75,6 +75,7 @@ from voyager.bots.clearance.severity import evaluate as evaluate_severity
 from voyager.bots.clearance.severity_input import extract_severity_and_kind
 from voyager.bots.clearance.state import StateStore
 from voyager.core.github_app import GitHubAppClient, GitHubGraphQLError
+from voyager.core.review_identity import extract_known_limitation_rule_id
 from voyager.core.writeback import _safe_exception_fields, build_writeback_failure, dry_run_enabled
 
 _log = logging.getLogger(__name__)
@@ -576,6 +577,63 @@ def _known_limitation_line_candidates(thread_dict: dict[str, Any]) -> list[int |
     return lines or [None]
 
 
+_KNOWN_LIMITATION_STRUCTURED_RULE_KEYS = (
+    "rule_id",
+    "ruleId",
+    "check_id",
+    "checkId",
+)
+
+_KNOWN_LIMITATION_KIND_KEYS = (
+    "finding_kind",
+    "findingKind",
+)
+
+
+def _known_limitation_rule_ids(
+    thread_dict: dict[str, Any],
+    comments_nodes: list[dict[str, Any]],
+    *,
+    finding_kind: str | None,
+) -> list[str]:
+    """Return stable rule/check candidates for known-limitation fingerprints.
+
+    Structured rule/check ids are preferred when an enriched caller supplies
+    them. Plain GitHub review threads do not expose those fields, so production
+    falls back to Clearance's small ``finding_kind`` vocabulary, then the
+    first-line Codex finding title. Full comment bodies and GitHub comment ids
+    are intentionally excluded from new fingerprints.
+    """
+    first_comment = comments_nodes[0] if comments_nodes else {}
+    body = (first_comment.get("body") if isinstance(first_comment.get("body"), str) else "") or ""
+    rule_ids: list[str] = []
+
+    def append_ids_from(keys: tuple[str, ...]) -> None:
+        for source in (thread_dict, first_comment):
+            for key in keys:
+                value = source.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                rule_id = value.strip()
+                if rule_id not in rule_ids:
+                    rule_ids.append(rule_id)
+
+    append_ids_from(_KNOWN_LIMITATION_STRUCTURED_RULE_KEYS)
+    if rule_ids:
+        return rule_ids
+
+    body_rule_id = extract_known_limitation_rule_id(body)
+    if body_rule_id is not None:
+        return [body_rule_id]
+
+    append_ids_from(_KNOWN_LIMITATION_KIND_KEYS)
+    if finding_kind:
+        rule_id = finding_kind.strip()
+        if rule_id and rule_id not in rule_ids:
+            rule_ids.append(rule_id)
+    return rule_ids
+
+
 async def _process_thread(
     thread_dict: dict[str, Any],
     *,
@@ -664,10 +722,16 @@ async def _process_thread(
         expr_line = thread_dict.get("line")
         body_raw = (comments_nodes[0].get("body") if comments_nodes else None) or ""
         line_candidates = _known_limitation_line_candidates(thread_dict)
+        rule_ids = _known_limitation_rule_ids(
+            thread_dict,
+            comments_nodes,
+            finding_kind=finding_kind,
+        )
         kl_entry = known_limitation_store.lookup_for_finding(
             repo=repo,
             path=expr_path,
             line_candidates=line_candidates,
+            rule_ids=rule_ids,
             body=body_raw,
         )
         if kl_entry is not None:
