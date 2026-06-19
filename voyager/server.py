@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -26,8 +29,6 @@ from voyager.build_info import BUILD_COMMIT, VERSION
 from voyager.core.security import match_signature
 from voyager.core.writeback import dry_run_enabled
 
-app = FastAPI(title="Iterwheel GitHub Bridge")
-
 _log = logging.getLogger(__name__)
 _recent_writebacks: deque[dict[str, Any]] = deque(maxlen=100)
 _client: Any = None
@@ -36,6 +37,7 @@ _SENTINEL: Any = object()
 _config: Any = _SENTINEL
 _default_profile_name: Any = _SENTINEL
 _investigator: Any = _SENTINEL
+_drift_alert_task: asyncio.Task[None] | None = None
 
 
 def _get_config() -> Any:
@@ -148,6 +150,114 @@ def _get_investigator() -> ThreadInvestigator | None:
         except Exception:
             _investigator = None
     return cast("ThreadInvestigator | None", _investigator)
+
+
+def _deployed_version_drift_enabled() -> bool:
+    return _truthy(os.environ.get("BRIDGE_DRIFT_ALERT_ENABLED"))
+
+
+def _deployed_version_drift_interval_seconds() -> int:
+    raw = os.environ.get("BRIDGE_DRIFT_ALERT_INTERVAL_SECONDS", "3600")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        _log.warning("Invalid BRIDGE_DRIFT_ALERT_INTERVAL_SECONDS=%r; using 3600", raw)
+        return 3600
+
+
+async def _deployed_version_drift_token(repository: str) -> str | None:
+    env_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if env_token:
+        return env_token
+
+    client = _get_client()
+    if client is None:
+        return None
+
+    app_slug = os.environ.get("BRIDGE_DRIFT_ALERT_APP_SLUG", "iterwheel-assembly")
+    try:
+        return cast("str | None", await client.installation_token(app_slug, repository=repository))
+    except Exception:
+        _log.exception("Failed to mint token for deployed-version drift alert")
+        return None
+
+
+async def _run_deployed_version_drift_check() -> None:
+    repository = os.environ.get("BRIDGE_DRIFT_ALERT_REPOSITORY", "iterwheel/voyager")
+    bridge_url = os.environ.get("BRIDGE_DRIFT_ALERT_BRIDGE_URL", "https://gh.iterwheel.com")
+    token = await _deployed_version_drift_token(repository)
+    if not token:
+        _log.warning("Skipping deployed-version drift check: no GitHub token available")
+        return
+
+    from voyager.core.drift_check import run_drift_alert_once
+
+    result = await run_drift_alert_once(
+        repository,
+        bridge_url,
+        github_token=token,
+    )
+    if result["drifted"] is True:
+        _log.warning(
+            "Deployed-version drift detected: deployed=%s latest=%s alert_created=%s",
+            result["deployed_version"],
+            result["latest_tag"],
+            result["alert_created"],
+        )
+    elif result["drifted"] is False:
+        _log.info(
+            "Deployed version matches latest release: deployed=%s latest=%s",
+            result["deployed_version"],
+            result["latest_tag"],
+        )
+    else:
+        _log.warning("Deployed-version drift check inconclusive: %s", result["summary"])
+
+
+async def _deployed_version_drift_loop() -> None:
+    interval = _deployed_version_drift_interval_seconds()
+    while True:
+        try:
+            await _run_deployed_version_drift_check()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("Scheduled deployed-version drift check failed")
+        await asyncio.sleep(interval)
+
+
+async def _start_deployed_version_drift_schedule() -> None:
+    global _drift_alert_task
+    if not _deployed_version_drift_enabled():
+        return
+    if _drift_alert_task is not None and not _drift_alert_task.done():
+        return
+    _drift_alert_task = asyncio.create_task(
+        _deployed_version_drift_loop(),
+        name="deployed-version-drift-alert",
+    )
+
+
+async def _stop_deployed_version_drift_schedule() -> None:
+    global _drift_alert_task
+    if _drift_alert_task is None:
+        return
+    _drift_alert_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await _drift_alert_task
+    _drift_alert_task = None
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await _start_deployed_version_drift_schedule()
+    try:
+        yield
+    finally:
+        await _stop_deployed_version_drift_schedule()
+
+
+app = FastAPI(title="Iterwheel GitHub Bridge", lifespan=_lifespan)
 
 
 def _utc_now() -> str:

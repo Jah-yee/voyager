@@ -39,6 +39,7 @@ def test_vyg_bridge_help_shows_serve() -> None:
     result = runner.invoke(app, ["bridge", "--help"])
     assert result.exit_code == 0
     assert "serve" in result.stdout
+    assert "check-drift" in result.stdout
 
 
 def test_vyg_bridge_serve_help_lists_flags() -> None:
