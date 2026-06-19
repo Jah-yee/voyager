@@ -12,10 +12,16 @@ from voyager.bots.clearance.known_limitations import (
     KnownLimitationEntry,
     KnownLimitationStore,
     compute_fingerprint,
+    compute_legacy_fingerprint,
+    compute_legacy_scoped_fingerprint,
     compute_scoped_fingerprint,
 )
 from voyager.bots.clearance.models import Verdict
-from voyager.bots.clearance.pipeline import _known_limitation_line_candidates, _process_thread
+from voyager.bots.clearance.pipeline import (
+    _known_limitation_line_candidates,
+    _known_limitation_rule_ids,
+    _process_thread,
+)
 
 # ---------------------------------------------------------------------------
 # Fingerprint tests
@@ -24,40 +30,61 @@ from voyager.bots.clearance.pipeline import _known_limitation_line_candidates, _
 
 class TestComputeFingerprint:
     def test_deterministic_same_input(self) -> None:
-        """Same path, line, body → same fingerprint."""
-        fp1 = compute_fingerprint("src/main.py", 42, "some finding body")
-        fp2 = compute_fingerprint("src/main.py", 42, "some finding body")
+        """Same path, line, rule id produces the same fingerprint."""
+        fp1 = compute_fingerprint("src/main.py", 42, "required_check_coupling")
+        fp2 = compute_fingerprint("src/main.py", 42, "required_check_coupling")
         assert fp1 == fp2
 
     def test_deterministic_different_line(self) -> None:
         """Different line numbers → different fingerprints."""
-        fp1 = compute_fingerprint("src/main.py", 42, "same body")
-        fp2 = compute_fingerprint("src/main.py", 99, "same body")
+        fp1 = compute_fingerprint("src/main.py", 42, "same-rule")
+        fp2 = compute_fingerprint("src/main.py", 99, "same-rule")
         assert fp1 != fp2
 
-    def test_body_whitespace_normalisation(self) -> None:
-        """Different whitespace in body → same fingerprint."""
-        fp1 = compute_fingerprint("a.py", 1, "  hello   world  ")
-        fp2 = compute_fingerprint("a.py", 1, "hello world")
+    def test_rule_id_normalisation(self) -> None:
+        """Whitespace/case drift in rule ids does not change the fingerprint."""
+        fp1 = compute_fingerprint("a.py", 1, "  Required   Check  ")
+        fp2 = compute_fingerprint("a.py", 1, "required check")
         assert fp1 == fp2
 
     def test_none_line(self) -> None:
         """None line is treated as 0 for fingerprinting."""
-        fp1 = compute_fingerprint("a.py", None, "body")
-        fp2 = compute_fingerprint("a.py", 0, "body")
+        fp1 = compute_fingerprint("a.py", None, "same-rule")
+        fp2 = compute_fingerprint("a.py", 0, "same-rule")
         assert fp1 == fp2
 
     def test_has_sha256_length(self) -> None:
         """Fingerprint is a hex-encoded SHA-256 digest (64 chars)."""
-        fp = compute_fingerprint("x.py", 1, "body text")
+        fp = compute_fingerprint("x.py", 1, "rule-id")
         assert len(fp) == 64
         int(fp, 16)  # valid hex
 
     def test_scoped_fingerprint_includes_repository(self) -> None:
-        """The same path/line/body differs across repositories."""
-        fp1 = compute_scoped_fingerprint("org/repo-a", "src/main.py", 42, "same body")
-        fp2 = compute_scoped_fingerprint("org/repo-b", "src/main.py", 42, "same body")
+        """The same path/line/rule id differs across repositories."""
+        fp1 = compute_scoped_fingerprint("org/repo-a", "src/main.py", 42, "same-rule")
+        fp2 = compute_scoped_fingerprint("org/repo-b", "src/main.py", 42, "same-rule")
         assert fp1 != fp2
+
+    def test_reworded_body_same_fingerprint(self) -> None:
+        """Comment prose is not part of the stable fingerprint identity."""
+        body_a = "[P2] The required check is skipped by paths-ignore."
+        body_b = "[P2] Reworded: paths-ignore can bypass this required status."
+        fp1 = compute_scoped_fingerprint("org/repo", "src/main.py", 42, "required_check_coupling")
+        fp2 = compute_scoped_fingerprint("org/repo", "src/main.py", 42, "required_check_coupling")
+        assert body_a != body_b
+        assert fp1 == fp2
+
+    def test_different_findings_same_location_different_fingerprint(self) -> None:
+        """Different rule ids at the same location are not over-suppressed."""
+        fp1 = compute_scoped_fingerprint("org/repo", "src/main.py", 42, "required_check_coupling")
+        fp2 = compute_scoped_fingerprint("org/repo", "src/main.py", 42, "sql_injection")
+        assert fp1 != fp2
+
+    def test_legacy_body_whitespace_normalisation(self) -> None:
+        """Legacy body fingerprints keep the old whitespace-normalised shape."""
+        fp1 = compute_legacy_fingerprint("a.py", 1, "  hello   world  ")
+        fp2 = compute_legacy_fingerprint("a.py", 1, "hello world")
+        assert fp1 == fp2
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +95,7 @@ class TestComputeFingerprint:
 class TestKnownLimitationEntry:
     def test_roundtrip_json(self) -> None:
         """to_json → from_json recovers the same data."""
-        fp = compute_fingerprint("x.py", 1, "body")
+        fp = compute_fingerprint("x.py", 1, "rule-id")
         now = datetime.now(UTC).replace(microsecond=0)
         entry = KnownLimitationEntry(
             fingerprint=fp,
@@ -87,7 +114,7 @@ class TestKnownLimitationEntry:
 
     def test_minimal_json_no_optional_fields(self) -> None:
         """Serialization works without repo/pr_number."""
-        fp = compute_fingerprint("a.py", 1, "body")
+        fp = compute_fingerprint("a.py", 1, "rule-id")
         entry = KnownLimitationEntry(
             fingerprint=fp,
             decision_link="https://github.com/org/repo/issues/1",
@@ -113,12 +140,12 @@ def tmp_store(tmp_path: Path) -> KnownLimitationStore:
 class TestKnownLimitationStore:
     def test_lookup_missing(self, tmp_store: KnownLimitationStore) -> None:
         """A fingerprint not in the store returns None."""
-        fp = compute_fingerprint("x.py", 1, "some finding")
+        fp = compute_fingerprint("x.py", 1, "some-rule")
         assert tmp_store.lookup(fp) is None
 
     def test_record_and_lookup(self, tmp_store: KnownLimitationStore) -> None:
         """A recorded fingerprint is found by lookup."""
-        fp = compute_fingerprint("src/main.py", 42, "use of unsafe function")
+        fp = compute_fingerprint("src/main.py", 42, "unsafe-call")
         decision = "https://github.com/org/repo/issues/123"
         tmp_store.record(fp, decision, repo="org/repo", pr_number=42)
         entry = tmp_store.lookup(fp)
@@ -134,7 +161,7 @@ class TestKnownLimitationStore:
             repo="org/repo-a",
             path="src/main.py",
             line=42,
-            body="same finding",
+            rule_id="required_check_coupling",
             decision_link=decision,
             pr_number=123,
         )
@@ -144,6 +171,7 @@ class TestKnownLimitationStore:
                 repo="org/repo-a",
                 path="src/main.py",
                 line_candidates=[42],
+                rule_id="required_check_coupling",
                 body="same finding",
             )
             is not None
@@ -153,14 +181,61 @@ class TestKnownLimitationStore:
                 repo="org/repo-b",
                 path="src/main.py",
                 line_candidates=[42],
+                rule_id="required_check_coupling",
                 body="same finding",
+            )
+            is None
+        )
+
+    def test_lookup_for_finding_survives_comment_rewording(
+        self, tmp_store: KnownLimitationStore
+    ) -> None:
+        """Stable rule-id lookup ignores changed Codex prose for the same finding."""
+        tmp_store.record_for_finding(
+            repo="org/repo",
+            path="src/main.py",
+            line=42,
+            rule_id="required_check_coupling",
+            decision_link="https://github.com/org/repo/issues/123",
+        )
+
+        entry = tmp_store.lookup_for_finding(
+            repo="org/repo",
+            path="src/main.py",
+            line_candidates=[42],
+            rule_id="required_check_coupling",
+            body="[P2] Reworded description of the same required check problem.",
+        )
+
+        assert entry is not None
+        assert entry.decision_link == "https://github.com/org/repo/issues/123"
+
+    def test_lookup_for_finding_does_not_match_different_rule_same_location(
+        self, tmp_store: KnownLimitationStore
+    ) -> None:
+        """Different findings at the same location keep separate fingerprints."""
+        tmp_store.record_for_finding(
+            repo="org/repo",
+            path="src/main.py",
+            line=42,
+            rule_id="required_check_coupling",
+            decision_link="https://github.com/org/repo/issues/123",
+        )
+
+        assert (
+            tmp_store.lookup_for_finding(
+                repo="org/repo",
+                path="src/main.py",
+                line_candidates=[42],
+                rule_id="sql_injection",
+                body="[P1] Different security finding at this line.",
             )
             is None
         )
 
     def test_legacy_lookup_filters_by_recorded_repo(self, tmp_store: KnownLimitationStore) -> None:
         """Old unscoped records only match their stored repo or global entries."""
-        fp = compute_fingerprint("src/main.py", 42, "same finding")
+        fp = compute_legacy_fingerprint("src/main.py", 42, "same finding")
         tmp_store.record(
             fp,
             "https://github.com/org/repo-a/issues/123",
@@ -173,6 +248,7 @@ class TestKnownLimitationStore:
                 repo="org/repo-a",
                 path="src/main.py",
                 line_candidates=[42],
+                rule_id="renamed-rule",
                 body="same finding",
             )
             is not None
@@ -182,10 +258,34 @@ class TestKnownLimitationStore:
                 repo="org/repo-b",
                 path="src/main.py",
                 line_candidates=[42],
+                rule_id="renamed-rule",
                 body="same finding",
             )
             is None
         )
+
+    def test_legacy_scoped_lookup_keeps_existing_jsonl_entries(
+        self, tmp_store: KnownLimitationStore
+    ) -> None:
+        """Pre-#174 repo-scoped body fingerprints still match by dual lookup."""
+        fp = compute_legacy_scoped_fingerprint("org/repo", "src/main.py", 42, "old body")
+        tmp_store.record(
+            fp,
+            "https://github.com/org/repo/issues/123",
+            repo="org/repo",
+            pr_number=123,
+        )
+
+        entry = tmp_store.lookup_for_finding(
+            repo="org/repo",
+            path="src/main.py",
+            line_candidates=[42],
+            rule_id="required_check_coupling",
+            body="old body",
+        )
+
+        assert entry is not None
+        assert entry.decision_link == "https://github.com/org/repo/issues/123"
 
     def test_lookup_uses_original_line_candidate_for_outdated_threads(
         self, tmp_store: KnownLimitationStore
@@ -195,7 +295,7 @@ class TestKnownLimitationStore:
             repo="org/repo",
             path="src/main.py",
             line=42,
-            body="same finding",
+            rule_id="required_check_coupling",
             decision_link="https://github.com/org/repo/issues/123",
         )
 
@@ -203,7 +303,8 @@ class TestKnownLimitationStore:
             repo="org/repo",
             path="src/main.py",
             line_candidates=[None, 42],
-            body="same finding",
+            rule_id="required_check_coupling",
+            body="reworded finding",
         )
 
         assert entry is not None
@@ -211,15 +312,15 @@ class TestKnownLimitationStore:
 
     def test_contains(self, tmp_store: KnownLimitationStore) -> None:
         """__contains__ works for recorded and missing fingerprints."""
-        fp_recorded = compute_fingerprint("a.py", 1, "finding one")
-        fp_missing = compute_fingerprint("b.py", 2, "finding two")
+        fp_recorded = compute_fingerprint("a.py", 1, "rule-one")
+        fp_missing = compute_fingerprint("b.py", 2, "rule-two")
         tmp_store.record(fp_recorded, "https://github.com/org/repo/issues/1")
         assert fp_recorded in tmp_store
         assert fp_missing not in tmp_store
 
     def test_storage_is_persistent(self, tmp_path: Path) -> None:
         """Multiple store instances share the same backing file."""
-        fp = compute_fingerprint("a.py", 1, "persistent finding")
+        fp = compute_fingerprint("a.py", 1, "persistent-rule")
         store_a = KnownLimitationStore(path=tmp_path / "known_limitations.jsonl")
         store_a.record(fp, "https://github.com/org/repo/issues/1")
         store_b = KnownLimitationStore(path=tmp_path / "known_limitations.jsonl")
@@ -228,8 +329,8 @@ class TestKnownLimitationStore:
 
     def test_all_oldest_first(self, tmp_store: KnownLimitationStore) -> None:
         """all() returns entries in append order."""
-        fp1 = compute_fingerprint("a.py", 1, "first")
-        fp2 = compute_fingerprint("b.py", 2, "second")
+        fp1 = compute_fingerprint("a.py", 1, "first-rule")
+        fp2 = compute_fingerprint("b.py", 2, "second-rule")
         tmp_store.record(fp1, "link1")
         tmp_store.record(fp2, "link2")
         entries = tmp_store.all()
@@ -245,14 +346,14 @@ class TestKnownLimitationStore:
         """A corrupt line in the JSONL file is skipped without crashing the store."""
         store_path = tmp_path / "known_limitations.jsonl"
         store_path.parent.mkdir(parents=True, exist_ok=True)
-        fp = compute_fingerprint("a.py", 1, "good finding")
+        fp = compute_fingerprint("a.py", 1, "good-rule")
         good_line = KnownLimitationEntry(fp, "link1").to_json()
         invalid_object = "[]"
         invalid_timestamp = json.dumps(
             {
                 "created_at": "not-a-date",
                 "decision_link": "link2",
-                "fingerprint": compute_fingerprint("b.py", 2, "bad finding"),
+                "fingerprint": compute_fingerprint("b.py", 2, "bad-rule"),
             }
         )
         store_path.write_text(
@@ -266,7 +367,7 @@ class TestKnownLimitationStore:
         """A structurally corrupt fingerprint cannot crash index construction."""
         store_path = tmp_path / "known_limitations.jsonl"
         store_path.parent.mkdir(parents=True, exist_ok=True)
-        fp = compute_fingerprint("a.py", 1, "good finding")
+        fp = compute_fingerprint("a.py", 1, "good-rule")
         bad_line = json.dumps(
             {
                 "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
@@ -301,7 +402,7 @@ class TestKnownLimitationStore:
         store_path = tmp_path / "known_limitations.jsonl"
         store_path.parent.mkdir(parents=True, exist_ok=True)
         store_path.write_text('{"fingerprint":', encoding="utf-8")
-        fp = compute_fingerprint("a.py", 1, "new finding")
+        fp = compute_fingerprint("a.py", 1, "new-rule")
 
         KnownLimitationStore(path=store_path).record(
             fp,
@@ -328,7 +429,7 @@ def test_matched_fingerprint_is_suppressed(tmp_store: KnownLimitationStore) -> N
     This exercises the contract used by _process_thread: storing a fingerprint
     and verifying lookup returns the known limitation.
     """
-    fp = compute_fingerprint("src/unsafe.py", 15, "Potential SQL injection in query builder")
+    fp = compute_fingerprint("src/unsafe.py", 15, "sql_injection")
     tmp_store.record(
         fp,
         "https://github.com/org/repo/issues/42",
@@ -340,7 +441,7 @@ def test_matched_fingerprint_is_suppressed(tmp_store: KnownLimitationStore) -> N
     assert matched.decision_link == "https://github.com/org/repo/issues/42"
 
     # A different finding is NOT matched
-    fp_other = compute_fingerprint("src/safe.py", 1, "Other issue")
+    fp_other = compute_fingerprint("src/safe.py", 1, "other_rule")
     assert tmp_store.lookup(fp_other) is None
 
 
@@ -353,6 +454,60 @@ def test_known_limitation_line_candidates_keep_explicit_null_line() -> None:
     assert _known_limitation_line_candidates({"originalLine": 42}) == [42]
 
 
+def test_known_limitation_rule_ids_prefer_structured_thread_field() -> None:
+    """Structured rule/check id fields suppress coarse finding_kind fallback."""
+    assert _known_limitation_rule_ids(
+        {"ruleId": "codex.explicit-rule", "finding_kind": "required_check_coupling"},
+        [{"findingKind": "required_check_coupling", "body": "required check paths-ignore"}],
+        finding_kind="required_check_coupling",
+    ) == ["codex.explicit-rule"]
+
+
+def test_known_limitation_rule_ids_use_source_kind_as_fallback() -> None:
+    """Source finding_kind fields are fallback identities, not structured ids."""
+    assert _known_limitation_rule_ids(
+        {"finding_kind": "required_check_coupling"},
+        [{"body": ""}],
+        finding_kind=None,
+    ) == ["required_check_coupling"]
+
+
+def test_known_limitation_rule_ids_include_finding_kind_fallback() -> None:
+    """The production finding_kind extractor feeds stable lookup candidates."""
+    assert _known_limitation_rule_ids(
+        {"id": "PRRT_1"},
+        [{"body": ""}],
+        finding_kind="required_check_coupling",
+    ) == ["required_check_coupling"]
+
+
+def test_known_limitation_rule_ids_ignore_comment_database_id() -> None:
+    """GitHub review comment ids are not cross-rerun stable finding ids."""
+    rule_ids = _known_limitation_rule_ids(
+        {"id": "PRRT_1"},
+        [{"databaseId": 101, "body": "Generic Codex review prose"}],
+        finding_kind=None,
+    )
+    assert rule_ids == ["codex-title:generic codex review prose"]
+    assert "101" not in rule_ids[0]
+
+
+def test_known_limitation_rule_ids_use_codex_title_fallback() -> None:
+    """Plain GitHub review threads still get a production-available key."""
+    assert _known_limitation_rule_ids(
+        {"id": "PRRT_1"},
+        [
+            {
+                "body": (
+                    "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow)"
+                    "</sub></sub>  Avoid stale cache writes**\n\nDetails changed."
+                )
+            }
+        ],
+        finding_kind=None,
+    ) == ["codex-title:avoid stale cache writes"]
+
+
 @pytest.mark.asyncio
 async def test_known_limitation_fast_path_preserves_existing_marker_flags(
     tmp_store: KnownLimitationStore,
@@ -361,10 +516,17 @@ async def test_known_limitation_fast_path_preserves_existing_marker_flags(
     thread_id = "PRRT_known_limitation"
     head_sha = "abcdef1234567890abcdef1234567890abcdef12"
     body = "**P2** accepted known limitation."
-    fp = compute_fingerprint("app.py", 10, body)
-    tmp_store.record(fp, "https://github.com/org/repo/issues/42")
+    tmp_store.record_for_finding(
+        repo="org/repo",
+        path="app.py",
+        line=10,
+        rule_id="accepted-known-limitation",
+        decision_link="https://github.com/org/repo/issues/42",
+        pr_number=42,
+    )
     thread_dict = {
         "id": thread_id,
+        "ruleId": "accepted-known-limitation",
         "isResolved": False,
         "isOutdated": False,
         "viewerCanResolve": True,
@@ -416,6 +578,183 @@ async def test_known_limitation_fast_path_preserves_existing_marker_flags(
 
 
 @pytest.mark.asyncio
+async def test_known_limitation_fast_path_uses_finding_kind_candidate(
+    tmp_store: KnownLimitationStore,
+) -> None:
+    """Production threads combine coarse finding_kind with Codex title."""
+    body = "**P2** required check paths-ignore accepted known limitation"
+    tmp_store.record_for_finding(
+        repo="org/repo",
+        path="app.py",
+        line=10,
+        rule_id=(
+            "required_check_coupling:"
+            "codex-title:required check paths-ignore accepted known limitation"
+        ),
+        decision_link="https://github.com/org/repo/issues/42",
+        pr_number=42,
+    )
+    thread_dict = {
+        "id": "PRRT_known_limitation_finding_kind",
+        "isResolved": False,
+        "isOutdated": False,
+        "viewerCanResolve": True,
+        "path": "app.py",
+        "line": 10,
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": 111,
+                    "author": {"login": "chatgpt-codex-connector"},
+                    "body": body,
+                    "url": "https://example/comments/111",
+                    "createdAt": "2026-06-17T00:00:00Z",
+                },
+            ]
+        },
+    }
+
+    processed = await _process_thread(
+        thread_dict,
+        repo="org/repo",
+        pr=42,
+        head_sha="abcdef1234567890abcdef1234567890abcdef12",
+        pr_title="Test PR",
+        now=datetime.now(UTC),
+        base_branch="main",
+        branch_protected_state=True,
+        client=object(),
+        known_limitation_store=tmp_store,
+    )
+
+    assert processed is not None
+    thread, _snapshot = processed
+    assert thread.verdict == Verdict.RESOLVED
+    assert thread.known_limitation_link == "https://github.com/org/repo/issues/42"
+
+
+@pytest.mark.asyncio
+async def test_known_limitation_fast_path_uses_codex_title_candidate(
+    tmp_store: KnownLimitationStore,
+) -> None:
+    """Generic Codex findings survive detail-body rewording via title key."""
+    title_rule_id = "codex-title:avoid stale cache writes"
+    tmp_store.record_for_finding(
+        repo="org/repo",
+        path="app.py",
+        line=10,
+        rule_id=title_rule_id,
+        decision_link="https://github.com/org/repo/issues/42",
+        pr_number=42,
+    )
+    thread_dict = {
+        "id": "PRRT_known_limitation_title",
+        "isResolved": False,
+        "isOutdated": False,
+        "viewerCanResolve": True,
+        "path": "app.py",
+        "line": 10,
+        "comments": {
+            "nodes": [
+                {
+                    "databaseId": 112,
+                    "author": {"login": "chatgpt-codex-connector"},
+                    "body": (
+                        "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow)"
+                        "</sub></sub>  Avoid stale cache writes**\n\n"
+                        "This paragraph was reworded by a later Codex run."
+                    ),
+                    "url": "https://example/comments/112",
+                    "createdAt": "2026-06-17T00:00:00Z",
+                },
+            ]
+        },
+    }
+
+    processed = await _process_thread(
+        thread_dict,
+        repo="org/repo",
+        pr=42,
+        head_sha="abcdef1234567890abcdef1234567890abcdef12",
+        pr_title="Test PR",
+        now=datetime.now(UTC),
+        base_branch="main",
+        branch_protected_state=True,
+        client=object(),
+        known_limitation_store=tmp_store,
+    )
+
+    assert processed is not None
+    thread, _snapshot = processed
+    assert thread.verdict == Verdict.RESOLVED
+    assert thread.known_limitation_link == "https://github.com/org/repo/issues/42"
+
+
+def test_known_limitation_codex_title_distinguishes_same_location(
+    tmp_store: KnownLimitationStore,
+) -> None:
+    """Different Codex finding titles at one line do not over-suppress."""
+    tmp_store.record_for_finding(
+        repo="org/repo",
+        path="app.py",
+        line=10,
+        rule_id="codex-title:avoid stale cache writes",
+        decision_link="https://github.com/org/repo/issues/42",
+        pr_number=42,
+    )
+    body = "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow)</sub></sub>  Guard stale cache reads**"
+    rule_ids = _known_limitation_rule_ids(
+        {"id": "PRRT_1"},
+        [{"body": body}],
+        finding_kind=None,
+    )
+
+    assert rule_ids == ["codex-title:guard stale cache reads"]
+    assert (
+        tmp_store.lookup_for_finding(
+            repo="org/repo",
+            path="app.py",
+            line_candidates=[10],
+            rule_ids=rule_ids,
+            body=body,
+        )
+        is None
+    )
+
+
+def test_known_limitation_finding_kind_title_distinguishes_same_location(
+    tmp_store: KnownLimitationStore,
+) -> None:
+    """Coarse finding_kind matches are narrowed by Codex title when present."""
+    tmp_store.record_for_finding(
+        repo="org/repo",
+        path=".github/workflows/ci.yml",
+        line=10,
+        rule_id="required_check_coupling:codex-title:required check paths-ignore build",
+        decision_link="https://github.com/org/repo/issues/42",
+        pr_number=42,
+    )
+    body = "**P2** required check paths-ignore deploy"
+    rule_ids = _known_limitation_rule_ids(
+        {"id": "PRRT_1"},
+        [{"body": body}],
+        finding_kind="required_check_coupling",
+    )
+
+    assert rule_ids == ["required_check_coupling:codex-title:required check paths-ignore deploy"]
+    assert (
+        tmp_store.lookup_for_finding(
+            repo="org/repo",
+            path=".github/workflows/ci.yml",
+            line_candidates=[10],
+            rule_ids=rule_ids,
+            body=body,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_known_limitation_fast_path_matches_outdated_original_line(
     tmp_store: KnownLimitationStore,
 ) -> None:
@@ -425,12 +764,13 @@ async def test_known_limitation_fast_path_matches_outdated_original_line(
         repo="org/repo",
         path="app.py",
         line=10,
-        body=body,
+        rule_id="accepted-known-limitation",
         decision_link="https://github.com/org/repo/issues/42",
         pr_number=42,
     )
     thread_dict = {
         "id": "PRRT_known_limitation_outdated",
+        "ruleId": "accepted-known-limitation",
         "isResolved": False,
         "isOutdated": True,
         "viewerCanResolve": True,
@@ -481,12 +821,13 @@ async def test_known_limitation_fast_path_matches_outdated_null_line_fingerprint
         repo="org/repo",
         path="app.py",
         line=None,
-        body=body,
+        rule_id="accepted-known-limitation",
         decision_link="https://github.com/org/repo/issues/42",
         pr_number=42,
     )
     thread_dict = {
         "id": "PRRT_known_limitation_outdated_null_line",
+        "ruleId": "accepted-known-limitation",
         "isResolved": False,
         "isOutdated": True,
         "viewerCanResolve": True,
@@ -529,7 +870,7 @@ async def test_known_limitation_fast_path_matches_outdated_null_line_fingerprint
 
 def test_unrecorded_finding_handled_normally(tmp_store: KnownLimitationStore) -> None:
     """An unrecorded fingerprint returns None — normal processing continues."""
-    fp = compute_fingerprint("src/new.py", 1, "Brand new finding not yet accepted")
+    fp = compute_fingerprint("src/new.py", 1, "new-rule")
     assert tmp_store.lookup(fp) is None
 
 

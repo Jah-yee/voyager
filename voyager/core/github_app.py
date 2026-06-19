@@ -11,6 +11,7 @@ import httpx
 import jwt
 
 from .redaction import sanitize_public_text
+from .review_identity import extract_known_limitation_rule_id, extract_required_check_finding_kind
 
 _log = logging.getLogger(__name__)
 
@@ -41,6 +42,24 @@ def _graphql_error_log_fields(errors: list[dict[str, Any]]) -> list[dict[str, st
             }
         )
     return safe_errors
+
+
+def _enrich_review_thread_identity(thread: dict[str, Any]) -> None:
+    comments_nodes = ((thread.get("comments") or {}).get("nodes")) or []
+    first_comment = comments_nodes[0] if comments_nodes else {}
+    body = first_comment.get("body")
+    if not isinstance(body, str):
+        return
+
+    rule_id = extract_known_limitation_rule_id(body)
+    if rule_id:
+        thread.setdefault("ruleId", rule_id)
+        first_comment.setdefault("ruleId", rule_id)
+
+    finding_kind = extract_required_check_finding_kind(body)
+    if finding_kind:
+        thread.setdefault("findingKind", finding_kind)
+        first_comment.setdefault("findingKind", finding_kind)
 
 
 GITHUB_API = "https://api.github.com"
@@ -379,6 +398,9 @@ class GitHubAppClient:
                 if not page_info.get("hasNextPage"):
                     break
                 cursor = page_info.get("endCursor")
+
+        for thread in threads:
+            _enrich_review_thread_identity(thread)
 
         return threads
 

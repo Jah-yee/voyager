@@ -8,6 +8,23 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+### Changed — Clearance known-limitation fingerprints ([#174](https://github.com/iterwheel/voyager/issues/174))
+
+- Known-limitation fingerprints now use the stable finding identity
+  `repo + path + line + rule/check id` instead of the Codex review comment body,
+  with the current Clearance `finding_kind` and Codex finding title as
+  production fallback candidates, so accepted limitations keep matching when
+  Codex rewords the same known finding's detail text.
+- Coarse `finding_kind` identities are combined with the Codex title when
+  available, preventing one accepted required-check limitation from suppressing
+  a different required-check finding at the same line.
+- GitHub review-thread fetches now enrich returned threads with production
+  `ruleId` / `findingKind` candidates derived from the first Codex comment, so
+  webhook processing and tests use the same finding identity path.
+- Existing body-based `known_limitations.jsonl` entries remain readable through
+  legacy dual lookup when no stable rule candidate is available; new records
+  are written with the stable finding-identity fingerprint.
+
 ### Added — Changelog merge drafter ([#163](https://github.com/iterwheel/voyager/issues/163))
 
 - Voyager now routes merged, changelog-relevant PR webhooks into an

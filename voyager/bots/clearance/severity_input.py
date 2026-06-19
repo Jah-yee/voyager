@@ -7,6 +7,7 @@ bodies to Severity enum members and optional finding-kind strings.
 from __future__ import annotations
 
 from voyager.bots.clearance.models import Severity
+from voyager.core.review_identity import extract_required_check_finding_kind
 
 
 def extract_severity_and_kind(
@@ -75,11 +76,4 @@ def _extract_finding_kind(body: str) -> str | None:
 
     Otherwise returns None.
     """
-    body_lower = body.lower()
-    if (
-        "required" in body_lower
-        and ("check" in body_lower or "status" in body_lower)
-        and "paths-ignore" in body_lower
-    ):
-        return "required_check_coupling"
-    return None
+    return extract_required_check_finding_kind(body)

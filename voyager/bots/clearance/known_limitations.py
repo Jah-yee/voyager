@@ -23,33 +23,74 @@ _log = logging.getLogger(__name__)
 _DEFAULT_STORE_DIR = Path.home() / ".voyager" / "state"
 
 
-def _fingerprint_input(path: str, line: int | None, body: str) -> str:
+def _normalise_rule_id(rule_id: str) -> str:
+    normalised = " ".join(rule_id.split()).casefold()
+    if not normalised:
+        raise ValueError("known limitation rule_id must not be empty")
+    return normalised
+
+
+def _line_part(line: int | None) -> str:
+    return str(line) if line is not None else "0"
+
+
+def _fingerprint_input(path: str, line: int | None, rule_id: str) -> str:
     """Stable, deterministic input for the fingerprint hash.
 
-    Normalises whitespace in *body* so that formatting differences between
-    runs do not change the fingerprint. Returns a plain text string; the
-    caller feeds it through :func:`compute_fingerprint`.
+    The new fingerprint identity deliberately excludes the Codex prose body:
+    a finding is identified by location plus rule/check id. Returns a JSON
+    string; the caller feeds it through :func:`compute_fingerprint`.
+    """
+    return json.dumps(
+        [path, _line_part(line), _normalise_rule_id(rule_id)],
+        separators=(",", ":"),
+    )
+
+
+def _legacy_fingerprint_input(path: str, line: int | None, body: str) -> str:
+    """Pre-#174 body-based fingerprint input kept for JSONL compatibility.
+
+    Normalises whitespace in *body* so formatting differences between old
+    records and lookups do not change the fingerprint. Returns a plain text
+    string; the caller feeds it through :func:`compute_legacy_fingerprint`.
     """
     # Normalise: collapse runs of whitespace, strip leading/trailing space.
     normalised_body = " ".join(body.split())
-    parts = [path, str(line) if line is not None else "0", normalised_body]
+    parts = [path, _line_part(line), normalised_body]
     return "|".join(parts)
 
 
-def compute_fingerprint(path: str, line: int | None, body: str) -> str:
-    """Return a SHA-256 hex digest for a finding.
+def compute_fingerprint(path: str, line: int | None, rule_id: str) -> str:
+    """Return a SHA-256 hex digest for a stable finding identity.
 
-    The fingerprint is derived from the file path, line number, and
-    whitespace-normalised Codex comment body — stable across runs and
-    unaffected by formatting drift.
+    The fingerprint is derived from file path, line number, and rule/check id,
+    not from the raw or normalised Codex comment body. This keeps an accepted
+    known limitation matched when Codex rewords the same finding later.
     """
-    raw = _fingerprint_input(path, line, body)
+    raw = _fingerprint_input(path, line, rule_id)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def compute_scoped_fingerprint(repo: str, path: str, line: int | None, body: str) -> str:
-    """Return a repository-scoped fingerprint for a finding."""
-    raw = _fingerprint_input(f"{repo}|{path}", line, body)
+def compute_scoped_fingerprint(repo: str, path: str, line: int | None, rule_id: str) -> str:
+    """Return a repository-scoped fingerprint for a stable finding identity."""
+    raw = _fingerprint_input(f"{repo}|{path}", line, rule_id)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def compute_legacy_fingerprint(path: str, line: int | None, body: str) -> str:
+    """Return the pre-#174 body-based fingerprint for old JSONL entries.
+
+    New code should record :func:`compute_scoped_fingerprint` values. This
+    helper exists so existing ``known_limitations.jsonl`` entries stay readable
+    through dual lookup instead of requiring an eager migration.
+    """
+    raw = _legacy_fingerprint_input(path, line, body)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def compute_legacy_scoped_fingerprint(repo: str, path: str, line: int | None, body: str) -> str:
+    """Return the pre-#174 repository-scoped body fingerprint."""
+    raw = _legacy_fingerprint_input(f"{repo}|{path}", line, body)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -150,22 +191,32 @@ class KnownLimitationStore:
         path: str,
         line_candidates: list[int | None],
         body: str,
+        rule_id: str | None = None,
+        rule_ids: list[str] | None = None,
     ) -> KnownLimitationEntry | None:
-        """Return an accepted limitation for a repo/path/body finding.
+        """Return an accepted limitation for a repo/path/rule finding.
 
         New entries are keyed by repository so a shared ``~/.voyager/state``
-        store cannot suppress another repository's matching path/body. Legacy
-        unscoped fingerprints remain readable, but only when the stored repo
-        is absent (global) or matches the current repository.
+        store cannot suppress another repository's matching path/rule id.
+        Legacy body-based scoped and unscoped fingerprints remain readable
+        through dual lookup, but only when the stored repo is absent (global)
+        or matches the current repository.
         """
         idx = self._load_index()
+        candidate_rule_ids = _unique_rule_ids([*(rule_ids or []), rule_id])
+        for candidate_rule_id in candidate_rule_ids:
+            for line in _unique_lines(line_candidates):
+                entry = idx.get(compute_scoped_fingerprint(repo, path, line, candidate_rule_id))
+                if entry is not None:
+                    return entry
+
         for line in _unique_lines(line_candidates):
-            entry = idx.get(compute_scoped_fingerprint(repo, path, line, body))
+            entry = idx.get(compute_legacy_scoped_fingerprint(repo, path, line, body))
             if entry is not None:
                 return entry
 
         for line in _unique_lines(line_candidates):
-            entry = idx.get(compute_fingerprint(path, line, body))
+            entry = idx.get(compute_legacy_fingerprint(path, line, body))
             if entry is None:
                 continue
             if entry.repo is None or entry.repo == repo:
@@ -202,13 +253,13 @@ class KnownLimitationStore:
         repo: str,
         path: str,
         line: int | None,
-        body: str,
+        rule_id: str,
         decision_link: str,
         pr_number: int | None = None,
     ) -> KnownLimitationEntry:
-        """Record a repo-scoped accepted limitation for a finding."""
+        """Record a repo-scoped accepted limitation for a stable finding id."""
         return self.record(
-            compute_scoped_fingerprint(repo, path, line, body),
+            compute_scoped_fingerprint(repo, path, line, rule_id),
             decision_link,
             repo=repo,
             pr_number=pr_number,
@@ -289,3 +340,17 @@ def _unique_lines(lines: list[int | None]) -> list[int | None]:
         seen.add(line)
         unique.append(line)
     return unique or [None]
+
+
+def _unique_rule_ids(rule_ids: list[str | None]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for raw in rule_ids:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        rule_id = raw.strip()
+        if rule_id in seen:
+            continue
+        seen.add(rule_id)
+        unique.append(rule_id)
+    return unique
