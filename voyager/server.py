@@ -370,14 +370,30 @@ def _ci_failing_app_slug() -> str:
     return os.environ.get("BRIDGE_CI_FAILING_APP_SLUG", "iterwheel-assembly")
 
 
+def _ci_failing_agent_slug() -> str:
+    from voyager.bots.ci_failing import CI_FAILING_AGENT_SLUG
+
+    return CI_FAILING_AGENT_SLUG
+
+
 async def _run_ci_failing_sweep() -> None:
     repo = _ci_failing_repository()
     app_slug = _ci_failing_app_slug()
+    agent_slug = _ci_failing_agent_slug()
     if dry_run_enabled():
         _log.info(
-            "DRY_RUN: would run ci_failing_sweep repo=%s app_slug=%s",
+            "DRY_RUN: would run ci_failing_sweep repo=%s app_slug=%s agent_slug=%s",
             repo,
             app_slug,
+            agent_slug,
+        )
+        return
+
+    if not _repository_allowed_for_agent(repo, agent_slug):
+        _log.warning(
+            "Skipping CI-failing sweep: repository %s is not allow-listed for %s",
+            repo,
+            agent_slug,
         )
         return
 

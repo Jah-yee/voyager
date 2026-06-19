@@ -16,10 +16,11 @@ release note for the explicit migration path.
 - The sweep comments at most once per failing check-run/status id, removes
   `ci-failing` after required checks return green, preserves the existing
   signal while required checks are still pending, and respects the global
-  `DRY_RUN` gate before making any GitHub calls.
+  `DRY_RUN` and repository allow-list gates before making any GitHub calls.
 - New Wukong env knobs configure the job: `BRIDGE_CI_FAILING_ENABLED`,
   `BRIDGE_CI_FAILING_INTERVAL_SECONDS`, `BRIDGE_CI_FAILING_REPOSITORY`, and
-  `BRIDGE_CI_FAILING_APP_SLUG`.
+  `BRIDGE_CI_FAILING_APP_SLUG`; the production allow-list uses the
+  feature-specific `BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CI_FAILING` slug.
 
 ### Added — Scheduled stale-PR triage (L1 advisory) ([#166](https://github.com/iterwheel/voyager/issues/166))
 

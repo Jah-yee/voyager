@@ -29,7 +29,9 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-CI_FAILING_AGENT_SLUG = "iterwheel-assembly"
+# The scheduled job uses this feature-specific slug for repository allow-listing
+# while authenticating GitHub writes with BRIDGE_CI_FAILING_APP_SLUG.
+CI_FAILING_AGENT_SLUG = "iterwheel-ci-failing"
 CI_FAILING_LABEL = "ci-failing"
 CI_FAILING_LABEL_COLOR = "dc3545"
 CI_FAILING_LABEL_DESCRIPTION = "Latest CI run is failing on this pull request."
@@ -198,13 +200,21 @@ async def run_ci_failing_sweep(
             run_name = str(first_failing.get("name", "unknown"))
             run_url = str(first_failing.get("html_url", ""))
             if isinstance(run_id, int | str) and str(run_id):
-                already_commented = await _existing_ci_failing_comment(
-                    client,
-                    app_slug,
-                    repo,
-                    pr_number,
-                    run_id,
-                )
+                try:
+                    already_commented = await _existing_ci_failing_comment(
+                        client,
+                        app_slug,
+                        repo,
+                        pr_number,
+                        run_id,
+                    )
+                except Exception:
+                    _log.exception(
+                        "Failed to inspect ci-failing comments for PR #%d run %s",
+                        pr_number,
+                        run_id,
+                    )
+                    already_commented = True
                 if not already_commented:
                     try:
                         marker = _ci_failing_marker(run_id)

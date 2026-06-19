@@ -52,6 +52,7 @@ def test_wukong_env_example_preserves_production_safety_contract() -> None:
     assert "BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CLEARANCE=iterwheel/voyager" in text
     assert "BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CHANGELOG=iterwheel/voyager" in text
     assert "BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CLEANUP=iterwheel/voyager" in text
+    assert "BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CI_FAILING=iterwheel/voyager" in text
     assert "BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_ASSEMBLY=" not in text
     assert "GITHUB_REPOSITORY_WEBHOOK_SECRET=replace-with-repository-webhook-secret" in text
     assert "GITHUB_WEBHOOK_SECRET=replace-with-repository-webhook-secret" not in text
@@ -78,6 +79,7 @@ def test_wukong_env_example_enables_ci_failing_schedule() -> None:
     assert "BRIDGE_CI_FAILING_REPOSITORY=iterwheel/voyager" in text
     assert "BRIDGE_CI_FAILING_INTERVAL_SECONDS=86400" in text
     assert "BRIDGE_CI_FAILING_APP_SLUG=iterwheel-assembly" in text
+    assert "BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CI_FAILING=iterwheel/voyager" in text
 
 
 def test_launchd_sop_covers_operator_lifecycle_and_rollback() -> None:

@@ -499,6 +499,62 @@ class TestRunCiFailingSweep:
             await async_client.aclose()
 
     @pytest.mark.asyncio
+    async def test_comment_lookup_failure_does_not_abort_sweep(self) -> None:
+        """A comment dedupe lookup failure skips only that comment attempt."""
+        posted_comment_prs: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+
+            if "/search/issues" in str(request.url):
+                return httpx.Response(
+                    200,
+                    json=_search_response([_pr_search_item(8), _pr_search_item(9)]),
+                )
+
+            if path.endswith("/labels/ci-failing") and request.method == "GET":
+                return httpx.Response(404, json={"message": "Not Found"})
+
+            if path.endswith("/labels") and "/issues/" not in path and request.method == "POST":
+                return httpx.Response(201, json={"name": CI_FAILING_LABEL})
+
+            if path.endswith("/issues/8/labels") and request.method == "POST":
+                return httpx.Response(200, json={"labels": [CI_FAILING_LABEL]})
+
+            if path.endswith("/issues/9/labels") and request.method == "POST":
+                return httpx.Response(200, json={"labels": [CI_FAILING_LABEL]})
+
+            if path.endswith("/issues/8/comments") and request.method == "GET":
+                return httpx.Response(503, json={"message": "temporary failure"})
+
+            if path.endswith("/issues/9/comments") and request.method == "GET":
+                return httpx.Response(200, json=[])
+
+            if path.endswith("/issues/9/comments") and request.method == "POST":
+                posted_comment_prs.append(9)
+                return httpx.Response(201, json={"id": 900})
+
+            return httpx.Response(404, json={"message": "unexpected"})
+
+        client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        _install_required_checks(
+            monkeypatch,
+            client,
+            {
+                8: [_check_run(8001, "test / ci", "failure")],
+                9: [_check_run(9001, "test / ci", "failure")],
+            },
+        )
+        try:
+            result = await run_ci_failing_sweep(client, "test-bot", "iterwheel/voyager")
+            assert result["checked"] == 2
+            assert result["flagged"] == [8, 9]
+            assert posted_comment_prs == [9]
+        finally:
+            monkeypatch.undo()
+            await async_client.aclose()
+
+    @pytest.mark.asyncio
     async def test_green_pr_not_flagged(self) -> None:
         """AC: a green PR → not flagged (no label added)."""
         seen_urls: list[str] = []
