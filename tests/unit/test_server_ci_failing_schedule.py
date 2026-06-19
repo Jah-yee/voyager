@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -159,6 +160,44 @@ async def test_ci_failing_sweep_runs_when_repository_is_allowed(
     monkeypatch.setenv("DRY_RUN", "false")
     monkeypatch.setenv("BRIDGE_CI_FAILING_REPOSITORY", "iterwheel/voyager")
     monkeypatch.setenv("BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CI_FAILING", "iterwheel/voyager")
+    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
+    monkeypatch.setattr(
+        "voyager.bots.ci_failing.run_ci_failing_sweep",
+        fake_run_sweep,
+    )
+
+    await server._run_ci_failing_sweep()
+
+    assert calls == [(fake_client, "iterwheel-assembly", "iterwheel/voyager")]
+
+
+async def test_ci_failing_sweep_uses_config_repository_allow_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, str, str]] = []
+    fake_client = object()
+    cfg = SimpleNamespace(
+        bridge=SimpleNamespace(
+            dry_run=False,
+            allowed_repositories={"iterwheel-ci-failing": ("iterwheel/voyager",)},
+        )
+    )
+
+    async def fake_run_sweep(client: object, app_slug: str, repo: str) -> dict[str, object]:
+        calls.append((client, app_slug, repo))
+        return {
+            "checked": 1,
+            "flagged": [],
+            "cleared": [],
+            "already_failing": [],
+            "skipped_no_checks": [1],
+        }
+
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.delenv("BRIDGE_ALLOWED_REPOSITORIES", raising=False)
+    monkeypatch.delenv("BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CI_FAILING", raising=False)
+    monkeypatch.setenv("BRIDGE_CI_FAILING_REPOSITORY", "iterwheel/voyager")
+    monkeypatch.setattr(server, "_get_config", lambda: cfg)
     monkeypatch.setattr(server, "_get_client", lambda: fake_client)
     monkeypatch.setattr(
         "voyager.bots.ci_failing.run_ci_failing_sweep",

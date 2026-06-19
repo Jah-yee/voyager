@@ -380,7 +380,8 @@ async def _run_ci_failing_sweep() -> None:
     target_repo = _ci_failing_repository()
     app_slug = _ci_failing_app_slug()
     agent_slug = _ci_failing_agent_slug()
-    if dry_run_enabled():
+    cfg = _get_config()
+    if dry_run_enabled(cfg):
         _log.info(
             "DRY_RUN: would run ci_failing_sweep repo=%s app_slug=%s agent_slug=%s",
             target_repo,
@@ -389,7 +390,7 @@ async def _run_ci_failing_sweep() -> None:
         )
         return
 
-    if not _repository_allowed_for_agent(target_repo, agent_slug):
+    if not _repository_allowed_for_agent(target_repo, agent_slug, cfg):
         _log.warning(
             "Skipping CI-failing sweep: repository %s is not allow-listed for %s",
             target_repo,
