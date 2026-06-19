@@ -262,7 +262,7 @@ def test_append_unreleased_bullet_matches_manual_entry_by_title_with_issue_link(
     assert result.reason == "already_present"
 
 
-def test_append_unreleased_bullet_matches_manual_entry_by_title_without_link() -> None:
+def test_append_unreleased_bullet_does_not_match_manual_entry_without_source_signal() -> None:
     text = """# Changelog
 
 ## [Unreleased]
@@ -277,8 +277,27 @@ def test_append_unreleased_bullet_matches_manual_entry_by_title_without_link() -
         source_pr_number=12,
     )
 
-    assert result.changed is False
-    assert result.reason == "already_present"
+    assert result.changed is True
+    assert result.reason is None
+
+
+def test_append_unreleased_bullet_does_not_match_same_title_with_different_reference() -> None:
+    text = """# Changelog
+
+## [Unreleased]
+
+- Add export workflow ([#13](https://github.com/iterwheel/voyager/pull/13)).
+
+## [0.1.0]
+"""
+    result = append_unreleased_bullet(
+        text,
+        bullet="- Add export workflow ([#12](https://github.com/iterwheel/voyager/pull/12)).",
+        source_pr_number=12,
+    )
+
+    assert result.changed is True
+    assert result.reason is None
 
 
 def test_append_unreleased_bullet_inserts_before_unreleased_subsections() -> None:

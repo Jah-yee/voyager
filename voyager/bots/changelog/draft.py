@@ -10,6 +10,7 @@ from .constants import CHANGELOG_RELEVANT_LABELS, CHANGELOG_SKIP_LABELS
 
 _CHANGELOG_HEADING_RE = re.compile(r"^## \[(?P<name>[^\]]+)\]")
 _CHANGELOG_SUBSECTION_RE = re.compile(r"^###\s+")
+_BULLET_REFERENCE_RE = re.compile(r"\[#(?P<number>\d+)\]\([^)]+\)")
 _BULLET_REFERENCE_SUFFIX_RE = re.compile(r"\s+\(\[[^\]]+\]\([^)]+\)\)\.?$")
 _SPACE_RE = re.compile(r"\s+")
 
@@ -64,6 +65,13 @@ def _normalized_bullet_summary(line: str) -> str:
     return _SPACE_RE.sub(" ", summary).strip().casefold()
 
 
+def _references_source_number(line: str, source_pr_number: int) -> bool:
+    return any(
+        int(match.group("number")) == source_pr_number
+        for match in _BULLET_REFERENCE_RE.finditer(line)
+    )
+
+
 def _has_source_entry(section_text: str, source_pr_number: int, bullet: str) -> bool:
     number = re.escape(str(source_pr_number))
     reference_re = re.compile(rf"/pull/{number}(?!\d)")
@@ -74,7 +82,11 @@ def _has_source_entry(section_text: str, source_pr_number: int, bullet: str) -> 
     if not source_summary:
         return False
     for line in section_text.splitlines():
-        if line.lstrip().startswith("- ") and _normalized_bullet_summary(line) == source_summary:
+        if (
+            line.lstrip().startswith("- ")
+            and _references_source_number(line, source_pr_number)
+            and _normalized_bullet_summary(line) == source_summary
+        ):
             return True
     return False
 
