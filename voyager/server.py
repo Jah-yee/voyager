@@ -377,22 +377,22 @@ def _ci_failing_agent_slug() -> str:
 
 
 async def _run_ci_failing_sweep() -> None:
-    repo = _ci_failing_repository()
+    target_repo = _ci_failing_repository()
     app_slug = _ci_failing_app_slug()
     agent_slug = _ci_failing_agent_slug()
     if dry_run_enabled():
         _log.info(
             "DRY_RUN: would run ci_failing_sweep repo=%s app_slug=%s agent_slug=%s",
-            repo,
+            target_repo,
             app_slug,
             agent_slug,
         )
         return
 
-    if not _repository_allowed_for_agent(repo, agent_slug):
+    if not _repository_allowed_for_agent(target_repo, agent_slug):
         _log.warning(
             "Skipping CI-failing sweep: repository %s is not allow-listed for %s",
-            repo,
+            target_repo,
             agent_slug,
         )
         return
@@ -405,11 +405,11 @@ async def _run_ci_failing_sweep() -> None:
     from voyager.bots.ci_failing import run_ci_failing_sweep as run_sweep
 
     try:
-        summary = await run_sweep(client, app_slug, repo)
+        summary = await run_sweep(client, app_slug, target_repo)
         _log.info(
             "ci_failing_sweep: repo=%s checked=%d flagged=%d cleared=%d "
             "already_failing=%d skipped=%d",
-            repo,
+            target_repo,
             summary["checked"],
             len(summary["flagged"]),
             len(summary["cleared"]),
@@ -417,7 +417,7 @@ async def _run_ci_failing_sweep() -> None:
             len(summary["skipped_no_checks"]),
         )
     except Exception:
-        _log.exception("ci_failing_sweep failed for %s", repo)
+        _log.exception("ci_failing_sweep failed for %s", target_repo)
 
 
 async def _ci_failing_loop() -> None:
