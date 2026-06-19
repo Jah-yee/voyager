@@ -21,8 +21,8 @@ under pressure.
 
 This document does not replace VOY-1811 (multi-agent loop configuration),
 VOY-1822 (Assembly-driven implementation loop), or VOY-1824 (failure
-diagnostics). It is the policy layer that those SOPs reference for convergence
-decisions.
+diagnostics). It is the policy layer that those documents reference through
+their `Related` metadata for convergence decisions.
 
 ## The Three Rules
 
@@ -183,3 +183,4 @@ Do not apply these rules to:
 | 2026-06-19 | Initial policy document — FP-must-fix, FN-accept, circuit breaker | Assembly |
 | 2026-06-20 | Aligned circuit-breaker recovery with current approval, source-issue label, and round-counter behavior | Codex |
 | 2026-06-20 | Clarified current AC spot-check maturity as L3/blocking and preserved L1 advisory behavior as an adapter capability | Codex |
+| 2026-06-20 | Clarified that VOY-1811, VOY-1822, and VOY-1824 reference this policy through `Related` metadata | Codex |
