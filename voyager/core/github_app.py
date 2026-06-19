@@ -1005,6 +1005,101 @@ class GitHubAppClient:
                 break
         return all_runs
 
+    async def pull_request_required_status_checks(
+        self,
+        app_slug: str,
+        repo: str,
+        pull_number: int,
+    ) -> list[dict[str, Any]]:
+        """Fetch required status-check contexts for the PR's latest commit."""
+        owner, name = repo.split("/", 1)
+        query = """
+        query PullRequestRequiredStatusChecks(
+          $owner: String!,
+          $name: String!,
+          $number: Int!,
+          $cursor: String
+        ) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              commits(last: 1) {
+                nodes {
+                  commit {
+                    statusCheckRollup {
+                      contexts(first: 100, after: $cursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          __typename
+                          ... on CheckRun {
+                            databaseId
+                            name
+                            conclusion
+                            status
+                            detailsUrl
+                            isRequired(pullRequestNumber: $number)
+                          }
+                          ... on StatusContext {
+                            id
+                            context
+                            state
+                            targetUrl
+                            isRequired(pullRequestNumber: $number)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        required: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            data = await self.graphql(
+                app_slug,
+                repo,
+                query=query,
+                variables={"owner": owner, "name": name, "number": pull_number, "cursor": cursor},
+            )
+            pr = (((data or {}).get("repository") or {}).get("pullRequest")) or {}
+            commits = ((pr.get("commits") or {}).get("nodes")) or []
+            commit = ((commits[0] if commits else {}).get("commit")) or {}
+            contexts = ((commit.get("statusCheckRollup") or {}).get("contexts")) or {}
+            for node in contexts.get("nodes") or []:
+                if not node.get("isRequired"):
+                    continue
+                if node.get("__typename") == "CheckRun":
+                    required.append(
+                        {
+                            "id": node.get("databaseId") or node.get("id") or node.get("name"),
+                            "name": node.get("name"),
+                            "conclusion": node.get("conclusion"),
+                            "status": node.get("status"),
+                            "html_url": node.get("detailsUrl"),
+                            "type": "check_run",
+                        }
+                    )
+                elif node.get("__typename") == "StatusContext":
+                    required.append(
+                        {
+                            "id": node.get("id") or node.get("context"),
+                            "name": node.get("context"),
+                            "conclusion": node.get("state"),
+                            "status": node.get("state"),
+                            "html_url": node.get("targetUrl"),
+                            "type": "status_context",
+                        }
+                    )
+            page_info = contexts.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                return required
+            cursor = str(page_info.get("endCursor") or "")
+            if not cursor:
+                return required
+
     async def create_pull_request(
         self,
         app_slug: str,

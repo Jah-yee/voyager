@@ -289,6 +289,95 @@ def _check_runs_response(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return {"check_runs": runs, "total_count": len(runs)}
 
 
+def _install_required_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    client: GitHubAppClient,
+    checks_by_pr: dict[int, list[dict[str, Any]]],
+) -> None:
+    async def required_checks(_app_slug: str, _repo: str, pull_number: int) -> list[dict[str, Any]]:
+        return checks_by_pr.get(pull_number, [])
+
+    monkeypatch.setattr(client, "pull_request_required_status_checks", required_checks)
+
+
+class TestGitHubAppRequiredStatusChecks:
+    """``pull_request_required_status_checks`` filters GitHub rollup contexts."""
+
+    @pytest.mark.asyncio
+    async def test_returns_only_required_check_and_status_contexts(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/graphql"
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "commits": {
+                                    "nodes": [
+                                        {
+                                            "commit": {
+                                                "statusCheckRollup": {
+                                                    "contexts": {
+                                                        "pageInfo": {
+                                                            "hasNextPage": False,
+                                                            "endCursor": None,
+                                                        },
+                                                        "nodes": [
+                                                            {
+                                                                "__typename": "CheckRun",
+                                                                "databaseId": 1001,
+                                                                "name": "required-test",
+                                                                "conclusion": "FAILURE",
+                                                                "status": "COMPLETED",
+                                                                "detailsUrl": "https://example.com/required",
+                                                                "isRequired": True,
+                                                            },
+                                                            {
+                                                                "__typename": "CheckRun",
+                                                                "databaseId": 1002,
+                                                                "name": "optional-test",
+                                                                "conclusion": "FAILURE",
+                                                                "status": "COMPLETED",
+                                                                "detailsUrl": "https://example.com/optional",
+                                                                "isRequired": False,
+                                                            },
+                                                            {
+                                                                "__typename": "StatusContext",
+                                                                "id": "legacy-required",
+                                                                "context": "legacy-ci",
+                                                                "state": "SUCCESS",
+                                                                "targetUrl": "https://example.com/legacy",
+                                                                "isRequired": True,
+                                                            },
+                                                        ],
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+
+        client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        try:
+            checks = await client.pull_request_required_status_checks(
+                "test-bot",
+                "iterwheel/voyager",
+                42,
+            )
+            assert [check["name"] for check in checks] == ["required-test", "legacy-ci"]
+            assert checks[0]["id"] == 1001
+            assert checks[1]["id"] == "legacy-required"
+        finally:
+            monkeypatch.undo()
+            await async_client.aclose()
+
+
 class TestRunCiFailingSweep:
     """End-to-end sweep logic."""
 
@@ -304,21 +393,6 @@ class TestRunCiFailingSweep:
             # Search for open PRs
             if "/search/issues" in url:
                 return httpx.Response(200, json=_search_response([_pr_search_item(1)]))
-
-            # Fetch PR details
-            if "/pulls/1" in url and "/comments" not in url and "/labels" not in url:
-                return httpx.Response(200, json=_pr_detail(1, "abc123"))
-
-            # Fetch check runs
-            if "/check-runs" in url:
-                return httpx.Response(
-                    200,
-                    json=_check_runs_response(
-                        [
-                            _check_run(1001, "test / ci", "failure"),
-                        ]
-                    ),
-                )
 
             # Fetch issue comments (check if already commented)
             if "/issues/1/comments" in url:
@@ -343,6 +417,11 @@ class TestRunCiFailingSweep:
             return httpx.Response(404, json={"message": "unexpected"})
 
         client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        _install_required_checks(
+            monkeypatch,
+            client,
+            {1: [_check_run(1001, "test / ci", "failure")]},
+        )
         try:
             result = await run_ci_failing_sweep(client, "test-bot", "iterwheel/voyager")
             assert result["checked"] == 1
@@ -365,22 +444,14 @@ class TestRunCiFailingSweep:
             if "/search/issues" in url:
                 return httpx.Response(200, json=_search_response([_pr_search_item(2)]))
 
-            if "/pulls/2" in url and "/labels" not in url and "/comments" not in url:
-                return httpx.Response(200, json=_pr_detail(2, "def456"))
-
-            if "/check-runs" in url:
-                return httpx.Response(
-                    200,
-                    json=_check_runs_response(
-                        [
-                            _check_run(2001, "test / ci", "success"),
-                        ]
-                    ),
-                )
-
             return httpx.Response(404, json={"message": "unexpected"})
 
         client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        _install_required_checks(
+            monkeypatch,
+            client,
+            {2: [_check_run(2001, "test / ci", "success")]},
+        )
         try:
             result = await run_ci_failing_sweep(client, "test-bot", "iterwheel/voyager")
             assert result["checked"] == 1
@@ -403,19 +474,6 @@ class TestRunCiFailingSweep:
                     json=_search_response([_pr_search_item(3, has_ci_failing=True)]),
                 )
 
-            if "/pulls/3" in url and "/labels" not in url and "/comments" not in url:
-                return httpx.Response(200, json=_pr_detail(3, "ghi789"))
-
-            if "/check-runs" in url:
-                return httpx.Response(
-                    200,
-                    json=_check_runs_response(
-                        [
-                            _check_run(3001, "test / ci", "success"),
-                        ]
-                    ),
-                )
-
             # Remove label
             if "/issues/3/labels/ci-failing" in url:
                 return httpx.Response(200, json={})
@@ -423,6 +481,11 @@ class TestRunCiFailingSweep:
             return httpx.Response(404, json={"message": "unexpected"})
 
         client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        _install_required_checks(
+            monkeypatch,
+            client,
+            {3: [_check_run(3001, "test / ci", "success")]},
+        )
         try:
             result = await run_ci_failing_sweep(client, "test-bot", "iterwheel/voyager")
             assert result["checked"] == 1
@@ -443,19 +506,6 @@ class TestRunCiFailingSweep:
                 return httpx.Response(
                     200,
                     json=_search_response([_pr_search_item(4, has_ci_failing=True)]),
-                )
-
-            if "/pulls/4" in url and "/labels" not in url and "/comments" not in url:
-                return httpx.Response(200, json=_pr_detail(4, "jkl012"))
-
-            if "/check-runs" in url:
-                return httpx.Response(
-                    200,
-                    json=_check_runs_response(
-                        [
-                            _check_run(4001, "test / ci", "failure"),
-                        ]
-                    ),
                 )
 
             # Label ensure (GET → 404 → POST to create)
@@ -480,6 +530,11 @@ class TestRunCiFailingSweep:
             return httpx.Response(404, json={"message": "unexpected"})
 
         client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        _install_required_checks(
+            monkeypatch,
+            client,
+            {4: [_check_run(4001, "test / ci", "failure")]},
+        )
         try:
             result = await run_ci_failing_sweep(client, "test-bot", "iterwheel/voyager")
             assert result["checked"] == 1
@@ -500,24 +555,47 @@ class TestRunCiFailingSweep:
             if "/search/issues" in url:
                 return httpx.Response(200, json=_search_response([_pr_search_item(5)]))
 
-            if "/pulls/5" in url and "/labels" not in url and "/comments" not in url:
-                return httpx.Response(200, json=_pr_detail(5, "mno345"))
-
-            if "/check-runs" in url:
-                return httpx.Response(
-                    200,
-                    json=_check_runs_response([]),
-                )
-
             return httpx.Response(404, json={"message": "unexpected"})
 
         client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        _install_required_checks(monkeypatch, client, {5: []})
         try:
             result = await run_ci_failing_sweep(client, "test-bot", "iterwheel/voyager")
             assert result["checked"] == 1
             assert result["flagged"] == []
             assert result["cleared"] == []
             assert result["skipped_no_checks"] == [5]
+        finally:
+            monkeypatch.undo()
+            await async_client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_pending_required_check_does_not_clear_existing_label(self) -> None:
+        """Pending required checks are neither red nor green, so keep existing signal."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+
+            if "/search/issues" in url:
+                return httpx.Response(
+                    200,
+                    json=_search_response([_pr_search_item(6, has_ci_failing=True)]),
+                )
+
+            return httpx.Response(404, json={"message": "unexpected"})
+
+        client, async_client, monkeypatch = _mock_client_and_transport(handler)
+        _install_required_checks(
+            monkeypatch,
+            client,
+            {6: [{"id": 6001, "name": "test / ci", "conclusion": None, "status": "in_progress"}]},
+        )
+        try:
+            result = await run_ci_failing_sweep(client, "test-bot", "iterwheel/voyager")
+            assert result["checked"] == 1
+            assert result["flagged"] == []
+            assert result["cleared"] == []
+            assert result["skipped_no_checks"] == [6]
         finally:
             monkeypatch.undo()
             await async_client.aclose()

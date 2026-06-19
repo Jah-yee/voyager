@@ -8,6 +8,19 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+### Added — Scheduled CI-failure sweep (L1 advisory) ([#167](https://github.com/iterwheel/voyager/issues/167))
+
+- Wukong can now run a scheduled CI-failure sweep that scans open pull
+  requests for failing required checks on the latest head and flags them with
+  the `ci-failing` label.
+- The sweep comments at most once per failing check-run/status id, removes
+  `ci-failing` after required checks return green, preserves the existing
+  signal while required checks are still pending, and respects the global
+  `DRY_RUN` gate before making any GitHub calls.
+- New Wukong env knobs configure the job: `BRIDGE_CI_FAILING_ENABLED`,
+  `BRIDGE_CI_FAILING_INTERVAL_SECONDS`, `BRIDGE_CI_FAILING_REPOSITORY`, and
+  `BRIDGE_CI_FAILING_APP_SLUG`.
+
 ### Added — Scheduled stale-PR triage (L1 advisory) ([#166](https://github.com/iterwheel/voyager/issues/166))
 
 - Wukong can now run a scheduled stale-PR triage that finds open pull requests

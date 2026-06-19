@@ -71,6 +71,15 @@ def test_wukong_env_example_enables_deployed_version_drift_schedule() -> None:
     assert "BRIDGE_DRIFT_ALERT_APP_SLUG=iterwheel-assembly" in text
 
 
+def test_wukong_env_example_enables_ci_failing_schedule() -> None:
+    text = ENV_PATH.read_text()
+
+    assert "BRIDGE_CI_FAILING_ENABLED=true" in text
+    assert "BRIDGE_CI_FAILING_REPOSITORY=iterwheel/voyager" in text
+    assert "BRIDGE_CI_FAILING_INTERVAL_SECONDS=86400" in text
+    assert "BRIDGE_CI_FAILING_APP_SLUG=iterwheel-assembly" in text
+
+
 def test_launchd_sop_covers_operator_lifecycle_and_rollback() -> None:
     text = SOP_PATH.read_text()
 

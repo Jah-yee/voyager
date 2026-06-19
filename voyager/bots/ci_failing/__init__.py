@@ -6,19 +6,20 @@ check and stale-PR triage.  There is no route dispatch, no writeback
 envelope — the server calls ``run_ci_failing_sweep`` directly within the
 background loop.
 
-Each open PR whose latest commit has a ``failure`` check-run conclusion
-gets a ``ci-failing`` label and a reminder comment.  At most one comment
-per failing run (identified by the check-run's ``id``) is created — the
-comment body embeds a marker ``<!-- voyager:ci-failing-run-{run_id} -->``
-so re-runs of the same check produce at most one comment.
+Each open PR whose latest commit has a failing required check gets a
+``ci-failing`` label and a reminder comment.  At most one comment per
+failing run/status id is created — the comment body embeds a marker
+``<!-- voyager:ci-failing-run-{run_id} -->`` so re-runs of the same check
+produce at most one comment.
 
-PRs whose latest check runs are all green (or absent) have the
-``ci-failing`` label removed if present.
+PRs whose latest required checks are all green (or have no required checks)
+have the ``ci-failing`` label removed if present.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -33,13 +34,25 @@ CI_FAILING_LABEL_DESCRIPTION = "Latest CI run is failing on this pull request."
 CI_FAILING_COMMENT_MARKER_PREFIX = "<!-- voyager:ci-failing-run-"
 _SEARCH_PAGE_SIZE = 100
 
-# Check conclusion values that count as "red"
+# Check conclusion values that count as "red".
 _FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_required"})
+_GREEN_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 
 
-def _ci_failing_marker(run_id: int) -> str:
-    """Return the HTML-comment marker for a specific check-run id."""
-    return f"{CI_FAILING_COMMENT_MARKER_PREFIX}{run_id} -->"
+def _ci_failing_marker(run_id: int | str) -> str:
+    """Return the HTML-comment marker for a specific check-run/status id."""
+    token = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(run_id)).strip("-") or "unknown"
+    return f"{CI_FAILING_COMMENT_MARKER_PREFIX}{token} -->"
+
+
+def _is_failing_check(check: dict[str, Any]) -> bool:
+    conclusion = str(check.get("conclusion") or "").lower()
+    return conclusion in _FAILING_CONCLUSIONS
+
+
+def _is_green_check(check: dict[str, Any]) -> bool:
+    conclusion = str(check.get("conclusion") or "").lower()
+    return conclusion in _GREEN_CONCLUSIONS
 
 
 async def _find_open_prs(
@@ -80,7 +93,7 @@ async def _existing_ci_failing_comment(
     app_slug: str,
     repo: str,
     issue_number: int,
-    run_id: int,
+    run_id: int | str,
 ) -> bool:
     """Return ``True`` when a bot comment with the given run-id marker already exists."""
     comments = await client.issue_comments(app_slug, repo, issue_number)
@@ -117,37 +130,38 @@ async def run_ci_failing_sweep(
         if not isinstance(pr_number, int):
             continue
 
-        # Fetch the full PR object to get the head SHA
+        # Fetch required status-check contexts for the latest PR commit.
         try:
-            full_pr = await client.pull_request(app_slug, repo, pr_number)
+            required_checks = await client.pull_request_required_status_checks(
+                app_slug,
+                repo,
+                pr_number,
+            )
         except Exception:
-            _log.exception("Failed to fetch PR #%d details", pr_number)
+            _log.exception("Failed to fetch required status checks for PR #%d", pr_number)
             continue
-
-        head = full_pr.get("head") or {}
-        head_sha = head.get("sha")
-        if not isinstance(head_sha, str) or not head_sha:
-            skipped_no_checks.append(pr_number)
-            continue
-
-        # Fetch check runs for the head commit
-        try:
-            check_runs = await client.commit_check_runs(app_slug, repo, head_sha)
-        except Exception:
-            _log.exception("Failed to fetch check runs for PR #%d commit %s", pr_number, head_sha)
-            continue
-
-        if not check_runs:
-            skipped_no_checks.append(pr_number)
-            continue
-
-        # Find failing check runs
-        failing_runs = [run for run in check_runs if run.get("conclusion") in _FAILING_CONCLUSIONS]
 
         has_ci_failing_label = await _has_ci_failing_label(pr)
+        if not required_checks:
+            if has_ci_failing_label:
+                try:
+                    await client.remove_label(app_slug, repo, pr_number, CI_FAILING_LABEL)
+                    cleared.append(pr_number)
+                except Exception:
+                    _log.exception("Failed to remove ci-failing label from PR #%d", pr_number)
+            else:
+                skipped_no_checks.append(pr_number)
+            continue
+
+        failing_runs = [check for check in required_checks if _is_failing_check(check)]
+        all_required_green = all(_is_green_check(check) for check in required_checks)
+
+        if not failing_runs and not all_required_green:
+            skipped_no_checks.append(pr_number)
+            continue
 
         if failing_runs:
-            # At least one check run is failing — flag the PR
+            # At least one required check is failing — flag the PR.
             if not label_ensured:
                 try:
                     await client.ensure_label(
@@ -171,12 +185,12 @@ async def run_ci_failing_sweep(
             else:
                 already_failing.append(pr_number)
 
-            # Comment on the first failing run only (idempotent per run-id)
+            # Comment on the first failing run only (idempotent per run/check id).
             first_failing = failing_runs[0]
             run_id = first_failing.get("id")
             run_name = str(first_failing.get("name", "unknown"))
             run_url = str(first_failing.get("html_url", ""))
-            if isinstance(run_id, int):
+            if isinstance(run_id, int | str) and str(run_id):
                 already_commented = await _existing_ci_failing_comment(
                     client,
                     app_slug,
@@ -189,7 +203,7 @@ async def run_ci_failing_sweep(
                         marker = _ci_failing_marker(run_id)
                         body = (
                             f"{marker}\n\n"
-                            f"🔴 CI check **{run_name}** is failing on this pull request.\n\n"
+                            f"🔴 Required CI check **{run_name}** is failing on this pull request.\n\n"
                             f"See [{run_name}]({run_url}) for details.\n\n"
                             f"_Automated CI sweep — Iterwheel Bridge_"
                         )
@@ -201,14 +215,14 @@ async def run_ci_failing_sweep(
                         )
                     except Exception:
                         _log.exception(
-                            "Failed to add ci-failing comment to PR #%d for run %d",
+                            "Failed to add ci-failing comment to PR #%d for run %s",
                             pr_number,
                             run_id,
                         )
 
             flagged.append(pr_number)
 
-        elif has_ci_failing_label:
+        elif all_required_green and has_ci_failing_label:
             # PR was red before but now green — remove the label
             try:
                 await client.remove_label(app_slug, repo, pr_number, CI_FAILING_LABEL)
