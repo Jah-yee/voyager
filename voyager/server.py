@@ -280,14 +280,22 @@ def _stale_pr_app_slug() -> str:
 
 
 async def _run_stale_pr_triage() -> None:
+    repo = _stale_pr_repository()
+    app_slug = _stale_pr_app_slug()
+    stale_days = _stale_pr_days()
+    if dry_run_enabled():
+        _log.info(
+            "DRY_RUN: would run stale_pr_triage repo=%s app_slug=%s stale_days=%d",
+            repo,
+            app_slug,
+            stale_days,
+        )
+        return
+
     client = _get_client()
     if client is None:
         _log.warning("Skipping stale-PR triage: no GitHub client available")
         return
-
-    repo = _stale_pr_repository()
-    app_slug = _stale_pr_app_slug()
-    stale_days = _stale_pr_days()
 
     from voyager.bots.stale_pr import run_stale_pr_triage as run_triage
 

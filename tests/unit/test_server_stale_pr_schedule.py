@@ -125,3 +125,20 @@ async def test_stale_pr_schedule_starts_and_stops(
     await server._stop_stale_pr_schedule()
 
     assert server._stale_pr_task is None
+
+
+async def test_stale_pr_triage_skips_github_client_in_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DRY_RUN", "true")
+    monkeypatch.setattr(
+        server,
+        "_get_client",
+        lambda: pytest.fail("dry-run stale-PR triage must not initialize GitHub client"),
+    )
+
+    with caplog.at_level("INFO"):
+        await server._run_stale_pr_triage()
+
+    assert "DRY_RUN: would run stale_pr_triage" in caplog.text

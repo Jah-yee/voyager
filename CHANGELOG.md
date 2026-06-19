@@ -14,7 +14,8 @@ release note for the explicit migration path.
   with no activity for a configurable staleness window, defaulting to 7 days.
 - The triage is L1 advisory only: stale pull requests receive the `stale` label
   and at most one reminder comment per staleness window, with no automatic
-  close, merge, or review-request mutation.
+  close, merge, or review-request mutation; the scheduler also respects the
+  global `DRY_RUN` gate before making any GitHub calls.
 - New Wukong env knobs configure the job: `BRIDGE_STALE_PR_ENABLED`,
   `BRIDGE_STALE_PR_INTERVAL_SECONDS`, `BRIDGE_STALE_PR_DAYS`,
   `BRIDGE_STALE_PR_REPOSITORY`, and `BRIDGE_STALE_PR_APP_SLUG`.
