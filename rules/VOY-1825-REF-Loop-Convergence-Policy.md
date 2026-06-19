@@ -92,9 +92,12 @@ human approval:
 2. The `loop-circuit-broken` label is applied to the PR.
 3. Exactly one escalation comment is posted per PR.
 
-A human may explicitly override the circuit breaker (e.g. "the fix is on the
-right track, continue"). After human bypass, the round counter resets so the
-new direction can proceed without immediately tripping the breaker again.
+A human may override the circuit breaker only by approving the current PR head.
+A plain comment such as "continue" is not a bypass. The bypass allows that
+approved head to proceed, but it does not automatically reset existing
+`assembly-fix-round-N` labels or the round counter. Operators who want a fresh
+counter must explicitly clean up the circuit-breaker/fix-round labels or start
+a new managed PR flow.
 
 **Rationale:** Before #157, a single PR could accumulate ~24 bot-driven fix
 commits (#152 → #154). Each round consumed tokens, review attention, and CI
