@@ -10,7 +10,7 @@ from .constants import CHANGELOG_RELEVANT_LABELS, CHANGELOG_SKIP_LABELS
 
 _CHANGELOG_HEADING_RE = re.compile(r"^## \[(?P<name>[^\]]+)\]")
 _CHANGELOG_SUBSECTION_RE = re.compile(r"^###\s+")
-_BULLET_LINK_SUFFIX_RE = re.compile(r"\s+\(\[#\d+\]\([^)]+\)\)\.?$")
+_BULLET_REFERENCE_SUFFIX_RE = re.compile(r"\s+\(\[[^\]]+\]\([^)]+\)\)\.?$")
 _SPACE_RE = re.compile(r"\s+")
 
 
@@ -59,7 +59,7 @@ def _normalized_bullet_summary(line: str) -> str:
     summary = line.strip()
     if summary.startswith("- "):
         summary = summary[2:]
-    summary = _BULLET_LINK_SUFFIX_RE.sub("", summary)
+    summary = _BULLET_REFERENCE_SUFFIX_RE.sub("", summary)
     summary = summary.rstrip(".")
     return _SPACE_RE.sub(" ", summary).strip().casefold()
 

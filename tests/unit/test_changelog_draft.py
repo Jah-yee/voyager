@@ -85,6 +85,28 @@ def test_route_changelog_event_honors_skip_labels_for_shippable_titles() -> None
     assert routes == []
 
 
+def test_changelog_route_uses_distinct_allowlist_gate(monkeypatch) -> None:
+    from voyager.server import _filter_routes_by_repository
+
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.delenv("BRIDGE_ALLOWED_REPOSITORIES", raising=False)
+    monkeypatch.delenv("BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CHANGELOG", raising=False)
+    monkeypatch.setenv("BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_ASSEMBLY", "iterwheel/voyager")
+    routes = route_changelog_event(
+        "pull_request",
+        _pull_request_payload(labels=["enhancement"]),
+    )
+
+    allowed, denied = _filter_routes_by_repository(routes, "iterwheel/voyager")
+    assert allowed == []
+    assert denied == routes
+
+    monkeypatch.setenv("BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_CHANGELOG", "iterwheel/voyager")
+    allowed, denied = _filter_routes_by_repository(routes, "iterwheel/voyager")
+    assert allowed == routes
+    assert denied == []
+
+
 def test_route_changelog_event_ignores_unmerged_skip_and_self_generated_prs() -> None:
     assert (
         route_changelog_event(
