@@ -335,7 +335,7 @@ def test_runner_rechecks_kill_switch_after_clean_gather(tmp_path) -> None:
     ]
 
 
-def test_runner_rejects_non_boolean_classification_before_fix(tmp_path) -> None:
+def test_runner_escalates_non_boolean_classification_without_fix(tmp_path) -> None:
     audit_path = tmp_path / "review-fix.jsonl"
     fixed: list[str] = []
 
@@ -355,17 +355,78 @@ def test_runner_rejects_non_boolean_classification_before_fix(tmp_path) -> None:
         fixed.append(work.finding.finding_id)
         return ReviewFixLoopFixResult(commit="unused", verdict="kept", tests=("pytest",))
 
-    with pytest.raises(ReviewFixLoopRunnerError, match=r"classification\.fixable must be a bool"):
-        ReviewFixLoopRunner(
-            enablement=_enablement(tmp_path, max_rounds=1),
-            audit_log=ReviewFixAuditLog(audit_path),
-            seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
-            root_path=tmp_path,
-            now=lambda: _NOW,
-        ).run()
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3, escalation="page-human-reviewer"),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
 
+    assert outcome.status is ReviewFixLoopOutcomeStatus.ESCALATED
+    assert outcome.rounds_run == 1
+    assert outcome.escalation == "page-human-reviewer"
     assert fixed == []
-    assert ReviewFixAuditLog(audit_path).read_all() == []
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.finding_id, record.verdict) for record in records] == [
+        ("round:1", "round_open"),
+        ("loop", "escalated"),
+    ]
+    assert records[-1].tests == (
+        "page-human-reviewer",
+        "fix_error=ReviewFixLoopRunnerError: classification.fixable must be a bool, got str",
+    )
+
+
+def test_runner_audits_later_classification_failure_after_prior_fix(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    fixed: list[str] = []
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        return [
+            ReviewFixFinding(finding_id="codex:finding-1", category="codex-review"),
+            ReviewFixFinding(finding_id="codex:finding-2", category="codex-review"),
+        ]
+
+    def classify(
+        finding: ReviewFixFinding,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixClassification:
+        if finding.finding_id == "codex:finding-2":
+            return ReviewFixClassification(fixable="false")
+        return ReviewFixClassification(fixable=True)
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        fixed.append(work.finding.finding_id)
+        return ReviewFixLoopFixResult(commit="abc123", verdict="kept", tests=("pytest",))
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3, escalation="page-human-reviewer"),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.ESCALATED
+    assert outcome.rounds_run == 1
+    assert outcome.escalation == "page-human-reviewer"
+    assert fixed == ["codex:finding-1"]
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.finding_id, record.verdict) for record in records] == [
+        ("codex:finding-1", "kept"),
+        ("round:1", "round_fixed"),
+        ("loop", "escalated"),
+    ]
+    assert records[-1].tests == (
+        "page-human-reviewer",
+        "fix_error=ReviewFixLoopRunnerError: classification.fixable must be a bool, got str",
+    )
 
 
 @pytest.mark.parametrize(

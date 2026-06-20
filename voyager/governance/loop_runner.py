@@ -269,12 +269,10 @@ class ReviewFixLoopRunner:
             if kill_switch_path.exists():
                 return fixes, True, None
             finding = _validated_finding(finding)
-            classification = self.seams.classify(finding, status)
-            if not isinstance(classification.fixable, bool):
-                raise ReviewFixLoopRunnerError(
-                    "classification.fixable must be a bool, "
-                    f"got {type(classification.fixable).__name__}"
-                )
+            try:
+                classification = _validated_classification(self.seams.classify(finding, status))
+            except Exception as exc:
+                return fixes, False, _fix_error_test(exc)
             if not classification.fixable:
                 _append_audit(
                     self.audit_log,
@@ -341,6 +339,27 @@ def _validated_finding(finding: ReviewFixFinding) -> ReviewFixFinding:
     return ReviewFixFinding(
         finding_id=_non_empty(finding.finding_id, "finding_id"),
         category=_non_empty(finding.category, "category"),
+    )
+
+
+def _validated_classification(
+    classification: ReviewFixClassification,
+) -> ReviewFixClassification:
+    if not isinstance(classification, ReviewFixClassification):
+        raise ReviewFixLoopRunnerError(
+            f"classification must be a ReviewFixClassification, got {type(classification).__name__}"
+        )
+    if not isinstance(classification.fixable, bool):
+        raise ReviewFixLoopRunnerError(
+            f"classification.fixable must be a bool, got {type(classification.fixable).__name__}"
+        )
+    if not isinstance(classification.reason, str):
+        raise ReviewFixLoopRunnerError(
+            f"classification.reason must be a string, got {type(classification.reason).__name__}"
+        )
+    return ReviewFixClassification(
+        fixable=classification.fixable,
+        reason=classification.reason,
     )
 
 
