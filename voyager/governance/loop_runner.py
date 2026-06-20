@@ -245,6 +245,8 @@ class ReviewFixLoopRunner:
                     verdict="not_fixable",
                     tests=_reason_tests(classification.reason),
                 )
+                if kill_switch_path.exists():
+                    return fixes, True
                 continue
             if fixes >= envelope.max_fixes_per_round:
                 _append_audit(
@@ -256,6 +258,8 @@ class ReviewFixLoopRunner:
                     verdict="fix_cap_deferred",
                     tests=(f"max_fixes_per_round={envelope.max_fixes_per_round}",),
                 )
+                if kill_switch_path.exists():
+                    return fixes, True
                 continue
             if kill_switch_path.exists():
                 return fixes, True

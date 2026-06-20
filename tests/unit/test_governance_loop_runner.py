@@ -254,6 +254,55 @@ def test_runner_rechecks_kill_switch_after_classification_before_fix(tmp_path) -
     assert ReviewFixAuditLog(audit_path).read_all()[-1].verdict == "kill_switch"
 
 
+def test_runner_honors_kill_switch_after_not_fixable_classification(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    kill_switch = tmp_path / ".voyager" / "review-fix.disabled"
+    classified: list[str] = []
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        return [
+            ReviewFixFinding(finding_id="codex:finding-1", category="codex-review"),
+            ReviewFixFinding(finding_id="codex:finding-2", category="codex-review"),
+        ]
+
+    def classify(
+        finding: ReviewFixFinding,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixClassification:
+        classified.append(finding.finding_id)
+        kill_switch.parent.mkdir(parents=True)
+        kill_switch.write_text("stop\n", encoding="utf-8")
+        return ReviewFixClassification(fixable=False, reason="needs-human")
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(
+            gather=gather,
+            classify=classify,
+            fix=lambda work, status: ReviewFixLoopFixResult(
+                commit="unused",
+                verdict="kept",
+                tests=("pytest",),
+            ),
+        ),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.KILL_SWITCH
+    assert classified == ["codex:finding-1"]
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert ("codex:finding-1", "not_fixable") in {
+        (record.finding_id, record.verdict) for record in records
+    }
+    assert ("codex:finding-2", "not_fixable") not in {
+        (record.finding_id, record.verdict) for record in records
+    }
+    assert records[-1].verdict == "kill_switch"
+
+
 def test_runner_defers_findings_past_max_fixes_per_round(tmp_path) -> None:
     audit_path = tmp_path / "review-fix.jsonl"
     fixed: list[str] = []
