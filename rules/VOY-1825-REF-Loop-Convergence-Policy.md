@@ -160,7 +160,7 @@ source/type.
 | AC nesting preservation | #154 | Originating case — fixed AC structure for accurate spot-check attribution |
 | Circuit breaker | #157 | Implements Rule 3 — caps automated fix rounds per source issue |
 | Direction-aware action | #158 | Future task for Rules 1 and 2 — findings will carry `block`/`advisory` direction from their source |
-| Decision memory | (planned) | Future task — will persist round-by-round decisions so the loop can reference past verdicts instead of re-deriving them |
+| Decision memory | #159, #174 | Implemented — Clearance persists accepted known limitations and suppresses re-litigation, keyed on a stable `repo + path + line + rule/check id` fingerprint (#174) rather than comment body |
 
 ---
 
