@@ -508,6 +508,54 @@ def test_runner_defers_findings_past_max_fixes_per_round(tmp_path) -> None:
     }
 
 
+def test_runner_escalates_when_fix_seam_raises_after_rollback_audit(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        return [ReviewFixFinding(finding_id="codex:finding-1", category="codex-review")]
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        ReviewFixAuditLog(audit_path).append(
+            ReviewFixAuditRecord(
+                round=status.round_number,
+                ts=_NOW,
+                commit="abc123",
+                finding_id=work.finding.finding_id,
+                category=work.finding.category,
+                verdict="revert_failed",
+                tests=("pytest",),
+            )
+        )
+        raise RuntimeError("rollback failed")
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3, escalation="page-human-reviewer"),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(
+            gather=gather,
+            classify=lambda finding, status: ReviewFixClassification(fixable=True),
+            fix=fix,
+        ),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.ESCALATED
+    assert outcome.rounds_run == 1
+    assert outcome.escalation == "page-human-reviewer"
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.finding_id, record.verdict) for record in records] == [
+        ("codex:finding-1", "revert_failed"),
+        ("round:1", "round_fixed"),
+        ("loop", "escalated"),
+    ]
+    assert records[-1].tests == ("page-human-reviewer", "fix_error=RuntimeError: rollback failed")
+
+
 def test_runner_audits_not_fixable_without_calling_fix(tmp_path) -> None:
     audit_path = tmp_path / "review-fix.jsonl"
     fixed: list[str] = []

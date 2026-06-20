@@ -199,7 +199,9 @@ class ReviewFixLoopRunner:
                 continue
 
             clean_rounds = 0
-            fixes, killed = self._process_findings(findings, status, envelope, kill_switch_path)
+            fixes, killed, fix_error = self._process_findings(
+                findings, status, envelope, kill_switch_path
+            )
             _append_round_audit(
                 self.audit_log,
                 round_number=round_number,
@@ -223,6 +225,21 @@ class ReviewFixLoopRunner:
                     clean_rounds=clean_rounds,
                     kill_switch_path=kill_switch_path,
                 )
+            if fix_error is not None:
+                _append_audit(
+                    self.audit_log,
+                    round_number=round_number,
+                    ts=self.now(),
+                    finding_id="loop",
+                    verdict=ReviewFixLoopOutcomeStatus.ESCALATED.value,
+                    tests=(envelope.escalation, fix_error),
+                )
+                return ReviewFixLoopOutcome(
+                    status=ReviewFixLoopOutcomeStatus.ESCALATED,
+                    rounds_run=rounds_run,
+                    clean_rounds=clean_rounds,
+                    escalation=envelope.escalation,
+                )
 
         _append_audit(
             self.audit_log,
@@ -245,11 +262,11 @@ class ReviewFixLoopRunner:
         status: ReviewFixLoopStatus,
         envelope: SafetyEnvelope,
         kill_switch_path: Path,
-    ) -> tuple[int, bool]:
+    ) -> tuple[int, bool, str | None]:
         fixes = 0
         for finding in findings:
             if kill_switch_path.exists():
-                return fixes, True
+                return fixes, True, None
             finding = _validated_finding(finding)
             classification = self.seams.classify(finding, status)
             if not isinstance(classification.fixable, bool):
@@ -268,7 +285,7 @@ class ReviewFixLoopRunner:
                     tests=_reason_tests(classification.reason),
                 )
                 if kill_switch_path.exists():
-                    return fixes, True
+                    return fixes, True, None
                 continue
             if fixes >= envelope.max_fixes_per_round:
                 _append_audit(
@@ -281,15 +298,18 @@ class ReviewFixLoopRunner:
                     tests=(f"max_fixes_per_round={envelope.max_fixes_per_round}",),
                 )
                 if kill_switch_path.exists():
-                    return fixes, True
+                    return fixes, True, None
                 continue
             if kill_switch_path.exists():
-                return fixes, True
+                return fixes, True, None
 
-            result = self.seams.fix(
-                ReviewFixLoopWork(finding=finding, classification=classification),
-                status,
-            )
+            try:
+                result = self.seams.fix(
+                    ReviewFixLoopWork(finding=finding, classification=classification),
+                    status,
+                )
+            except Exception as exc:
+                return fixes + 1, False, _fix_error_test(exc)
             fixes += 1
             if result.audit_recorded is not True:
                 _append_audit(
@@ -305,8 +325,8 @@ class ReviewFixLoopRunner:
                     ),
                 )
             if kill_switch_path.exists():
-                return fixes, True
-        return fixes, False
+                return fixes, True, None
+        return fixes, False, None
 
 
 def _validated_finding(finding: ReviewFixFinding) -> ReviewFixFinding:
@@ -318,6 +338,13 @@ def _validated_finding(finding: ReviewFixFinding) -> ReviewFixFinding:
         finding_id=_non_empty(finding.finding_id, "finding_id"),
         category=_non_empty(finding.category, "category"),
     )
+
+
+def _fix_error_test(exc: Exception) -> str:
+    detail = str(exc).strip()
+    if detail:
+        return f"fix_error={type(exc).__name__}: {detail}"
+    return f"fix_error={type(exc).__name__}"
 
 
 def _append_round_audit(
