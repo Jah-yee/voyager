@@ -455,13 +455,24 @@ def _reason_tests(reason: str) -> tuple[str, ...]:
 
 
 def _result_tests(
-    tests: tuple[str, ...],
+    tests: object,
     *,
     fallback_verify_command: str,
 ) -> tuple[str, ...]:
-    normalized = tuple(item.strip() for item in tests if item.strip())
-    if normalized:
-        return normalized
+    if isinstance(tests, str) or not isinstance(tests, Sequence):
+        raise ReviewFixLoopRunnerError("tests must be a non-string sequence of strings")
+    normalized_items: list[str] = []
+    for item in tests:
+        if not isinstance(item, str):
+            raise ReviewFixLoopRunnerError(
+                f"tests item must be a string, got {type(item).__name__}"
+            )
+        normalized_item = item.strip()
+        if normalized_item:
+            normalized_items.append(normalized_item)
+    normalized_tests = tuple(normalized_items)
+    if normalized_tests:
+        return normalized_tests
     return ("verify_command=" + fallback_verify_command,)
 
 
