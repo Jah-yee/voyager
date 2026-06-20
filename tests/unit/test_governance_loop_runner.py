@@ -476,7 +476,7 @@ def test_runner_audits_later_classification_failure_after_prior_fix(tmp_path) ->
 
 
 @pytest.mark.parametrize(
-    ("finding", "match"),
+    ("finding", "error"),
     [
         (
             ReviewFixFinding(finding_id="   ", category="codex-review"),
@@ -488,10 +488,10 @@ def test_runner_audits_later_classification_failure_after_prior_fix(tmp_path) ->
         ),
     ],
 )
-def test_runner_validates_finding_identity_before_fix(
+def test_runner_escalates_invalid_finding_identity_before_fix(
     tmp_path,
     finding: ReviewFixFinding,
-    match: str,
+    error: str,
 ) -> None:
     audit_path = tmp_path / "review-fix.jsonl"
     calls: list[str] = []
@@ -513,17 +513,28 @@ def test_runner_validates_finding_identity_before_fix(
         calls.append("fix")
         return ReviewFixLoopFixResult(commit="unused", verdict="kept", tests=("pytest",))
 
-    with pytest.raises(ReviewFixLoopRunnerError, match=match):
-        ReviewFixLoopRunner(
-            enablement=_enablement(tmp_path, max_rounds=1),
-            audit_log=ReviewFixAuditLog(audit_path),
-            seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
-            root_path=tmp_path,
-            now=lambda: _NOW,
-        ).run()
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3, escalation="page-human-reviewer"),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
 
+    assert outcome.status is ReviewFixLoopOutcomeStatus.ESCALATED
+    assert outcome.rounds_run == 1
+    assert outcome.escalation == "page-human-reviewer"
     assert calls == []
-    assert ReviewFixAuditLog(audit_path).read_all() == []
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.finding_id, record.verdict) for record in records] == [
+        ("round:1", "round_open"),
+        ("loop", "escalated"),
+    ]
+    assert records[-1].tests == (
+        "page-human-reviewer",
+        f"fix_error=ReviewFixLoopRunnerError: {error}",
+    )
 
 
 def test_runner_validates_full_finding_batch_before_any_fix(tmp_path) -> None:
@@ -550,17 +561,74 @@ def test_runner_validates_full_finding_batch_before_any_fix(tmp_path) -> None:
         calls.append(f"fix:{work.finding.finding_id}")
         return ReviewFixLoopFixResult(commit="unused", verdict="kept", tests=("pytest",))
 
-    with pytest.raises(ReviewFixLoopRunnerError, match="finding_id must be a non-empty string"):
-        ReviewFixLoopRunner(
-            enablement=_enablement(tmp_path, max_rounds=1),
-            audit_log=ReviewFixAuditLog(audit_path),
-            seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
-            root_path=tmp_path,
-            now=lambda: _NOW,
-        ).run()
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3, escalation="page-human-reviewer"),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
 
+    assert outcome.status is ReviewFixLoopOutcomeStatus.ESCALATED
+    assert outcome.rounds_run == 1
+    assert outcome.escalation == "page-human-reviewer"
     assert calls == []
-    assert ReviewFixAuditLog(audit_path).read_all() == []
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.finding_id, record.verdict) for record in records] == [
+        ("round:1", "round_open"),
+        ("loop", "escalated"),
+    ]
+    assert records[-1].tests == (
+        "page-human-reviewer",
+        "fix_error=ReviewFixLoopRunnerError: finding_id must be a non-empty string",
+    )
+
+
+def test_runner_escalates_later_malformed_finding_after_prior_fix(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    fixed: list[str] = []
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        if status.round_number == 2:
+            return [ReviewFixFinding(finding_id="   ", category="codex-review")]
+        return [ReviewFixFinding(finding_id="codex:finding-1", category="codex-review")]
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        fixed.append(work.finding.finding_id)
+        return ReviewFixLoopFixResult(commit="abc123", verdict="kept", tests=("pytest",))
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3, escalation="page-human-reviewer"),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(
+            gather=gather,
+            classify=lambda finding, status: ReviewFixClassification(fixable=True),
+            fix=fix,
+        ),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.ESCALATED
+    assert outcome.rounds_run == 2
+    assert outcome.escalation == "page-human-reviewer"
+    assert fixed == ["codex:finding-1"]
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.round, record.finding_id, record.verdict) for record in records] == [
+        (1, "codex:finding-1", "kept"),
+        (1, "round:1", "round_fixed"),
+        (2, "round:2", "round_open"),
+        (2, "loop", "escalated"),
+    ]
+    assert records[-1].tests == (
+        "page-human-reviewer",
+        "fix_error=ReviewFixLoopRunnerError: finding_id must be a non-empty string",
+    )
 
 
 def test_runner_honors_kill_switch_after_not_fixable_classification(tmp_path) -> None:

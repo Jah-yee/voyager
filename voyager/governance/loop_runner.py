@@ -159,28 +159,11 @@ class ReviewFixLoopRunner:
             try:
                 findings = tuple(self.seams.gather(status))
             except Exception as exc:
-                gather_error = _fix_error_test(exc)
-                _append_round_audit(
-                    self.audit_log,
+                return self._escalate_round_error(
                     round_number=round_number,
-                    ts=self.now(),
-                    verdict="round_open",
-                    findings=0,
-                    fixes=0,
-                )
-                _append_audit(
-                    self.audit_log,
-                    round_number=round_number,
-                    ts=self.now(),
-                    finding_id="loop",
-                    verdict=ReviewFixLoopOutcomeStatus.ESCALATED.value,
-                    tests=(envelope.escalation, gather_error),
-                )
-                return ReviewFixLoopOutcome(
-                    status=ReviewFixLoopOutcomeStatus.ESCALATED,
-                    rounds_run=rounds_run,
                     clean_rounds=clean_rounds,
-                    escalation=envelope.escalation,
+                    envelope=envelope,
+                    error=_fix_error_test(exc),
                 )
             if kill_switch_path.exists():
                 _append_audit(
@@ -197,7 +180,15 @@ class ReviewFixLoopRunner:
                     clean_rounds=clean_rounds,
                     kill_switch_path=kill_switch_path,
                 )
-            findings = tuple(_validated_finding(finding) for finding in findings)
+            try:
+                findings = tuple(_validated_finding(finding) for finding in findings)
+            except Exception as exc:
+                return self._escalate_round_error(
+                    round_number=round_number,
+                    clean_rounds=clean_rounds,
+                    envelope=envelope,
+                    error=_fix_error_test(exc),
+                )
             if not findings:
                 clean_rounds += 1
                 _append_round_audit(
@@ -278,6 +269,37 @@ class ReviewFixLoopRunner:
         return ReviewFixLoopOutcome(
             status=ReviewFixLoopOutcomeStatus.ESCALATED,
             rounds_run=rounds_run,
+            clean_rounds=clean_rounds,
+            escalation=envelope.escalation,
+        )
+
+    def _escalate_round_error(
+        self,
+        *,
+        round_number: int,
+        clean_rounds: int,
+        envelope: SafetyEnvelope,
+        error: str,
+    ) -> ReviewFixLoopOutcome:
+        _append_round_audit(
+            self.audit_log,
+            round_number=round_number,
+            ts=self.now(),
+            verdict="round_open",
+            findings=0,
+            fixes=0,
+        )
+        _append_audit(
+            self.audit_log,
+            round_number=round_number,
+            ts=self.now(),
+            finding_id="loop",
+            verdict=ReviewFixLoopOutcomeStatus.ESCALATED.value,
+            tests=(envelope.escalation, error),
+        )
+        return ReviewFixLoopOutcome(
+            status=ReviewFixLoopOutcomeStatus.ESCALATED,
+            rounds_run=round_number,
             clean_rounds=clean_rounds,
             escalation=envelope.escalation,
         )
