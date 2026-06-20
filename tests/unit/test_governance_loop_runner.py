@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from voyager.governance.audit_log import ReviewFixAuditLog
+from voyager.governance.audit_log import ReviewFixAuditLog, ReviewFixAuditRecord
 from voyager.governance.enablement import Autonomy, EnablementConfig, SafetyEnvelope
 from voyager.governance.loop_runner import (
     ReviewFixClassification,
@@ -459,6 +459,62 @@ def test_runner_audits_not_fixable_without_calling_fix(tmp_path) -> None:
     assert ("codex:not-fixable", "not_fixable", ("reason=needs-human",)) in {
         (record.finding_id, record.verdict, record.tests) for record in records
     }
+
+
+def test_runner_skips_duplicate_fix_audit_when_seam_recorded_it(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    gather_calls = 0
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        nonlocal gather_calls
+        gather_calls += 1
+        if gather_calls == 1:
+            return [ReviewFixFinding(finding_id="codex:finding-1", category="codex-review")]
+        return []
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        ReviewFixAuditLog(audit_path).append(
+            ReviewFixAuditRecord(
+                round=status.round_number,
+                ts=_NOW,
+                commit="abc123",
+                finding_id=work.finding.finding_id,
+                category=work.finding.category,
+                verdict="kept",
+                tests=("pytest",),
+            )
+        )
+        return ReviewFixLoopFixResult(
+            commit="abc123",
+            verdict="kept",
+            tests=("pytest",),
+            audit_recorded=True,
+        )
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=2),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(
+            gather=gather,
+            classify=lambda finding, status: ReviewFixClassification(fixable=True),
+            fix=fix,
+        ),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.CONVERGED
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.finding_id, record.verdict) for record in records] == [
+        ("codex:finding-1", "kept"),
+        ("round:1", "round_fixed"),
+        ("round:2", "round_clean"),
+        ("loop", "converged"),
+    ]
 
 
 def test_runner_normalizes_blank_seam_audit_text(tmp_path) -> None:

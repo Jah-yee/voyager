@@ -50,6 +50,7 @@ class ReviewFixLoopFixResult:
     commit: str
     verdict: str
     tests: tuple[str, ...] = ()
+    audit_recorded: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -284,16 +285,19 @@ class ReviewFixLoopRunner:
                 status,
             )
             fixes += 1
-            _append_audit(
-                self.audit_log,
-                round_number=status.round_number,
-                ts=self.now(),
-                commit=result.commit,
-                finding_id=finding.finding_id,
-                category=finding.category,
-                verdict=result.verdict,
-                tests=_result_tests(result.tests, fallback_verify_command=envelope.verify_command),
-            )
+            if not result.audit_recorded:
+                _append_audit(
+                    self.audit_log,
+                    round_number=status.round_number,
+                    ts=self.now(),
+                    commit=result.commit,
+                    finding_id=finding.finding_id,
+                    category=finding.category,
+                    verdict=result.verdict,
+                    tests=_result_tests(
+                        result.tests, fallback_verify_command=envelope.verify_command
+                    ),
+                )
             if kill_switch_path.exists():
                 return fixes, True
         return fixes, False
