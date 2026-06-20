@@ -250,6 +250,7 @@ class ReviewFixLoopRunner:
         for finding in findings:
             if kill_switch_path.exists():
                 return fixes, True
+            finding = _validated_finding(finding)
             classification = self.seams.classify(finding, status)
             if not isinstance(classification.fixable, bool):
                 raise ReviewFixLoopRunnerError(
@@ -290,7 +291,7 @@ class ReviewFixLoopRunner:
                 status,
             )
             fixes += 1
-            if not result.audit_recorded:
+            if result.audit_recorded is not True:
                 _append_audit(
                     self.audit_log,
                     round_number=status.round_number,
@@ -306,6 +307,17 @@ class ReviewFixLoopRunner:
             if kill_switch_path.exists():
                 return fixes, True
         return fixes, False
+
+
+def _validated_finding(finding: ReviewFixFinding) -> ReviewFixFinding:
+    if not isinstance(finding, ReviewFixFinding):
+        raise ReviewFixLoopRunnerError(
+            f"finding must be a ReviewFixFinding, got {type(finding).__name__}"
+        )
+    return ReviewFixFinding(
+        finding_id=_non_empty(finding.finding_id, "finding_id"),
+        category=_non_empty(finding.category, "category"),
+    )
 
 
 def _append_round_audit(

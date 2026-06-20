@@ -368,6 +368,57 @@ def test_runner_rejects_non_boolean_classification_before_fix(tmp_path) -> None:
     assert ReviewFixAuditLog(audit_path).read_all() == []
 
 
+@pytest.mark.parametrize(
+    ("finding", "match"),
+    [
+        (
+            ReviewFixFinding(finding_id="   ", category="codex-review"),
+            "finding_id must be a non-empty string",
+        ),
+        (
+            ReviewFixFinding(finding_id="codex:finding-1", category="   "),
+            "category must be a non-empty string",
+        ),
+    ],
+)
+def test_runner_validates_finding_identity_before_fix(
+    tmp_path,
+    finding: ReviewFixFinding,
+    match: str,
+) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    calls: list[str] = []
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        return [finding]
+
+    def classify(
+        finding: ReviewFixFinding,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixClassification:
+        calls.append("classify")
+        return ReviewFixClassification(fixable=True)
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        calls.append("fix")
+        return ReviewFixLoopFixResult(commit="unused", verdict="kept", tests=("pytest",))
+
+    with pytest.raises(ReviewFixLoopRunnerError, match=match):
+        ReviewFixLoopRunner(
+            enablement=_enablement(tmp_path, max_rounds=1),
+            audit_log=ReviewFixAuditLog(audit_path),
+            seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+            root_path=tmp_path,
+            now=lambda: _NOW,
+        ).run()
+
+    assert calls == []
+    assert ReviewFixAuditLog(audit_path).read_all() == []
+
+
 def test_runner_honors_kill_switch_after_not_fixable_classification(tmp_path) -> None:
     audit_path = tmp_path / "review-fix.jsonl"
     kill_switch = tmp_path / ".voyager" / "review-fix.disabled"
@@ -548,6 +599,48 @@ def test_runner_skips_duplicate_fix_audit_when_seam_recorded_it(tmp_path) -> Non
         ("round:2", "round_clean"),
         ("loop", "converged"),
     ]
+
+
+def test_runner_requires_true_boolean_before_suppressing_fix_audit(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    gather_calls = 0
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        nonlocal gather_calls
+        gather_calls += 1
+        if gather_calls == 1:
+            return [ReviewFixFinding(finding_id="codex:finding-1", category="codex-review")]
+        return []
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        return ReviewFixLoopFixResult(
+            commit="abc123",
+            verdict="kept",
+            tests=("pytest",),
+            audit_recorded="false",
+        )
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=2),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(
+            gather=gather,
+            classify=lambda finding, status: ReviewFixClassification(fixable=True),
+            fix=fix,
+        ),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.CONVERGED
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert ("codex:finding-1", "kept", ("pytest",)) in {
+        (record.finding_id, record.verdict, record.tests) for record in records
+    }
 
 
 def test_runner_normalizes_blank_seam_audit_text(tmp_path) -> None:
