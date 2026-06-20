@@ -218,6 +218,46 @@ def test_runner_honors_kill_switch_between_findings(tmp_path) -> None:
     assert records[-1].verdict == "kill_switch"
 
 
+def test_runner_honors_kill_switch_after_final_fix(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    kill_switch = tmp_path / ".voyager" / "review-fix.disabled"
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        return [ReviewFixFinding(finding_id="codex:finding-1", category="codex-review")]
+
+    def classify(
+        finding: ReviewFixFinding,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixClassification:
+        return ReviewFixClassification(fixable=True)
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        kill_switch.parent.mkdir(parents=True)
+        kill_switch.write_text("stop\n", encoding="utf-8")
+        return ReviewFixLoopFixResult(commit="abc987", verdict="kept", tests=("pytest",))
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=1),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.KILL_SWITCH
+    assert outcome.rounds_run == 1
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert [(record.finding_id, record.verdict) for record in records] == [
+        ("codex:finding-1", "kept"),
+        ("round:1", "round_fixed"),
+        ("kill-switch", "kill_switch"),
+    ]
+
+
 def test_runner_rechecks_kill_switch_after_classification_before_fix(tmp_path) -> None:
     audit_path = tmp_path / "review-fix.jsonl"
     kill_switch = tmp_path / ".voyager" / "review-fix.disabled"

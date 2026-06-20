@@ -279,6 +279,8 @@ class ReviewFixLoopRunner:
                 verdict=result.verdict,
                 tests=_result_tests(result.tests, fallback_verify_command=envelope.verify_command),
             )
+            if kill_switch_path.exists():
+                return fixes, True
         return fixes, False
 
 
