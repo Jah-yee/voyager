@@ -15,6 +15,8 @@ from pathlib import Path
 
 from .audit_log import ReviewFixAuditLog, ReviewFixAuditRecord
 
+_GIT_TIMEOUT_SECONDS = 60.0
+
 
 class VerifyRollbackError(RuntimeError):
     """Raised when verify/rollback cannot complete safely."""
@@ -25,6 +27,7 @@ class VerifyRollbackVerdict(StrEnum):
 
     KEPT = "kept"
     ROLLED_BACK = "rolled_back"
+    REVERT_FAILED = "revert_failed"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -50,6 +53,18 @@ class _CommandResult:
     stderr: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class _AuditLogWrite:
+    log: ReviewFixAuditLog
+    round_number: int
+    ts: datetime
+    commit: str
+    finding_id: str
+    category: str
+    verdict: VerifyRollbackVerdict
+    verify_command: str
+
+
 NowFactory = Callable[[], datetime]
 
 
@@ -67,6 +82,14 @@ def verify_commit_or_rollback(
 ) -> VerifyRollbackResult:
     """Run verification for a fix commit and locally revert it on failure.
 
+    ``verify_command`` is trusted operator configuration. It runs in
+    ``cwd=repo_path`` through the platform shell with the inherited environment
+    plus noninteractive git prompt guards; callers are responsible for choosing
+    a command appropriate for the configured autonomy level.
+
+    ``commit`` may be any local commit-ish that resolves to a commit. Callers
+    must restrict it to the intended fix commit.
+
     The function never pushes. Rollback is a local ``git revert`` commit with
     hooks disabled so repository-local hooks cannot perform remote side effects.
     """
@@ -78,6 +101,7 @@ def verify_commit_or_rollback(
     normalized_finding_id = _non_empty(finding_id, "finding_id")
     normalized_category = _non_empty(category, "category")
     normalized_round = _positive_round(round_number)
+    timestamp = (now or _utcnow)()
 
     _ensure_commit_exists(git, repo, normalized_commit)
     _ensure_clean_worktree(git, repo, "before verification")
@@ -94,28 +118,66 @@ def verify_commit_or_rollback(
         _ensure_clean_worktree(git, repo, "after successful verification")
     else:
         verdict = VerifyRollbackVerdict.ROLLED_BACK
+        dirty_after_verify = _worktree_status(
+            git,
+            repo,
+            "after failed verification before rollback",
+        )
+        if dirty_after_verify:
+            _append_audit_record(
+                audit_log=_AuditLogWrite(
+                    log=audit_log,
+                    round_number=normalized_round,
+                    ts=timestamp,
+                    commit=normalized_commit,
+                    finding_id=normalized_finding_id,
+                    category=normalized_category,
+                    verdict=VerifyRollbackVerdict.REVERT_FAILED,
+                    verify_command=normalized_verify_command,
+                )
+            )
+            raise VerifyRollbackError(
+                "verify command failed and left the working tree dirty before rollback: "
+                f"{dirty_after_verify}"
+            )
         rollback = _run_git(
             git,
             ("revert", "--no-edit", "--no-gpg-sign", normalized_commit),
             cwd=repo,
         )
         if rollback.returncode != 0:
+            abort = _run_git(git, ("revert", "--abort"), cwd=repo)
+            _append_audit_record(
+                audit_log=_AuditLogWrite(
+                    log=audit_log,
+                    round_number=normalized_round,
+                    ts=timestamp,
+                    commit=normalized_commit,
+                    finding_id=normalized_finding_id,
+                    category=normalized_category,
+                    verdict=VerifyRollbackVerdict.REVERT_FAILED,
+                    verify_command=normalized_verify_command,
+                )
+            )
             raise VerifyRollbackError(
                 "git revert failed after verification failure: "
-                f"{_first_error_line(rollback.stderr) or rollback.returncode}"
+                f"{_first_error_line(rollback.stderr) or rollback.returncode}. "
+                f"{_revert_abort_message(abort)}"
             )
         _ensure_clean_worktree(git, repo, "after rollback")
 
-    record = ReviewFixAuditRecord(
-        round=normalized_round,
-        ts=(now or _utcnow)(),
-        commit=normalized_commit,
-        finding_id=normalized_finding_id,
-        category=normalized_category,
-        verdict=verdict.value,
-        tests=(normalized_verify_command,),
+    record = _append_audit_record(
+        audit_log=_AuditLogWrite(
+            log=audit_log,
+            round_number=normalized_round,
+            ts=timestamp,
+            commit=normalized_commit,
+            finding_id=normalized_finding_id,
+            category=normalized_category,
+            verdict=verdict,
+            verify_command=normalized_verify_command,
+        )
     )
-    audit_log.append(record)
 
     return VerifyRollbackResult(
         commit=normalized_commit,
@@ -152,13 +214,18 @@ def _ensure_commit_exists(git: str, repo: Path, commit: str) -> None:
 
 
 def _ensure_clean_worktree(git: str, repo: Path, phase: str) -> None:
+    status = _worktree_status(git, repo, phase)
+    if status:
+        raise VerifyRollbackError(f"working tree is not clean {phase}: {status}")
+
+
+def _worktree_status(git: str, repo: Path, phase: str) -> str:
     result = _run_git(git, ("status", "--porcelain"), cwd=repo)
     if result.returncode != 0:
         raise VerifyRollbackError(
             f"git status failed {phase}: {_first_error_line(result.stderr) or result.returncode}"
         )
-    if result.stdout.strip():
-        raise VerifyRollbackError(f"working tree is not clean {phase}: {result.stdout.strip()}")
+    return result.stdout.strip()
 
 
 def _run_verify_command(
@@ -170,9 +237,8 @@ def _run_verify_command(
     shell = shutil.which("bash") or shutil.which("sh")
     if shell is None:
         raise VerifyRollbackError("bash or sh executable not found on PATH")
-    shell_arg = "-lc" if Path(shell).name == "bash" else "-c"
     return _run_process(
-        (shell, shell_arg, command),
+        (shell, "-c", command),
         cwd=cwd,
         timeout_seconds=timeout_seconds,
         env=_subprocess_env(),
@@ -183,7 +249,7 @@ def _run_git(git: str, args: Sequence[str], *, cwd: Path) -> _CommandResult:
     return _run_process(
         (git, "-c", "core.hooksPath=/dev/null", *args),
         cwd=cwd,
-        timeout_seconds=None,
+        timeout_seconds=_GIT_TIMEOUT_SECONDS,
         env=_subprocess_env(),
     )
 
@@ -220,10 +286,34 @@ def _run_process(
 
 def _subprocess_env() -> dict[str, str]:
     env = dict(os.environ)
-    env.setdefault("GIT_TERMINAL_PROMPT", "0")
-    env.setdefault("GIT_ASKPASS", "/bin/false")
-    env.setdefault("SSH_ASKPASS", "/bin/false")
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "/bin/false"
+    env["SSH_ASKPASS"] = "/bin/false"
     return env
+
+
+def _append_audit_record(*, audit_log: _AuditLogWrite) -> ReviewFixAuditRecord:
+    record = ReviewFixAuditRecord(
+        round=audit_log.round_number,
+        ts=audit_log.ts,
+        commit=audit_log.commit,
+        finding_id=audit_log.finding_id,
+        category=audit_log.category,
+        verdict=audit_log.verdict.value,
+        tests=(audit_log.verify_command,),
+    )
+    audit_log.log.append(record)
+    return record
+
+
+def _revert_abort_message(abort: _CommandResult) -> str:
+    if abort.returncode == 0:
+        return "git revert --abort completed; retry after inspecting the failed rollback."
+    detail = _first_error_line(abort.stderr) or str(abort.returncode)
+    return (
+        "git revert --abort also failed; the worktree may still be in an unmerged state. "
+        f"Run git revert --abort or resolve manually before retrying. Abort detail: {detail}"
+    )
 
 
 def _timeout_text(value: str | bytes | None) -> str:
