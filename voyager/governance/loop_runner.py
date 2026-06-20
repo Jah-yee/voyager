@@ -121,6 +121,11 @@ class ReviewFixLoopRunner:
 
     def run(self) -> ReviewFixLoopOutcome:
         envelope = _require_envelope(self.enablement)
+        if self.clean_rounds_required > envelope.max_rounds:
+            raise ReviewFixLoopRunnerError(
+                "clean_rounds_required must be <= max_rounds, got "
+                f"{self.clean_rounds_required} > {envelope.max_rounds}"
+            )
         kill_switch_path = _resolve_kill_switch(self.root_path, envelope.kill_switch_path)
         clean_rounds = 0
         rounds_run = 0
@@ -238,7 +243,7 @@ class ReviewFixLoopRunner:
                     finding_id=finding.finding_id,
                     category=finding.category,
                     verdict="not_fixable",
-                    tests=(classification.reason or "not_fixable",),
+                    tests=_reason_tests(classification.reason),
                 )
                 continue
             if fixes >= envelope.max_fixes_per_round:
@@ -266,7 +271,7 @@ class ReviewFixLoopRunner:
                 finding_id=finding.finding_id,
                 category=finding.category,
                 verdict=result.verdict,
-                tests=result.tests or ("verify_command=" + envelope.verify_command,),
+                tests=_result_tests(result.tests, fallback_verify_command=envelope.verify_command),
             )
         return fixes, False
 
@@ -345,6 +350,24 @@ def _tests_tuple(value: tuple[str, ...]) -> tuple[str, ...]:
     if not value:
         raise ReviewFixLoopRunnerError("tests must contain at least one entry")
     return tuple(_non_empty(item, "tests item") for item in value)
+
+
+def _reason_tests(reason: str) -> tuple[str, ...]:
+    normalized = reason.strip()
+    if not normalized:
+        normalized = "not_fixable"
+    return (f"reason={normalized}",)
+
+
+def _result_tests(
+    tests: tuple[str, ...],
+    *,
+    fallback_verify_command: str,
+) -> tuple[str, ...]:
+    normalized = tuple(item.strip() for item in tests if item.strip())
+    if normalized:
+        return normalized
+    return ("verify_command=" + fallback_verify_command,)
 
 
 def _utcnow() -> datetime:

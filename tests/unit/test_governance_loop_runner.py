@@ -258,6 +258,165 @@ def test_runner_defers_findings_past_max_fixes_per_round(tmp_path) -> None:
     }
 
 
+def test_runner_audits_not_fixable_without_calling_fix(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    fixed: list[str] = []
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        return [ReviewFixFinding(finding_id="codex:not-fixable", category="codex-review")]
+
+    def classify(
+        finding: ReviewFixFinding,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixClassification:
+        return ReviewFixClassification(fixable=False, reason="needs-human")
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        fixed.append(work.finding.finding_id)
+        return ReviewFixLoopFixResult(commit="unused", verdict="kept", tests=("pytest",))
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=1),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.ESCALATED
+    assert fixed == []
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert ("codex:not-fixable", "not_fixable", ("reason=needs-human",)) in {
+        (record.finding_id, record.verdict, record.tests) for record in records
+    }
+
+
+def test_runner_normalizes_blank_seam_audit_text(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        return [
+            ReviewFixFinding(finding_id="codex:not-fixable", category="codex-review"),
+            ReviewFixFinding(finding_id="codex:fixable", category="codex-review"),
+        ]
+
+    def classify(
+        finding: ReviewFixFinding,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixClassification:
+        return ReviewFixClassification(
+            fixable=finding.finding_id == "codex:fixable",
+            reason="   ",
+        )
+
+    def fix(
+        work: ReviewFixLoopWork,
+        status: ReviewFixLoopStatus,
+    ) -> ReviewFixLoopFixResult:
+        return ReviewFixLoopFixResult(commit="abc987", verdict="kept", tests=("pytest", "   "))
+
+    ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=1),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(gather=gather, classify=classify, fix=fix),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    records = ReviewFixAuditLog(audit_path).read_all()
+    assert ("codex:not-fixable", "not_fixable", ("reason=not_fixable",)) in {
+        (record.finding_id, record.verdict, record.tests) for record in records
+    }
+    assert ("codex:fixable", "kept", ("pytest",)) in {
+        (record.finding_id, record.verdict, record.tests) for record in records
+    }
+
+
+def test_runner_preexisting_kill_switch_halts_before_gather(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    kill_switch = tmp_path / ".voyager" / "review-fix.disabled"
+    kill_switch.parent.mkdir(parents=True)
+    kill_switch.write_text("stop\n", encoding="utf-8")
+    gathered: list[int] = []
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(
+            gather=lambda status: gathered.append(status.round_number) or [],
+            classify=lambda finding, status: ReviewFixClassification(fixable=True),
+            fix=lambda work, status: ReviewFixLoopFixResult(
+                commit="unused",
+                verdict="kept",
+                tests=("pytest",),
+            ),
+        ),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.KILL_SWITCH
+    assert outcome.rounds_run == 0
+    assert gathered == []
+    assert ReviewFixAuditLog(audit_path).read_all()[0].verdict == "kill_switch"
+
+
+def test_runner_requires_multiple_consecutive_clean_rounds_when_configured(tmp_path) -> None:
+    audit_path = tmp_path / "review-fix.jsonl"
+    gathered: list[int] = []
+
+    def gather(status: ReviewFixLoopStatus) -> list[ReviewFixFinding]:
+        gathered.append(status.round_number)
+        return []
+
+    outcome = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=3),
+        audit_log=ReviewFixAuditLog(audit_path),
+        seams=ReviewFixLoopSeams(
+            gather=gather,
+            classify=lambda finding, status: ReviewFixClassification(fixable=False),
+            fix=lambda work, status: ReviewFixLoopFixResult(
+                commit="unused",
+                verdict="kept",
+                tests=("pytest",),
+            ),
+        ),
+        root_path=tmp_path,
+        now=lambda: _NOW,
+        clean_rounds_required=2,
+    ).run()
+
+    assert outcome.status is ReviewFixLoopOutcomeStatus.CONVERGED
+    assert outcome.rounds_run == 2
+    assert outcome.clean_rounds == 2
+    assert gathered == [1, 2]
+
+
+def test_runner_rejects_impossible_clean_round_requirement(tmp_path) -> None:
+    runner = ReviewFixLoopRunner(
+        enablement=_enablement(tmp_path, max_rounds=1),
+        audit_log=ReviewFixAuditLog(tmp_path / "review-fix.jsonl"),
+        seams=ReviewFixLoopSeams(
+            gather=lambda status: [],
+            classify=lambda finding, status: ReviewFixClassification(fixable=False),
+            fix=lambda work, status: ReviewFixLoopFixResult(
+                commit="unused",
+                verdict="kept",
+                tests=("pytest",),
+            ),
+        ),
+        root_path=tmp_path,
+        clean_rounds_required=2,
+    )
+
+    with pytest.raises(ReviewFixLoopRunnerError, match="clean_rounds_required"):
+        runner.run()
+
+
 def test_runner_requires_safety_envelope(tmp_path) -> None:
     seams = ReviewFixLoopSeams(
         gather=lambda status: [],
