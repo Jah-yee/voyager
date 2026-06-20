@@ -154,8 +154,23 @@ class ReviewFixLoopRunner:
                     kill_switch_path=kill_switch_path,
                 )
 
-            findings = tuple(self.seams.gather(status))
             rounds_run = round_number
+            findings = tuple(self.seams.gather(status))
+            if kill_switch_path.exists():
+                _append_audit(
+                    self.audit_log,
+                    round_number=round_number,
+                    ts=self.now(),
+                    finding_id="kill-switch",
+                    verdict=ReviewFixLoopOutcomeStatus.KILL_SWITCH.value,
+                    tests=(str(kill_switch_path),),
+                )
+                return ReviewFixLoopOutcome(
+                    status=ReviewFixLoopOutcomeStatus.KILL_SWITCH,
+                    rounds_run=rounds_run,
+                    clean_rounds=clean_rounds,
+                    kill_switch_path=kill_switch_path,
+                )
             if not findings:
                 clean_rounds += 1
                 _append_round_audit(
