@@ -156,7 +156,126 @@ def _has_current_head_final_verdict_comment(
     return False
 
 
-async def _has_fresh_current_head_final_verdict_comment(
+def _has_current_head_manual_close_comment(
+    comments: list[dict[str, Any]],
+    *,
+    thread_id: str,
+    head_sha: str,
+) -> bool:
+    head_prefix = head_sha[:12]
+    marker = f"<!-- clearance-manual-close:{thread_id}:{head_prefix}"
+    for comment in comments:
+        if not _is_clearance_comment(comment):
+            continue
+        if marker in str(comment.get("body") or ""):
+            return True
+    return False
+
+
+def _latest_current_head_final_marker_state(
+    comments: list[dict[str, Any]],
+    *,
+    thread_id: str,
+    head_sha: str,
+) -> str | None:
+    """Return the latest same-head final marker state by GitHub chronology."""
+    head_prefix = head_sha[:12]
+    manual_close_marker = f"<!-- clearance-manual-close:{thread_id}:{head_prefix}"
+    close_reason_prefix = f"<!-- clearance-close-reason:{thread_id}:{head_prefix}"
+    conclusion_prefix = f"<!-- clearance-thread-conclusion:{thread_id}:{head_prefix}"
+    candidates: list[tuple[datetime, int, str]] = []
+
+    for comment in comments:
+        if not _is_clearance_comment(comment):
+            continue
+        body = str(comment.get("body") or "")
+        state: str | None = None
+        if manual_close_marker in body:
+            state = "manual-close"
+        elif body.startswith(conclusion_prefix):
+            state = "thread-conclusion"
+        elif body.startswith(close_reason_prefix):
+            state = "close-reason"
+        if state is not None:
+            candidates.append((_comment_created_at(comment), _comment_database_id(comment), state))
+
+    if not candidates:
+        return None
+    latest_key = max((created_at, database_id) for created_at, database_id, _ in candidates)
+    latest_states = {
+        state
+        for created_at, database_id, state in candidates
+        if (created_at, database_id) == latest_key
+    }
+    if len(latest_states) != 1:
+        return "ambiguous"
+    return latest_states.pop()
+
+
+def _comment_created_at(comment: dict[str, Any]) -> datetime:
+    raw = str(comment.get("createdAt") or "")
+    if not raw:
+        return datetime.min.replace(tzinfo=UTC)
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+
+
+def _comment_database_id(comment: dict[str, Any]) -> int:
+    raw = comment.get("databaseId")
+    if raw is None:
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _latest_manual_close_relevant_state(
+    comments: list[dict[str, Any]],
+    *,
+    thread_id: str,
+) -> str | None:
+    """Return the latest state relevant to cross-head manual-close dedupe.
+
+    This deliberately ignores ``clearance-close-reason`` because that marker is
+    shared by self-resolve and delegated-resolve evidence. Only the dedicated
+    manual-close marker can suppress another manual-close reply.
+    """
+    candidates: list[tuple[datetime, int, str]] = []
+    manual_close_prefix = f"<!-- clearance-manual-close:{thread_id}:"
+    conclusion_prefix = f"<!-- clearance-thread-conclusion:{thread_id}:"
+
+    for comment in comments:
+        if not _is_clearance_comment(comment):
+            continue
+        body = str(comment.get("body") or "")
+        state: str | None = None
+        if manual_close_prefix in body:
+            state = "manual-close-resolved"
+        elif body.startswith(conclusion_prefix):
+            if f"Verdict: `{Verdict.OPEN.value}`" in body:
+                state = "open"
+            elif f"Verdict: `{Verdict.NEEDS_HUMAN_JUDGMENT.value}`" in body:
+                state = "needs-human-judgment"
+        if state is not None:
+            candidates.append((_comment_created_at(comment), _comment_database_id(comment), state))
+
+    if not candidates:
+        return None
+    latest_key = max((created_at, database_id) for created_at, database_id, _ in candidates)
+    latest_states = {
+        state
+        for created_at, database_id, state in candidates
+        if (created_at, database_id) == latest_key
+    }
+    if len(latest_states) != 1:
+        return None
+    return latest_states.pop()
+
+
+async def _fresh_current_head_final_marker_state(
     *,
     client: GitHubAppClient,
     repository: str,
@@ -164,14 +283,14 @@ async def _has_fresh_current_head_final_verdict_comment(
     thread_id: str,
     head_sha: str,
     cache: dict[str, Any],
-) -> bool:
-    """Re-fetch thread comments before writeback to suppress stale-snapshot duplicates."""
-    key = f"{thread_id}:{head_sha[:12]}"
+) -> str | None:
+    key = f"latest-current-final:{thread_id}:{head_sha[:12]}"
     marker_cache = cache.setdefault("markers", {})
     if key in marker_cache:
-        return bool(marker_cache[key])
+        cached = marker_cache[key]
+        return str(cached) if cached is not None else None
 
-    found = False
+    state: str | None = None
     if "fresh_threads" not in cache:
         try:
             cache["fresh_threads"] = await client.pull_request_review_threads(
@@ -180,30 +299,75 @@ async def _has_fresh_current_head_final_verdict_comment(
         except Exception as exc:
             safe = _safe_exception_fields(exc)
             _log.warning(
-                "fresh verdict-comment dedupe check failed for thread %s on %s#%s: "
-                "class=%s status=%s",
+                "fresh latest current-head final marker check failed for thread %s "
+                "on %s#%s: class=%s status=%s",
                 thread_id,
                 repository,
                 pr,
                 safe["error_class"],
                 safe["status"],
             )
-            marker_cache[key] = False
-            return False
+            marker_cache[key] = None
+            return None
 
     for item in cache["fresh_threads"]:
         if item.get("id") != thread_id:
             continue
         comments = (item.get("comments") or {}).get("nodes") or []
-        found = _has_current_head_final_verdict_comment(
+        state = _latest_current_head_final_marker_state(
             comments,
             thread_id=thread_id,
             head_sha=head_sha,
         )
         break
 
-    marker_cache[key] = found
-    return found
+    marker_cache[key] = state
+    return state
+
+
+async def _fresh_latest_manual_close_relevant_state(
+    *,
+    client: GitHubAppClient,
+    repository: str,
+    pr: int,
+    thread_id: str,
+    cache: dict[str, Any],
+) -> str | None:
+    """Return the latest fresh thread state relevant to manual-close dedupe."""
+    key = f"manual-close-latest:{thread_id}"
+    marker_cache = cache.setdefault("markers", {})
+    if key in marker_cache:
+        cached = marker_cache[key]
+        return str(cached) if cached is not None else None
+
+    state: str | None = None
+    if "fresh_threads" not in cache:
+        try:
+            cache["fresh_threads"] = await client.pull_request_review_threads(
+                CLEARANCE_AGENT_SLUG, repository, pr
+            )
+        except Exception as exc:
+            safe = _safe_exception_fields(exc)
+            _log.warning(
+                "fresh manual-close dedupe check failed for thread %s on %s#%s: class=%s status=%s",
+                thread_id,
+                repository,
+                pr,
+                safe["error_class"],
+                safe["status"],
+            )
+            marker_cache[key] = None
+            return None
+
+    for item in cache["fresh_threads"]:
+        if item.get("id") != thread_id:
+            continue
+        comments = (item.get("comments") or {}).get("nodes") or []
+        state = _latest_manual_close_relevant_state(comments, thread_id=thread_id)
+        break
+
+    marker_cache[key] = state
+    return state
 
 
 async def _has_fresh_current_head_resolved_comment(
@@ -265,8 +429,51 @@ async def _current_head_verdict_reply_skip_reason(
     thread: Thread,
     head_sha: str,
     cache: dict[str, Any],
+    manual_close: bool = False,
 ) -> str | None:
     if thread.verdict == Verdict.RESOLVED:
+        if manual_close:
+            if thread.existing_close_reason_marker and not thread.existing_manual_close_marker:
+                return "existing resolved verdict reply for current head"
+
+            latest_current_head_marker = await _fresh_current_head_final_marker_state(
+                client=client,
+                repository=repository,
+                pr=pr,
+                thread_id=thread.id,
+                head_sha=head_sha,
+                cache=cache,
+            )
+            if latest_current_head_marker == "thread-conclusion":
+                return None
+            if latest_current_head_marker:
+                return "existing resolved verdict reply for current head after refresh"
+            if thread.existing_manual_close_marker:
+                return "existing resolved verdict reply for current head"
+
+            latest_manual_close_state = await _fresh_latest_manual_close_relevant_state(
+                client=client,
+                repository=repository,
+                pr=pr,
+                thread_id=thread.id,
+                cache=cache,
+            )
+            if latest_manual_close_state == "manual-close-resolved":
+                return "existing manual-close resolved reply after refresh"
+            if latest_manual_close_state in {"open", "needs-human-judgment"}:
+                return None
+
+            if await _has_fresh_current_head_resolved_comment(
+                client=client,
+                repository=repository,
+                pr=pr,
+                thread_id=thread.id,
+                head_sha=head_sha,
+                cache=cache,
+            ):
+                return "existing resolved verdict reply for current head after refresh"
+            return None
+
         if thread.existing_close_reason_marker:
             return "existing resolved verdict reply for current head"
         if await _has_fresh_current_head_resolved_comment(
@@ -280,22 +487,34 @@ async def _current_head_verdict_reply_skip_reason(
             return "existing resolved verdict reply for current head after refresh"
         return None
 
-    if (
-        thread.existing_head_verdict_marker
-        or thread.existing_close_reason_marker
-        or thread.existing_thread_conclusion_marker
+    if thread.existing_thread_conclusion_marker:
+        return "existing final verdict reply for current head"
+    if thread.existing_close_reason_marker and not thread.existing_manual_close_marker:
+        return "existing final verdict reply for current head"
+    if thread.existing_head_verdict_marker and not (
+        thread.existing_close_reason_marker and thread.existing_manual_close_marker
     ):
         return "existing final verdict reply for current head"
 
-    if await _has_fresh_current_head_final_verdict_comment(
+    has_snapshot_manual_close_final = (
+        thread.existing_head_verdict_marker
+        and thread.existing_close_reason_marker
+        and thread.existing_manual_close_marker
+    )
+    latest_fresh_final_marker = await _fresh_current_head_final_marker_state(
         client=client,
         repository=repository,
         pr=pr,
         thread_id=thread.id,
         head_sha=head_sha,
         cache=cache,
-    ):
+    )
+    if latest_fresh_final_marker:
+        if latest_fresh_final_marker == "manual-close":
+            return None
         return "existing final verdict reply for current head after refresh"
+    if has_snapshot_manual_close_final:
+        return "existing final verdict reply for current head"
 
     return None
 
@@ -752,6 +971,11 @@ async def _process_thread(
                 thread_id=thread_dict["id"],
                 head_sha=head_sha,
             )
+            existing_manual_close_marker = _has_current_head_manual_close_comment(
+                comments_nodes,
+                thread_id=thread_dict["id"],
+                head_sha=head_sha,
+            )
             _log.info(
                 "known_limitation_suppressed: %s",
                 json.dumps(
@@ -779,6 +1003,7 @@ async def _process_thread(
                 known_limitation_link=kl_entry.decision_link,
                 existing_head_verdict_marker=existing_head_verdict_marker,
                 existing_close_reason_marker=existing_close_reason_marker,
+                existing_manual_close_marker=existing_manual_close_marker,
                 existing_thread_conclusion_marker=existing_thread_conclusion_marker,
             )
             snapshot = ThreadSnapshot(
@@ -999,6 +1224,11 @@ async def _process_thread(
         thread_id=thread_dict["id"],
         head_sha=head_sha,
     )
+    existing_manual_close_marker = _has_current_head_manual_close_comment(
+        comments_nodes,
+        thread_id=thread_dict["id"],
+        head_sha=head_sha,
+    )
 
     thread_model = Thread(
         id=thread_dict["id"],
@@ -1022,6 +1252,7 @@ async def _process_thread(
         clean_codex_signal_source=clean_codex_evidence_source,
         existing_head_verdict_marker=existing_head_verdict_marker,
         existing_close_reason_marker=existing_close_reason_marker,
+        existing_manual_close_marker=existing_manual_close_marker,
         existing_thread_conclusion_marker=existing_thread_conclusion_marker,
     )
 
@@ -1487,6 +1718,7 @@ async def _maybe_sync_stage_15(
                     thread=thread,
                     head_sha=head_sha,
                     cache=verdict_reply_dedupe_cache,
+                    manual_close=True,
                 )
                 if skip_reason:
                     reply_result = {
