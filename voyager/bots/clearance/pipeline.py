@@ -464,6 +464,11 @@ async def _current_head_verdict_reply_skip_reason(
     ):
         return "existing final verdict reply for current head"
 
+    has_snapshot_manual_close_final = (
+        thread.existing_head_verdict_marker
+        and thread.existing_close_reason_marker
+        and thread.existing_manual_close_marker
+    )
     latest_fresh_final_marker = await _fresh_current_head_final_marker_state(
         client=client,
         repository=repository,
@@ -476,6 +481,8 @@ async def _current_head_verdict_reply_skip_reason(
         if latest_fresh_final_marker == "manual-close":
             return None
         return "existing final verdict reply for current head after refresh"
+    if has_snapshot_manual_close_final:
+        return "existing final verdict reply for current head"
 
     return None
 

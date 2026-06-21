@@ -265,6 +265,18 @@ async def test_thread_verdict_comment_skips_existing_current_head_verdict() -> N
 @pytest.mark.asyncio
 async def test_open_verdict_can_supersede_same_head_manual_close_marker() -> None:
     client = _WritebackClient()
+    client.thread_comments.append(
+        {
+            "databaseId": 1,
+            "author": {"login": "iterwheel-clearance"},
+            "createdAt": "2026-05-11T12:00:00Z",
+            "body": (
+                "<!-- clearance-close-reason:PRRT_alpha:head-sha-abc -->\n"
+                "<!-- clearance-manual-close:PRRT_alpha:head-sha-abc -->\n"
+                "- Verdict: `RESOLVED`"
+            ),
+        }
+    )
 
     actions = await _maybe_post_thread_verdict_comments(
         client=client,  # type: ignore[arg-type]
@@ -285,6 +297,32 @@ async def test_open_verdict_can_supersede_same_head_manual_close_marker() -> Non
     assert len(client.reply_calls) == 1
     assert actions[0]["posted"] is True
     assert "Clearance: still open" in client.reply_calls[0][4]
+
+
+@pytest.mark.asyncio
+async def test_open_verdict_skips_snapshot_manual_close_marker_when_refresh_fails() -> None:
+    client = _WritebackClient()
+    client.fail_pull_request_review_threads = True
+
+    actions = await _maybe_post_thread_verdict_comments(
+        client=client,  # type: ignore[arg-type]
+        repository="iterwheel/sandbox",
+        threads=[
+            _thread(
+                Verdict.OPEN,
+                existing_close_reason_marker=True,
+                existing_manual_close_marker=True,
+            )
+        ],
+        snapshots=[_snapshot()],
+        pr=49,
+        head_sha="head-sha-abc1234",
+        dry_run=False,
+    )
+
+    assert client.reply_calls == []
+    assert actions[0]["skipped"] is True
+    assert actions[0]["skip_reason"] == "existing final verdict reply for current head"
 
 
 @pytest.mark.asyncio
