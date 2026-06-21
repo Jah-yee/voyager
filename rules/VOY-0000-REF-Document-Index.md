@@ -36,6 +36,7 @@
 | 1823 | SOP | Assembly OMP Audit Lookup |
 | 1824 | SOP | Assembly Failure Diagnostics |
 | 1825 | REF | Loop-Convergence Policy |
+| 1826 | CHG | Clearance Manual-Close Dedupe (Proposed) |
 
 ---
 
@@ -49,3 +50,4 @@
 | 2026-05-25 | Added VOY-1824 Assembly Failure Diagnostics SOP | Codex |
 | 2026-06-20 | Added VOY-1825 Loop-Convergence Policy | Assembly |
 | 2026-06-20 | Corrected generated index titles to match source document H1 titles | Codex |
+| 2026-06-21 | Added VOY-1826 Clearance Manual-Close Dedupe CHG | Moth |
