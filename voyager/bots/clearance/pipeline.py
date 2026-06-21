@@ -448,6 +448,8 @@ async def _current_head_verdict_reply_skip_reason(
                 return None
             if latest_current_head_marker:
                 return "existing resolved verdict reply for current head after refresh"
+            if thread.existing_manual_close_marker:
+                return "existing resolved verdict reply for current head"
 
             latest_manual_close_state = await _fresh_latest_manual_close_relevant_state(
                 client=client,
@@ -459,8 +461,6 @@ async def _current_head_verdict_reply_skip_reason(
             if latest_manual_close_state == "manual-close-resolved":
                 return "existing manual-close resolved reply after refresh"
             if latest_manual_close_state in {"open", "needs-human-judgment"}:
-                return None
-            if thread.existing_manual_close_marker:
                 return None
 
             if await _has_fresh_current_head_resolved_comment(

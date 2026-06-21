@@ -778,6 +778,36 @@ async def test_manual_close_reply_skips_after_fresh_same_head_resolved_reply() -
 
 
 @pytest.mark.asyncio
+async def test_manual_close_reply_skips_snapshot_same_head_marker_when_refresh_fails() -> None:
+    client = _WritebackClient()
+    client.fail_pull_request_review_threads = True
+    client.resolver_viewer_can_resolve_by_app["iterwheel-assembly"] = False
+
+    actions = await _maybe_sync_stage_15(
+        client=client,  # type: ignore[arg-type]
+        repository="iterwheel/sandbox",
+        threads=[
+            _thread(
+                Verdict.RESOLVED,
+                existing_close_reason_marker=True,
+                existing_manual_close_marker=True,
+            )
+        ],
+        snapshots=[_snapshot(viewer_can_resolve=False, verdict=Verdict.RESOLVED)],
+        pr=49,
+        head_sha="head-sha-abc1234",
+        dry_run=False,
+        now=datetime.now(UTC).replace(microsecond=0),
+        pr_author_login="iterwheel-assembly[bot]",
+    )
+
+    assert client.reply_calls == []
+    assert actions[0].result["in_thread_reply"]["skipped"] == (
+        "existing resolved verdict reply for current head"
+    )
+
+
+@pytest.mark.asyncio
 async def test_normal_close_reason_does_not_suppress_later_manual_close_reply() -> None:
     client = _WritebackClient()
     client.resolver_viewer_can_resolve_by_app["iterwheel-assembly"] = False
