@@ -191,6 +191,19 @@ def _exit_with_error(message: str) -> NoReturn:
     raise typer.Exit(code=1)
 
 
+def _expected_viewer_login_from_env(env_name: str | None) -> str | None:
+    if not env_name:
+        return None
+    expected = os.environ.get(env_name)
+    if not expected:
+        raise click.ClickException(f"{env_name} is not set")
+    return expected
+
+
+def _viewer_login_matches_expected(viewer_login: str, expected_viewer_login: str) -> bool:
+    return viewer_login.casefold() == expected_viewer_login.casefold()
+
+
 def _echo_thread_capabilities(threads: list[dict[str, Any]]) -> None:
     for thread in threads:
         typer.echo(
@@ -212,16 +225,31 @@ def user_device_code(
             "The command is split with shlex and is not run through a shell."
         ),
     ),
+    expected_viewer_login_env: str | None = typer.Option(
+        None,
+        "--expected-viewer-login-env",
+        help="Environment variable containing the expected GitHub login for actor proof.",
+    ),
+    repository_id: int | None = typer.Option(
+        None,
+        "--repository-id",
+        help="Optional GitHub repository ID to request a repository-restricted token.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON Lines."),
 ) -> None:
     """Start a GitHub App user-to-server device flow without printing token material."""
     import asyncio
     import time
 
-    from voyager.core.github_app_user_auth import exchange_device_code, request_device_code
+    from voyager.core.github_app_user_auth import (
+        exchange_device_code,
+        query_viewer_login,
+        request_device_code,
+    )
 
     try:
         _preflight_store_refresh_token_command(store_refresh_token_command)
+        expected_viewer_login = _expected_viewer_login_from_env(expected_viewer_login_env)
     except click.ClickException as exc:
         _exit_with_error(exc.message)
 
@@ -246,7 +274,11 @@ def user_device_code(
                 raise RuntimeError("GitHub device authorization expired")
             await asyncio.sleep(interval)
             try:
-                token_response = await exchange_device_code(client_id, response.device_code)
+                token_response = await exchange_device_code(
+                    client_id,
+                    response.device_code,
+                    repository_id=repository_id,
+                )
                 break
             except RuntimeError as exc:
                 message = str(exc)
@@ -255,9 +287,18 @@ def user_device_code(
                 elif "authorization_pending" not in message:
                     raise
 
-        _store_refresh_token(store_refresh_token_command, token_response.refresh_token)
         result = token_response.to_public_dict()
         result["event"] = "authorization_complete"
+        if expected_viewer_login is not None:
+            viewer_login = await query_viewer_login(token_response.access_token)
+            result["viewer_login_present"] = bool(viewer_login)
+            result["viewer_login_matches_expected"] = _viewer_login_matches_expected(
+                viewer_login,
+                expected_viewer_login,
+            )
+            if not result["viewer_login_matches_expected"]:
+                raise RuntimeError("GitHub viewer login did not match expected account")
+        _store_refresh_token(store_refresh_token_command, token_response.refresh_token)
         result["refresh_token_stored"] = bool(token_response.refresh_token)
         return result
 
@@ -275,6 +316,12 @@ def user_device_code(
     typer.echo(f"expires_in: {public_result['expires_in']}")
     typer.echo(f"refresh_token_present: {public_result['refresh_token_present']}")
     typer.echo(f"refresh_token_expires_in: {public_result['refresh_token_expires_in']}")
+    if expected_viewer_login_env:
+        typer.echo(f"viewer_login_present: {public_result['viewer_login_present']}")
+        typer.echo(
+            "viewer_login_matches_expected: "
+            f"{public_result['viewer_login_matches_expected']}"
+        )
     typer.echo(f"refresh_token_stored: {public_result['refresh_token_stored']}")
 
 
@@ -290,6 +337,11 @@ def user_refresh_check(
         False,
         "--check-viewer",
         help="Query GraphQL viewer.login with the refreshed access token.",
+    ),
+    expected_viewer_login_env: str | None = typer.Option(
+        None,
+        "--expected-viewer-login-env",
+        help="Environment variable containing the expected GitHub login for actor proof.",
     ),
     store_refresh_token_command: str | None = typer.Option(
         None,
@@ -315,23 +367,31 @@ def user_refresh_check(
         raise typer.Exit(code=1)
     try:
         _preflight_store_refresh_token_command(store_refresh_token_command)
+        expected_viewer_login = _expected_viewer_login_from_env(expected_viewer_login_env)
     except click.ClickException as exc:
         _exit_with_error(exc.message)
 
     async def _run() -> dict[str, Any]:
         response = await refresh_user_access_token(client_id, refresh_token)
-        _store_refresh_token(store_refresh_token_command, response.refresh_token)
-        stored_replacement = bool(response.refresh_token)
         redacted = "[" + "redacted" + "]"
         result = response.to_public_dict()
         result["replacement_refresh_token_must_be_stored"] = bool(response.refresh_token)
-        result["replacement_refresh_token_stored"] = stored_replacement
         result["access_token"] = redacted
         result["refresh_token"] = redacted if response.refresh_token else None
-        if check_viewer:
+        if expected_viewer_login is not None:
             viewer_login = await query_viewer_login(response.access_token)
             result["viewer_login_present"] = bool(viewer_login)
-            result["viewer_login"] = redacted
+            result["viewer_login_matches_expected"] = _viewer_login_matches_expected(
+                viewer_login,
+                expected_viewer_login,
+            )
+            if not result["viewer_login_matches_expected"]:
+                raise RuntimeError("GitHub viewer login did not match expected account")
+        _store_refresh_token(store_refresh_token_command, response.refresh_token)
+        result["replacement_refresh_token_stored"] = bool(response.refresh_token)
+        if check_viewer and expected_viewer_login is None:
+            viewer_login = await query_viewer_login(response.access_token)
+            result["viewer_login_present"] = bool(viewer_login)
         return result
 
     try:
@@ -356,9 +416,13 @@ def user_refresh_check(
     typer.echo(
         f"replacement_refresh_token_stored: {public_result['replacement_refresh_token_stored']}"
     )
-    if check_viewer:
+    if check_viewer or expected_viewer_login_env:
         typer.echo(f"viewer_login_present: {public_result['viewer_login_present']}")
-        typer.echo("viewer_login: [redacted]")
+        if expected_viewer_login_env:
+            typer.echo(
+                "viewer_login_matches_expected: "
+                f"{public_result['viewer_login_matches_expected']}"
+            )
     typer.echo("access_token: [redacted]")
     typer.echo("refresh_token: [redacted]")
 
@@ -387,9 +451,9 @@ def _store_refresh_token(command: str, refresh_token: str | None) -> None:
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
     ) as exc:
-        recovery_path = _write_refresh_token_recovery_file(refresh_token)
         raise click.ClickException(
-            f"Secret-store command failed; replacement refresh token was saved to {recovery_path}"
+            "Secret-store command failed after GitHub token rotation; replacement refresh "
+            "token was not stored. Re-run authorization after fixing the secret-store command."
         ) from exc
 
 
@@ -424,19 +488,6 @@ def _store_refresh_token_argv(command: str) -> list[str]:
     return [resolved, *argv[1:]]
 
 
-def _write_refresh_token_recovery_file(refresh_token: str) -> Path:
-    import time
-
-    recovery_root = Path(
-        os.environ.get("VOYAGER_REFRESH_TOKEN_RECOVERY_DIR", Path.home() / ".voyager" / "recovery")
-    )
-    recovery_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(recovery_root, 0o700)
-    recovery_path = recovery_root / f"countdown-refresh-token-{time.time_ns()}.txt"
-    fd = os.open(recovery_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(refresh_token)
-    return recovery_path
 
 
 def main() -> None:
