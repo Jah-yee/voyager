@@ -155,16 +155,22 @@ async def query_viewer_login(
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=15)
     try:
-        response = await http.post(
-            f"{GITHUB_API}/graphql",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {access_token}",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            json={"query": "query { viewer { login } }"},
-        )
-        response.raise_for_status()
+        try:
+            response = await http.post(
+                f"{GITHUB_API}/graphql",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {access_token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json={"query": "query { viewer { login } }"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            raise RuntimeError(f"GitHub GraphQL viewer query failed: HTTP {status_code}") from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError("GitHub GraphQL viewer query failed: HTTP request error") from exc
         data = response.json()
         if data.get("errors"):
             raise RuntimeError("GitHub GraphQL viewer query returned errors")
