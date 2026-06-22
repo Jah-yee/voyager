@@ -6,12 +6,13 @@ guard on the uvicorn serve test so the runner never blocks.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
-from voyager.cli import app
+from voyager.cli import _store_refresh_token, app
 
 # Force a wide terminal in tests so Typer/Rich does not wrap `--host`
 # across lines (CI defaults to ~80 cols and the help table breaks the
@@ -82,6 +83,19 @@ def test_vyg_countdown_user_refresh_check_requires_store_command() -> None:
     )
     assert result.exit_code == 1
     assert "--store-refresh-token-command is required" in result.stderr
+
+
+def test_store_refresh_token_suppresses_child_output(capsys: pytest.CaptureFixture[str]) -> None:
+    command = (
+        f'{sys.executable} -c "import sys; data=sys.stdin.read(); '
+        'print(data); print(data, file=sys.stderr)"'
+    )
+
+    _store_refresh_token(command, "secret-refresh")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_vyg_bridge_serve_help_lists_flags() -> None:
