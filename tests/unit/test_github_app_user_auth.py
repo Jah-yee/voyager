@@ -39,6 +39,28 @@ async def test_request_device_code_public_dict_redacts_device_code() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_device_code_reports_oauth_errors_before_success_parsing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/login/device/code"
+        return httpx.Response(
+            200,
+            json={
+                "error": "device_flow_disabled",
+                "error_description": "Device flow is disabled for client-id",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError) as exc_info:
+            await request_device_code("client-id", client=client)
+
+    message = str(exc_info.value)
+    assert message == "GitHub device authorization failed: device_flow_disabled"
+    assert "client-id" not in message
+    assert "Device flow is disabled" not in message
+
+
+@pytest.mark.asyncio
 async def test_exchange_device_code_reports_safe_metadata() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/login/oauth/access_token"
