@@ -263,6 +263,8 @@ def user_device_code(
         public_result = asyncio.run(_run())
     except click.ClickException as exc:
         _exit_with_error(exc.message)
+    except RuntimeError as exc:
+        _exit_with_error(str(exc))
     if json_output:
         typer.echo(json.dumps(public_result, sort_keys=True))
         return
@@ -334,6 +336,8 @@ def user_refresh_check(
         public_result = asyncio.run(_run())
     except click.ClickException as exc:
         _exit_with_error(exc.message)
+    except RuntimeError as exc:
+        _exit_with_error(str(exc))
     if json_output:
         typer.echo(json.dumps(public_result, indent=2, sort_keys=True))
         return
@@ -392,7 +396,10 @@ def _store_refresh_token_argv(command: str) -> list[str]:
     import shlex
     import shutil
 
-    argv = shlex.split(command)
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid --store-refresh-token-command: {exc}") from exc
     if not argv:
         raise RuntimeError("--store-refresh-token-command must not be empty")
 
