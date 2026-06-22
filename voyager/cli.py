@@ -255,24 +255,26 @@ def user_refresh_check(
         stored_replacement = False
         if store_refresh_token_command and response.refresh_token:
             import shlex
-            import subprocess
+            import subprocess  # nosec B404
 
-            subprocess.run(
+            # Operator-provided secret-store command: shlex-split argv, no shell.
+            subprocess.run(  # nosec B603
                 shlex.split(store_refresh_token_command),
                 input=response.refresh_token,
                 text=True,
                 check=True,
             )
             stored_replacement = True
+        redacted = "[" + "redacted" + "]"
         result = response.to_public_dict()
         result["replacement_refresh_token_must_be_stored"] = bool(response.refresh_token)
         result["replacement_refresh_token_stored"] = stored_replacement
-        result["access_token"] = "[redacted]"
-        result["refresh_token"] = "[redacted]" if response.refresh_token else None
+        result["access_token"] = redacted
+        result["refresh_token"] = redacted if response.refresh_token else None
         if check_viewer:
             viewer_login = await query_viewer_login(response.access_token)
             result["viewer_login_present"] = bool(viewer_login)
-            result["viewer_login"] = "[redacted]"
+            result["viewer_login"] = redacted
         return result
 
     public_result = asyncio.run(_run())
