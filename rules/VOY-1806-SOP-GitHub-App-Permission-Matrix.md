@@ -1,8 +1,8 @@
 # SOP-1806: GitHub App Permission Matrix
 
 **Applies to:** VOY project
-**Last updated:** 2026-05-23
-**Last reviewed:** 2026-05-23
+**Last updated:** 2026-06-22
+**Last reviewed:** 2026-06-22
 **Status:** Active
 **Related:** VOY-1802, VOY-1804, VOY-1805
 
@@ -116,18 +116,29 @@ repositories, manage secrets, deploy production, or merge code directly.
      mutation and surface the skip instead of assuming same-repo implies
      resolvability. Stack does not need pull request access because it is
      issue-only.
+     For issue #200, Countdown is the authorized resolver actor, not Clearance:
+     Countdown may call `resolveReviewThread` only after Clearance has supplied
+     semantic `RESOLVED` evidence and Countdown's own installation token reports
+     `viewerCanResolve=true` for the exact thread node. If Countdown reports
+     `viewerCanResolve=false`, the operator must record the actor, repository,
+     PR, thread type, permissions, and GitHub response; do not broaden
+     permissions by assumption.
    - `Checks: read & write` allows each bot that publishes a verdict to create
      check runs.
    - `Actions: read-only` and `Commit statuses: read-only` are reserved for bots
      that summarize CI, gate readiness, or implementation feedback.
-    - `Contents: read & write` is granted to `iterwheel-assembly` as the sole
-      exception. Assembly needs write access to create branches and push
-      implementation commits. Merge authority is denied by branch protection
-      (require PR approvals) and explicit SOP prohibition — Assembly must not
-      merge, even though it holds the technical permission.
-    - `Contents: write` is intentionally denied for all other bots. GitHub's pull request merge API
-     requires contents write permission, so denying contents write keeps
-     `iterwheel-countdown` from having merge authority.
+   - `Contents: read & write` is granted to `iterwheel-assembly` as the sole
+     exception. Assembly needs write access to create branches and push
+     implementation commits. Merge authority is denied by branch protection
+     (require PR approvals) and explicit SOP prohibition — Assembly must not
+     merge, even though it holds the technical permission.
+   - `Contents: write` is intentionally denied for all other bots. GitHub's pull
+     request merge API requires contents write permission, so denying contents
+     write keeps `iterwheel-countdown` from having merge authority. Countdown
+     must stay at `Contents: read-only` for the resolver role unless a
+     controlled canary proves GitHub requires a stronger permission for
+     `resolveReviewThread`; that escalation would need a follow-up CHG/ADR and
+     updated evidence in VOY-1807.
 
 4. **Subscribe to webhook events**
 
@@ -167,6 +178,22 @@ repositories, manage secrets, deploy production, or merge code directly.
    repository access after webhook delivery, signature verification, event
    routing, dry-run publishing, and scoped write-back are proven.
 
+7. **Prove Countdown resolver capability before production handoff**
+
+   The resolver canary may be manual/diagnostic-only. Use the Countdown
+   installation token to query `PullRequestReviewThread.viewerCanResolve` and
+   `viewerCanReply` for target thread IDs, then run a controlled
+   `resolveReviewThread` mutation only when the diagnostic reports:
+
+   - the actor is `iterwheel-countdown[bot]`
+   - the thread belongs to the specified repository and PR
+   - `isResolved=false`
+   - `viewerCanResolve=true`
+
+   Record before/after evidence in VOY-1807. Do not install Countdown broadly
+   across all repositories for this proof; start with one selected canary
+   repository such as `iterwheel/voyager-sandbox`.
+
 
 ## Examples
 
@@ -204,3 +231,4 @@ modes.
 | 2026-05-09 | Tightened Stack to issue-only labels and removed Stack PR event ownership                                 | Frank Xu + Codex |
 | 2026-05-23 | Added Assembly bot: app settings, permission row (Contents write exception with merge prohibition), webhook events, and note on dangerous defaults (issue #67) | DeepSeek (via VOY-1811) |
 | 2026-05-23 | Updated Assembly issue permission to read/write to match the created App and planned issue progress comments for issue #68 | Codex |
+| 2026-06-22 | Recorded Countdown resolver capability gates and canary proof requirements for issue #200 | Codex |

@@ -1,8 +1,8 @@
 # REF-1807: GitHub App Registry
 
 **Applies to:** VOY project
-**Last updated:** 2026-05-24
-**Last reviewed:** 2026-05-24
+**Last updated:** 2026-06-22
+**Last reviewed:** 2026-06-22
 **Status:** Active
 **Related:** VOY-1805, VOY-1806, VOY-1808
 
@@ -45,6 +45,7 @@ Current bridge write-back:
 | `iterwheel-blueprint` | `iterwheel/voyager`, `iterwheel/voyager-sandbox`, `frankyxhl/alfred`, `frankyxhl/babs`, `frankyxhl/fx_bin`, `frankyxhl/sweeping-monk`, `frankyxhl/trinity` | `issues.opened`, `issues.edited`, `issues.reopened`, or `/blueprint` issue comment | Validates issue title format and intake fields, maintains exactly one Blueprint state label from `blueprint-needed`, `blueprint-ready`, and `blueprint-requests-revision`, upserts one Blueprint intake comment, and adds a `rocket` issue reaction when the issue is Blueprint-ready |
 | `iterwheel-stack` | `iterwheel/voyager`, `iterwheel/voyager-sandbox`, `frankyxhl/alfred`, `frankyxhl/babs`, `frankyxhl/fx_bin`, `frankyxhl/sweeping-monk`, `frankyxhl/trinity` | `issues.opened`, `issues.edited`, `issues.reopened`, or `/stack` issue comment on a non-PR issue | Maintains one issue label from each Stack axis (`stack-type-*`, `stack-area-*`, `stack-size-*`, and `stack-risk-*`) when confident; otherwise applies `stack-needs-review`; upserts one Stack classification comment; adds `rocket` on successful issue classification and `eyes` when human review is needed |
 | `iterwheel-clearance` | `iterwheel/voyager`, `iterwheel/voyager-sandbox` | `pull_request.opened`, `pull_request.edited`, `pull_request.reopened`, `pull_request.ready_for_review`, `pull_request.converted_to_draft`, `pull_request.synchronize`, `pull_request_review.submitted`, `pull_request_review.dismissed`, `pull_request_review_comment.*`, or `/clearance` PR comment | Maintains one PR review-readiness label from `clearance-1-pending`, `clearance-2-blocked`, `clearance-3-ready-for-approval`, and `clearance-4-ready-for-merge`; upserts one Clearance comment; adds `rocket` when ready and `eyes` otherwise |
+| `iterwheel-countdown` | `iterwheel/voyager-sandbox` resolver canary only | Manual `vyg countdown review-thread-diagnostic` invocation. Production event wiring is deferred to a follow-up CHG. | Queries `PullRequestReviewThread.viewerCanResolve`, `viewerCanReply`, `isResolved`, and `isOutdated` as Countdown. With `--resolve`, calls `resolveReviewThread` only when the target thread belongs to the specified PR, is currently unresolved, and Countdown's live `viewerCanResolve=true`. |
 | `iterwheel-assembly` | `iterwheel/voyager`, `iterwheel/voyager-sandbox`, `frankyxhl/alfred`, `frankyxhl/trinity` | `/assembly` or `/implement` issue comment on a `blueprint-ready` allow-listed issue. | When `ASSEMBLY_EXECUTION_BACKEND` produces commits, creates a `<issue#>-<slug>` branch ref on the source repo, opens or updates a PR with `Closes #N`, posts `@codex review` after each push, and upserts an Assembly progress comment on both the issue and the PR. Never merges, approves, resolves review threads, or applies Clearance/Countdown labels. Initial allow-list ships empty; `iterwheel/voyager-sandbox` is the intended first production target via `BRIDGE_ALLOWED_REPOSITORIES_ITERWHEEL_ASSEMBLY`. Requires actor authorization per VOY-1818; default deny when `BRIDGE_ASSEMBLY_AUTHORIZED_ACTORS` and `BRIDGE_ASSEMBLY_AUTHORIZED_ASSOCIATIONS` are unset. Operators run the end-to-end issue-to-PR loop using VOY-1822. |
 
 Cross-account installation:
@@ -52,6 +53,18 @@ Cross-account installation:
 | Account | Repository | Strategy | Status |
 |---------|------------|----------|--------|
 | `frankyxhl` | `frankyxhl/alfred`, `frankyxhl/babs`, `frankyxhl/fx_bin`, `frankyxhl/sweeping-monk`, `frankyxhl/trinity` | Reuse existing `iterwheel-*` Apps by making them installable on selected repositories outside the owning organization. | `iterwheel-blueprint` installed as selected-repository installation `130696149`; `iterwheel-stack` installed as selected-repository installation `130716196`; `iterwheel-assembly` installed on `frankyxhl/alfred` and `frankyxhl/trinity` as selected-repository installation `134830000`; Static Fire, Clearance, and Countdown remain sandbox-only |
+
+Countdown resolver canary status:
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| App exists | Complete | `iterwheel-countdown` App ID `3646540`; public page `https://github.com/apps/iterwheel-countdown`. |
+| Current public App metadata | Complete | `gh api /apps/iterwheel-countdown` on 2026-06-22 returned owner `iterwheel`, permissions `metadata: read`, `contents: read`, `issues: write`, `pull_requests: write`, `checks: write`, `actions: read`, and `statuses: read`; events `check_run`, `check_suite`, `issue_comment`, `pull_request`, `pull_request_review`, `pull_request_review_comment`, `status`, and `workflow_run`. |
+| Installation scope | Registry-recorded | Selected repository installation remains `iterwheel/voyager-sandbox` (`130630407`). Do not broaden Countdown to all repositories for issue #200. |
+| Operator credentials | Available on Wukong; absent locally | `/Users/frank/.voyager/config.toml`, `./voyager.toml`, `/etc/voyager/config.toml`, and local Countdown PEM paths were absent on this workstation on 2026-06-22. Wukong has `~/.voyager/secrets/iterwheel-countdown.pem`; the live canary used a one-off in-memory `AppConfig` so App ID, installation ID, and private key material stayed in the operator secret path and were not committed. |
+| Capability query canary | Complete-negative | On 2026-06-22, Countdown queried a private sandbox PR review thread as actor `iterwheel-countdown[bot]`. Response: type `PullRequestReviewThread`, repo `iterwheel/voyager-sandbox`, `isResolved=false`, `isOutdated=false`, `viewerCanResolve=false`, `viewerCanReply=true`. An existing sandbox canary thread also returned `viewerCanResolve=false`. This is not resolver-capable evidence. Keep private PR numbers and thread node IDs in operator notes, not this public registry. |
+| Resolve canary | Blocked by capability bit | No `resolveReviewThread` mutation was run because Countdown's live `viewerCanResolve=false`. The private canary PR was closed and its temporary branch was deleted after recording evidence. |
+| Permission escalation check | Pending operator sudo | GitHub App settings page requires GitHub sudo/passkey confirmation before editing permissions. No App settings were changed in this pass. If operators approve testing `Contents: read & write` or another permission, rerun the #200 canary and record before/after evidence here before claiming Countdown resolver capability. |
 
 Operational notes:
 
@@ -114,6 +127,9 @@ Operational notes:
   `clearance-3-ready-for-approval`, and `clearance-4-ready-for-merge`.
   Legacy labels (`clearance-pending`, `clearance-blocked`, `clearance-ready`)
   are removed on every write-back as part of the migration (issue #25).
+- Countdown resolver capability is diagnostic-only for issue #200. The local
+  command exists so operators can prove the live GitHub GraphQL capability bit
+  before any Clearance-to-Countdown production handoff is designed.
 
 ---
 
@@ -152,3 +168,4 @@ Operational notes:
 | 2026-05-23 | Documented VOY-1821 `fake-subprocess` Assembly backend selection under the existing `iterwheel-assembly` App and the sandbox-only gate for the later real OMP canary | Codex |
 | 2026-05-23 | Recorded that the real Assembly backend uses the Oh My Pi CLI command `omp -p` and remains sandbox-only for the first canary | Codex |
 | 2026-05-24 | Linked the Assembly write-back row and operational notes to VOY-1822, the Assembly-driven implementation-loop SOP | Codex |
+| 2026-06-22 | Recorded Countdown resolver diagnostic command, public App metadata evidence, and pending canary evidence requirements for issue #200 | Codex |

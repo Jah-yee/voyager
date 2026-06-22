@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from voyager.core.countdown_diagnostic import (
+    query_review_thread_capabilities,
+    run_review_thread_resolve_canary,
+)
+
+
+class _FakeGitHubClient:
+    def __init__(self, *, viewer_can_resolve: bool, resolved_after_mutation: bool = False) -> None:
+        self.viewer_can_resolve = viewer_can_resolve
+        self.resolved_after_mutation = resolved_after_mutation
+        self.resolve_calls: list[tuple[str, str, str]] = []
+        self.graphql_calls: list[dict[str, Any]] = []
+
+    async def graphql(
+        self,
+        app_slug: str,
+        repository: str,
+        *,
+        query: str,
+        variables: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.graphql_calls.append(
+            {
+                "app_slug": app_slug,
+                "repository": repository,
+                "query": query,
+                "variables": variables,
+            }
+        )
+        return {
+            "viewer": {"login": "iterwheel-countdown[bot]"},
+            "nodes": [
+                {
+                    "__typename": "PullRequestReviewThread",
+                    "id": variables["threadIds"][0],
+                    "isResolved": self.resolved_after_mutation,
+                    "isOutdated": False,
+                    "viewerCanResolve": self.viewer_can_resolve,
+                    "viewerCanReply": True,
+                    "pullRequest": {
+                        "number": 42,
+                        "repository": {"nameWithOwner": "iterwheel/voyager-sandbox"},
+                    },
+                }
+            ],
+        }
+
+    async def resolve_review_thread(
+        self,
+        app_slug: str,
+        repository: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        self.resolve_calls.append((app_slug, repository, thread_id))
+        self.resolved_after_mutation = True
+        return {"id": thread_id, "isResolved": True, "resolvedBy": {"login": app_slug + "[bot]"}}
+
+
+@pytest.mark.asyncio
+async def test_query_review_thread_capabilities_reports_countdown_actor_and_flags() -> None:
+    client = _FakeGitHubClient(viewer_can_resolve=True)
+
+    report = await query_review_thread_capabilities(
+        client,  # type: ignore[arg-type]
+        repository="iterwheel/voyager-sandbox",
+        pr=42,
+        thread_ids=["PRRT_123"],
+    )
+
+    assert report.actor_login == "iterwheel-countdown[bot]"
+    assert report.app_slug == "iterwheel-countdown"
+    thread = report.threads[0]
+    assert thread.thread_id == "PRRT_123"
+    assert thread.repository == "iterwheel/voyager-sandbox"
+    assert thread.pr == 42
+    assert thread.is_resolved is False
+    assert thread.is_outdated is False
+    assert thread.viewer_can_resolve is True
+    assert thread.viewer_can_reply is True
+    query = client.graphql_calls[0]["query"]
+    assert "viewerCanResolve" in query
+    assert "viewerCanReply" in query
+    assert "viewer" in query
+
+
+@pytest.mark.asyncio
+async def test_resolve_canary_skips_when_countdown_cannot_resolve() -> None:
+    client = _FakeGitHubClient(viewer_can_resolve=False)
+
+    report = await run_review_thread_resolve_canary(
+        client,  # type: ignore[arg-type]
+        repository="iterwheel/voyager-sandbox",
+        pr=42,
+        thread_ids=["PRRT_123"],
+    )
+
+    assert client.resolve_calls == []
+    assert report.operations[0].applied is False
+    assert report.operations[0].reason == "viewerCanResolve is false"
+    assert report.after.threads[0].is_resolved is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_canary_applies_and_requeries_after_success() -> None:
+    client = _FakeGitHubClient(viewer_can_resolve=True)
+
+    report = await run_review_thread_resolve_canary(
+        client,  # type: ignore[arg-type]
+        repository="iterwheel/voyager-sandbox",
+        pr=42,
+        thread_ids=["PRRT_123"],
+    )
+
+    assert client.resolve_calls == [
+        ("iterwheel-countdown", "iterwheel/voyager-sandbox", "PRRT_123")
+    ]
+    assert report.before.threads[0].is_resolved is False
+    assert report.operations[0].applied is True
+    assert report.operations[0].resolved_by == "iterwheel-countdown[bot]"
+    assert report.after.threads[0].is_resolved is True
+    assert len(client.graphql_calls) == 2

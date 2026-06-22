@@ -26,3 +26,14 @@ slug = "iterwheel-stack"
 app_id = 7654321
 private_key_path = "~/.secrets/iterwheel-stack.pem"
 # webhook secret env: GITHUB_WEBHOOK_SECRET_ITERWHEEL_STACK
+
+[[apps]]
+slug = "iterwheel-countdown"
+app_id = "3646540"
+private_key_path = "~/.voyager/secrets/iterwheel-countdown.pem"
+installation_id = ""
+# Resolver canary starts selected-repository only. Do not replace this with
+# an all-owner installation unless a follow-up CHG approves the rollout.
+
+[apps.installations]
+"iterwheel/voyager-sandbox" = "130630407"

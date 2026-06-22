@@ -1,8 +1,8 @@
 # SOP-1805: GitHub Bot Accounts and Responsibilities
 
 **Applies to:** VOY project
-**Last updated:** 2026-05-09
-**Last reviewed:** 2026-05-09
+**Last updated:** 2026-06-22
+**Last reviewed:** 2026-06-22
 **Status:** Active
 **Related:** VOY-1802, VOY-1804
 
@@ -58,7 +58,7 @@ and VOY-1804.
    | `iterwheel-assembly` | Assembly | Code implementation: create branches, edit code, run tests, push commits, open/update pull requests, and request review. Assembly must not merge, approve its own work, resolve review threads as a reviewer, or substitute for Clearance or Countdown. |
    | `iterwheel-staticfire` | Static Fire | CI and test aggregation: read checks, lint, typecheck, test, and workflow results; summarize failures in human-readable form. Static Fire observes test results; it does not modify code or approve changes. |
    | `iterwheel-clearance` | Clearance | Review readiness: aggregate approvals, requested changes, unresolved review threads, and bot verdicts. Clearance polls; it does not write code or evaluate code correctness. |
-   | `iterwheel-countdown` | Countdown | Final merge gate: publish a GO or HOLD verdict after checking PR title/body conventions, CI, review state, branch protection, conflicts, and release constraints. |
+   | `iterwheel-countdown` | Countdown | Final merge gate and authorized review-thread resolver: publish a GO or HOLD verdict after checking PR title/body conventions, CI, review state, branch protection, conflicts, and release constraints; resolve only Clearance-verified review threads when GitHub reports live `viewerCanResolve=true` for Countdown. |
 
 2. **Actor authorization for Assembly**
 
@@ -246,6 +246,22 @@ and VOY-1804.
     may hold both implementation and final gate keys simultaneously per VOY-1806
     least-privilege matrix.
 
+    Countdown is also the designated final-gate resolver actor for GitHub review
+    thread UI cleanup. This role is narrower than semantic review readiness:
+    Clearance decides whether a thread is semantically `RESOLVED`; Countdown may
+    only sync the GitHub UI by calling `resolveReviewThread` when the current
+    Countdown installation token reports `viewerCanResolve=true` for that exact
+    `PullRequestReviewThread` node. A `viewerCanResolve=false` result is a hard
+    stop for that repository/thread; do not substitute Frank's personal PAT or a
+    broad human credential as the production resolver.
+
+    The first resolver mode is diagnostic/canary-only. Operators may run
+    `vyg countdown review-thread-diagnostic` against selected canary PRs to
+    record Countdown's live `viewerCanResolve`, `viewerCanReply`, `isResolved`,
+    and `isOutdated` values before enabling any production pipeline handoff.
+    Production event wiring, where Clearance emits semantic evidence and
+    Countdown consumes it, requires a follow-up CHG.
+
 
 ## Examples
 
@@ -307,3 +323,4 @@ review/gate stages for the Assembly-authored PR.
 | 2026-05-16 | Replace 3 unnumbered labels with 4 numbered labels + colors per issue #25; legacy names migrated by writeback               | Claude Code      |
 | 2026-05-23 | Added Assembly bot: responsibilities, boundaries, allow/deny table, trigger model, rollout model, pipeline position, and examples (issue #67) | DeepSeek (via VOY-1811) |
 | 2026-05-23 | Added Actor Authorization for Assembly step (per VOY-1818): env-var policy, default-deny posture, bot precedence rule, unknown-metadata deny, refusal-disclosure non-goal | Claude (via VOY-1811 #76) |
+| 2026-06-22 | Designated Countdown as the final-gate review-thread resolver actor gated by Clearance evidence and live `viewerCanResolve` | Codex |
