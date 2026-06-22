@@ -10,6 +10,7 @@ import json
 import sys
 from typing import Any
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -150,7 +151,9 @@ def test_store_refresh_token_writes_recovery_file_when_child_fails(
     monkeypatch.setenv("VOYAGER_REFRESH_TOKEN_RECOVERY_DIR", str(tmp_path))
     command = f'{sys.executable} -c "import sys; sys.exit(7)"'
 
-    with pytest.raises(RuntimeError, match="replacement refresh token was saved") as exc_info:
+    with pytest.raises(
+        click.ClickException, match="replacement refresh token was saved"
+    ) as exc_info:
         _store_refresh_token(command, "secret-refresh")
 
     recovery_paths = list(tmp_path.glob("countdown-refresh-token-*.txt"))
@@ -169,7 +172,9 @@ def test_store_refresh_token_writes_recovery_file_when_child_cannot_exec(
     broken_store.write_text("not a valid executable format\n", encoding="utf-8")
     broken_store.chmod(0o700)
 
-    with pytest.raises(RuntimeError, match="replacement refresh token was saved") as exc_info:
+    with pytest.raises(
+        click.ClickException, match="replacement refresh token was saved"
+    ) as exc_info:
         _store_refresh_token(str(broken_store), "secret-refresh")
 
     recovery_paths = list((tmp_path / "recovery").glob("countdown-refresh-token-*.txt"))
@@ -178,6 +183,58 @@ def test_store_refresh_token_writes_recovery_file_when_child_cannot_exec(
     assert str(recovery_path) in str(exc_info.value)
     assert recovery_path.read_text(encoding="utf-8") == "secret-refresh"
     assert recovery_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_vyg_countdown_user_refresh_check_store_failure_hides_token_locals(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("VOYAGER_REFRESH_TOKEN_RECOVERY_DIR", str(tmp_path / "recovery"))
+
+    async def fake_refresh_user_access_token(
+        client_id: str, refresh_token: str
+    ) -> UserAccessTokenResponse:
+        assert client_id == "Iv1.test"
+        assert refresh_token == "old-refresh"
+        return UserAccessTokenResponse(
+            access_token="secret-access",
+            token_type="bearer",
+            expires_in=28800,
+            refresh_token="secret-refresh",
+            refresh_token_expires_in=15897600,
+        )
+
+    monkeypatch.setattr(
+        "voyager.core.github_app_user_auth.refresh_user_access_token",
+        fake_refresh_user_access_token,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "user-refresh-check",
+            "--client-id",
+            "Iv1.test",
+            "--refresh-token-env",
+            "VOYAGER_TEST_REFRESH_TOKEN",
+            "--store-refresh-token-command",
+            f'{sys.executable} -c "import sys; sys.exit(7)"',
+        ],
+        env={"VOYAGER_TEST_REFRESH_TOKEN": "old-refresh"},
+    )
+
+    assert result.exit_code == 1
+    assert "Secret-store command failed" in result.stderr
+    assert "replacement refresh token was saved" in result.stderr
+    assert "secret-refresh" not in result.stderr
+    assert "secret-access" not in result.stderr
+    assert "old-refresh" not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.stdout == ""
+    recovery_paths = list((tmp_path / "recovery").glob("countdown-refresh-token-*.txt"))
+    assert len(recovery_paths) == 1
+    assert recovery_paths[0].read_text(encoding="utf-8") == "secret-refresh"
+    assert recovery_paths[0].stat().st_mode & 0o777 == 0o600
 
 
 def test_vyg_countdown_user_device_code_json_emits_completion_event(
