@@ -165,6 +165,52 @@ def test_vyg_countdown_user_device_code_preflight_uses_safe_error_path() -> None
     assert result.stdout == ""
 
 
+def test_vyg_countdown_user_refresh_check_preflight_rejects_malformed_store_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_called = False
+
+    async def fake_refresh_user_access_token(
+        client_id: str, refresh_token: str
+    ) -> UserAccessTokenResponse:
+        nonlocal refresh_called
+        refresh_called = True
+        return UserAccessTokenResponse(
+            access_token="secret-access",
+            token_type="bearer",
+            expires_in=28800,
+            refresh_token="secret-refresh",
+            refresh_token_expires_in=15897600,
+        )
+
+    monkeypatch.setattr(
+        "voyager.core.github_app_user_auth.refresh_user_access_token",
+        fake_refresh_user_access_token,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "user-refresh-check",
+            "--client-id",
+            "Iv1.test",
+            "--refresh-token-env",
+            "VOYAGER_TEST_REFRESH_TOKEN",
+            "--store-refresh-token-command",
+            '"unterminated',
+        ],
+        env={"VOYAGER_TEST_REFRESH_TOKEN": "old-refresh"},
+    )
+
+    assert result.exit_code == 1
+    assert "ERROR: invalid --store-refresh-token-command" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "old-refresh" not in result.stderr
+    assert result.stdout == ""
+    assert not refresh_called
+
+
 def test_store_refresh_token_writes_recovery_file_when_child_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -280,6 +326,51 @@ def test_vyg_countdown_user_refresh_check_store_failure_hides_token_locals(
     assert len(recovery_paths) == 1
     assert recovery_paths[0].read_text(encoding="utf-8") == "secret-refresh"
     assert recovery_paths[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_vyg_countdown_user_refresh_check_refresh_failure_uses_safe_error_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    token_path = tmp_path / "refresh-token.txt"
+    store_command = (
+        f'{sys.executable} -c "import pathlib, sys; '
+        "pathlib.Path(sys.argv[1]).write_text(sys.stdin.read(), encoding='utf-8')\" "
+        f"{token_path}"
+    )
+
+    async def fake_refresh_user_access_token(
+        client_id: str, refresh_token: str
+    ) -> UserAccessTokenResponse:
+        assert client_id == "Iv1.test"
+        assert refresh_token == "old-refresh"
+        raise RuntimeError("GitHub refresh failed: bad_refresh_token")
+
+    monkeypatch.setattr(
+        "voyager.core.github_app_user_auth.refresh_user_access_token",
+        fake_refresh_user_access_token,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "user-refresh-check",
+            "--client-id",
+            "Iv1.test",
+            "--refresh-token-env",
+            "VOYAGER_TEST_REFRESH_TOKEN",
+            "--store-refresh-token-command",
+            store_command,
+        ],
+        env={"VOYAGER_TEST_REFRESH_TOKEN": "old-refresh"},
+    )
+
+    assert result.exit_code == 1
+    assert "ERROR: GitHub refresh failed: bad_refresh_token" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "old-refresh" not in result.stderr
+    assert result.stdout == ""
+    assert not token_path.exists()
 
 
 def test_vyg_countdown_user_device_code_json_emits_completion_event(
