@@ -276,6 +276,26 @@ def test_store_refresh_token_writes_recovery_file_when_command_disappears_after_
     assert recovery_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_store_refresh_token_writes_recovery_file_when_child_times_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("VOYAGER_REFRESH_TOKEN_RECOVERY_DIR", str(tmp_path / "recovery"))
+    monkeypatch.setattr("voyager.cli._STORE_REFRESH_TOKEN_TIMEOUT_SECONDS", 0.01)
+    command = f'{sys.executable} -c "import time; time.sleep(5)"'
+
+    with pytest.raises(
+        click.ClickException, match="replacement refresh token was saved"
+    ) as exc_info:
+        _store_refresh_token(command, "secret-refresh")
+
+    recovery_paths = list((tmp_path / "recovery").glob("countdown-refresh-token-*.txt"))
+    assert len(recovery_paths) == 1
+    recovery_path = recovery_paths[0]
+    assert str(recovery_path) in str(exc_info.value)
+    assert recovery_path.read_text(encoding="utf-8") == "secret-refresh"
+    assert recovery_path.stat().st_mode & 0o777 == 0o600
+
+
 def test_vyg_countdown_user_refresh_check_store_failure_hides_token_locals(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
