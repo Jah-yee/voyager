@@ -218,9 +218,10 @@ repositories, manage secrets, deploy production, or merge code directly.
    must be evaluated as a human-authorized App user credential, not as an
    `iterwheel-countdown[bot]` installation-token resolver. Operators may use
    `vyg countdown user-device-code` and `vyg countdown user-refresh-check` to
-   collect safe token-lifetime and refresh metadata, but those commands must not
-   print access tokens, refresh tokens, private PR numbers, or review-thread node
-   IDs. If a later user-to-server canary resolves a thread, record the actual
+   collect safe token-lifetime and refresh metadata. Both commands require an
+   operator-selected secret-store command for replacement refresh tokens and must
+   not print access tokens, refresh tokens, private PR numbers, or review-thread
+   node IDs. If a later user-to-server canary resolves a thread, record the actual
    `resolvedBy` actor and require a follow-up CHG before production use.
 
 
