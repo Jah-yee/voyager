@@ -356,7 +356,7 @@ def _store_refresh_token(command: str, refresh_token: str | None) -> None:
             text=True,
             check=True,
         )
-    except subprocess.CalledProcessError as exc:
+    except (OSError, subprocess.CalledProcessError) as exc:
         recovery_path = _write_refresh_token_recovery_file(refresh_token)
         raise RuntimeError(
             f"Secret-store command failed; replacement refresh token was saved to {recovery_path}"
