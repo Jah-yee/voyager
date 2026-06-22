@@ -231,6 +231,9 @@ def user_device_code(
         deadline = time.monotonic() + response.expires_in
         interval = response.interval
         while True:
+            if time.monotonic() + interval >= deadline:
+                raise RuntimeError("GitHub device authorization expired")
+            await asyncio.sleep(interval)
             try:
                 token_response = await exchange_device_code(client_id, response.device_code)
                 break
@@ -240,9 +243,6 @@ def user_device_code(
                     interval += 5
                 elif "authorization_pending" not in message:
                     raise
-                if time.monotonic() + interval >= deadline:
-                    raise RuntimeError("GitHub device authorization expired") from exc
-                await asyncio.sleep(interval)
 
         _store_refresh_token(store_refresh_token_command, token_response.refresh_token)
         result = token_response.to_public_dict()
