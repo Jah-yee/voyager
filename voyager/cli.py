@@ -357,9 +357,9 @@ def _store_refresh_token(command: str, refresh_token: str | None) -> None:
 
     import subprocess  # nosec B404
 
-    argv = _store_refresh_token_argv(command)
     # Operator-provided secret-store command: shlex-split argv, no shell.
     try:
+        argv = _store_refresh_token_argv(command)
         subprocess.run(  # nosec B603
             argv,
             input=refresh_token,
@@ -368,7 +368,7 @@ def _store_refresh_token(command: str, refresh_token: str | None) -> None:
             text=True,
             check=True,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         recovery_path = _write_refresh_token_recovery_file(refresh_token)
         raise click.ClickException(
             f"Secret-store command failed; replacement refresh token was saved to {recovery_path}"
