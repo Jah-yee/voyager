@@ -184,6 +184,7 @@ def test_vyg_countdown_user_device_code_json_emits_completion_event(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     token_path = tmp_path / "refresh-token.txt"
+    events: list[str] = []
 
     async def fake_request_device_code(client_id: str) -> DeviceCodeResponse:
         assert client_id == "Iv1.test"
@@ -200,6 +201,7 @@ def test_vyg_countdown_user_device_code_json_emits_completion_event(
     ) -> UserAccessTokenResponse:
         assert client_id == "Iv1.test"
         assert device_code == "secret-device"
+        assert events == ["sleep:1"]
         return UserAccessTokenResponse(
             access_token="secret-access",
             token_type="bearer",
@@ -208,12 +210,16 @@ def test_vyg_countdown_user_device_code_json_emits_completion_event(
             refresh_token_expires_in=15897600,
         )
 
+    async def fake_sleep(interval: int) -> None:
+        events.append(f"sleep:{interval}")
+
     monkeypatch.setattr(
         "voyager.core.github_app_user_auth.request_device_code", fake_request_device_code
     )
     monkeypatch.setattr(
         "voyager.core.github_app_user_auth.exchange_device_code", fake_exchange_device_code
     )
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
     store_command = (
         f'{sys.executable} -c "import pathlib, sys; '
         "pathlib.Path(sys.argv[1]).write_text(sys.stdin.read(), encoding='utf-8')\" "
