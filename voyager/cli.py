@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Any
+
 import typer
 import uvicorn
 
 app = typer.Typer(no_args_is_help=True)
 bridge_app = typer.Typer(no_args_is_help=True)
+countdown_app = typer.Typer(no_args_is_help=True)
 app.add_typer(bridge_app, name="bridge")
+app.add_typer(countdown_app, name="countdown")
 
 
 @app.command("version")
@@ -78,6 +84,112 @@ def check_drift(
                 typer.echo("Alert issue already exists or could not be created")
 
     asyncio.run(_run())
+
+
+@countdown_app.command("review-thread-diagnostic")
+def review_thread_diagnostic(
+    repo: str = typer.Option(..., "--repo", help="GitHub repository (owner/name)."),
+    pr: int = typer.Option(..., "--pr", min=1, help="Pull request number."),
+    thread_ids: list[str] = typer.Option(
+        ...,
+        "--thread-id",
+        "-t",
+        help="PullRequestReviewThread node ID. Repeat for multiple threads.",
+    ),
+    app_slug: str = typer.Option(
+        "iterwheel-countdown",
+        "--app",
+        help="GitHub App slug to use for the diagnostic.",
+    ),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Voyager config path. Defaults to VOYAGER_CONFIG_PATH/search order.",
+    ),
+    resolve: bool = typer.Option(
+        False,
+        "--resolve",
+        help="Run a controlled resolveReviewThread canary after capability checks.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Query Countdown review-thread resolver capability, optionally resolving canary threads."""
+    import asyncio
+
+    from voyager.core.config import load_config
+    from voyager.core.countdown_diagnostic import (
+        ReviewThreadCapabilityReport,
+        ReviewThreadResolveCanaryReport,
+        query_review_thread_capabilities,
+        run_review_thread_resolve_canary,
+    )
+    from voyager.core.github_app import GitHubAppClient
+
+    cfg = load_config(config)
+    if app_slug not in cfg.apps:
+        typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
+        raise typer.Exit(code=1)
+
+    async def _run() -> ReviewThreadCapabilityReport | ReviewThreadResolveCanaryReport:
+        client = GitHubAppClient(cfg.apps)
+        try:
+            if resolve:
+                return await run_review_thread_resolve_canary(
+                    client,
+                    app_slug=app_slug,
+                    repository=repo,
+                    pr=pr,
+                    thread_ids=thread_ids,
+                )
+            return await query_review_thread_capabilities(
+                client,
+                app_slug=app_slug,
+                repository=repo,
+                pr=pr,
+                thread_ids=thread_ids,
+            )
+        finally:
+            await client.aclose()
+
+    result = asyncio.run(_run())
+    public_result: dict[str, Any] = result.to_public_dict()
+    if json_output:
+        typer.echo(json.dumps(public_result, indent=2, sort_keys=True))
+        return
+
+    if resolve:
+        typer.echo("Countdown review-thread resolve canary")
+        before = public_result["before"]
+        after = public_result["after"]
+        typer.echo(f"actor: {before['actor_login']}")
+        typer.echo(f"repo: {before['repo']}#{before['pr']}")
+        typer.echo("before:")
+        _echo_thread_capabilities(before["threads"])
+        typer.echo("operations:")
+        for operation in public_result["operations"]:
+            reason = operation["reason"] or "resolved"
+            typer.echo(
+                f"- {operation['thread_id']}: applied={operation['applied']} reason={reason} "
+                f"resolvedBy={operation['resolvedBy']}"
+            )
+        typer.echo("after:")
+        _echo_thread_capabilities(after["threads"])
+        return
+
+    typer.echo("Countdown review-thread capability diagnostic")
+    typer.echo(f"actor: {public_result['actor_login']}")
+    typer.echo(f"repo: {public_result['repo']}#{public_result['pr']}")
+    _echo_thread_capabilities(public_result["threads"])
+
+
+def _echo_thread_capabilities(threads: list[dict[str, Any]]) -> None:
+    for thread in threads:
+        typer.echo(
+            f"- {thread['thread_id']}: repo={thread['repo']} pr={thread['pr']} "
+            f"isResolved={thread['isResolved']} isOutdated={thread['isOutdated']} "
+            f"viewerCanResolve={thread['viewerCanResolve']} "
+            f"viewerCanReply={thread['viewerCanReply']} error={thread['error']}"
+        )
 
 
 def main() -> None:

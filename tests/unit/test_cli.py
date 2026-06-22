@@ -25,6 +25,7 @@ def test_vyg_help_lists_commands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "bridge" in result.stdout
+    assert "countdown" in result.stdout
     assert "version" in result.stdout
 
 
@@ -40,6 +41,12 @@ def test_vyg_bridge_help_shows_serve() -> None:
     assert result.exit_code == 0
     assert "serve" in result.stdout
     assert "check-drift" in result.stdout
+
+
+def test_vyg_countdown_help_shows_review_thread_diagnostic() -> None:
+    result = runner.invoke(app, ["countdown", "--help"])
+    assert result.exit_code == 0
+    assert "review-thread-diagnostic" in result.stdout
 
 
 def test_vyg_bridge_serve_help_lists_flags() -> None:

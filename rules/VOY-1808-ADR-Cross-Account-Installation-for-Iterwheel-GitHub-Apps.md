@@ -1,8 +1,8 @@
 # ADR-1808: Cross Account Installation for Iterwheel GitHub Apps
 
 **Applies to:** VOY project
-**Last updated:** 2026-05-09
-**Last reviewed:** 2026-05-09
+**Last updated:** 2026-06-22
+**Last reviewed:** 2026-06-22
 **Status:** Accepted
 **Related:** VOY-1805, VOY-1806, VOY-1807
 
@@ -112,6 +112,12 @@ scope as Blueprint. Static Fire, Clearance, and Countdown should not write back
 to `frankyxhl/trinity` until their routing and write-back behavior are proven in
 the sandbox.
 
+For issue #200, Countdown's review-thread resolver proof remains sandbox-only.
+Do not install Countdown on `frankyxhl/*` repositories for resolver capability
+testing unless a follow-up ADR/CHG explicitly selects the repository, documents
+the installation ID, and records a live `viewerCanResolve`/`resolveReviewThread`
+canary result for that account.
+
 Blueprint ready-state write-back also adds a `rocket` issue reaction from
 `iterwheel-blueprint[bot]`. If a later validation changes the issue back to
 `blueprint-requests-revision`, the bridge removes the bot's own `rocket`
@@ -141,6 +147,7 @@ completed an initial Blueprint pass.
 | Upgrade Stack classification to v2 | Complete. Stack now parses explicit `Work Type` / `Stack Area` body fields before using weighted area scoring. |
 | Add Stack labels to rollout repositories | Complete. Each of the seven rollout repositories has 27 Stack labels across type, area, size, risk, and review-state axes. |
 | Add `frankyxhl/sweeping-monk` to Blueprint and Stack | Complete. The repository has webhook `620063000`, all Blueprint/Stack labels, app-specific allow-list entries on Wukong, and smoke test issue #4 passed with `blueprint-ready` plus Stack v2 classification labels. |
+| Keep Countdown resolver canary sandbox-only | Pending live canary. `iterwheel-countdown` remains recorded only for `iterwheel/voyager-sandbox`; no cross-account resolver installation is approved for issue #200. |
 
 
 ## Consequences
@@ -224,3 +231,4 @@ Write a new ADR if:
 | 2026-05-09 | Tightened Stack to issue-only classification; pull request checks remain Countdown scope                  | Frank Xu + Codex |
 | 2026-05-09 | Recorded Stack v2 explicit-field and weighted-area classifier behavior                                   | Frank Xu + Codex |
 | 2026-05-09 | Added `frankyxhl/sweeping-monk` to the Blueprint and Stack selected rollout                              | Frank Xu + Codex |
+| 2026-06-22 | Clarified that Countdown resolver canary remains sandbox-only and does not approve cross-account rollout | Codex |

@@ -17,6 +17,18 @@ def test_config_example_registers_assembly_app_with_selected_installations() -> 
     }
 
 
+def test_config_example_registers_countdown_resolver_canary_app() -> None:
+    cfg = load_config("config.example.toml")
+
+    countdown = cfg.apps["iterwheel-countdown"]
+    assert countdown.app_id == "3646540"
+    assert str(countdown.private_key_path).endswith("/.voyager/secrets/iterwheel-countdown.pem")
+    assert countdown.installation_id == ""
+    assert countdown.installations == {
+        "iterwheel/voyager-sandbox": "130630407",
+    }
+
+
 def test_config_example_records_review_fix_l3_enablement() -> None:
     cfg = load_config("config.example.toml")
 

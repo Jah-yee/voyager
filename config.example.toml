@@ -159,6 +159,15 @@ installation_id = "REPLACE_ME_INSTALLATION_ID"
 #   "iterwheel/voyager-sandbox" = "130630338"
 #   "iterwheel" = "130630338"
 
+[[apps]]
+slug = "iterwheel-countdown"
+app_id = "3646540"
+private_key_path = "~/.voyager/secrets/iterwheel-countdown.pem"
+installation_id = ""
+
+[apps.installations]
+  "iterwheel/voyager-sandbox" = "130630407"
+
 
 # --- Investigator profiles -----------------------------------------------
 # Named param bundles for DeepSeek verdict investigation.
