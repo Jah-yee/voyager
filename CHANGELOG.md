@@ -8,6 +8,21 @@ release note for the explicit migration path.
 
 ## [Unreleased]
 
+### Changed — Dependency maintenance ([#208](https://github.com/iterwheel/voyager/pull/208))
+
+- Allowed FastAPI 0.138.x by widening the supported FastAPI dependency range
+  while keeping the lower bound at 0.136.
+
+## [0.7.3] — 2026-06-23
+
+### Added — Countdown refresh failure diagnostics ([#207](https://github.com/iterwheel/voyager/issues/207))
+
+- Countdown user refresh checks now include safe HTTP failure diagnostics for
+  GitHub refresh-token errors: response status, response content type, GitHub
+  request id when present, and request-shape booleans for client secret,
+  repository id, and refresh-token presence. Token values and response bodies
+  remain redacted.
+
 ## [0.7.2] — 2026-06-23
 
 ### Added — Countdown user token tooling ([#204](https://github.com/iterwheel/voyager/issues/204), [#205](https://github.com/iterwheel/voyager/pull/205))
@@ -748,7 +763,8 @@ auth, FastAPI webhook bridge, DeepSeek LLM adapter, rocket-factory
 pipeline state machine, SWM-1101 per-thread verdict pipeline. See
 `b2e4ca1` and prior history.
 
-[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/iterwheel/voyager/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/iterwheel/voyager/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/iterwheel/voyager/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/iterwheel/voyager/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/iterwheel/voyager/compare/v0.6.0...v0.7.0
