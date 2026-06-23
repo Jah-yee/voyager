@@ -121,3 +121,23 @@ def test_voy_1807_user_to_server_route_fails_closed_without_plaintext_recovery()
     assert "countdown-refresh-token" not in route_row
     assert "~/.voyager/recovery" not in route_row
     assert "recovery file" not in route_row.lower()
+
+
+def test_voy_1807_user_to_server_route_records_live_refresh_evidence():
+    text = Path("rules/VOY-1807-REF-GitHub-App-Registry.md").read_text(encoding="utf-8")
+    route_row_match = re.search(
+        r"(?m)^\| User-to-server refresh route \|[^\n]*$",
+        text,
+    )
+    assert route_row_match is not None, "VOY-1807 missing user-to-server route row"
+    route_row = route_row_match.group(0)
+
+    assert "Verified for non-repository-scoped Device Flow" in route_row
+    assert "live authorization pending operator" not in route_row
+    assert "v0.7.3" in route_row
+    assert "user-refresh-check" in route_row
+    assert "refreshed successfully" in route_row
+    assert "No plaintext token artifacts" in route_row
+    assert "repository-scoped refresh token continued to return GitHub HTTP 500" in route_row
+    assert "client secret" in route_row
+    assert "repository id" in route_row
