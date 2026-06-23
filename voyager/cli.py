@@ -259,9 +259,6 @@ def user_review_thread_diagnostic(
             "viewer_login_present": False,
         }
 
-        _store_refresh_token(store_refresh_token_command, response.refresh_token)
-        result["replacement_refresh_token_stored"] = bool(response.refresh_token)
-
         if expected_viewer_login is not None:
             viewer_login = await query_viewer_login(response.access_token)
             result["viewer_login_present"] = bool(viewer_login)
@@ -271,6 +268,9 @@ def user_review_thread_diagnostic(
             )
             if not result["viewer_login_matches_expected"]:
                 raise RuntimeError("GitHub viewer login did not match expected account")
+
+        _store_refresh_token(store_refresh_token_command, response.refresh_token)
+        result["replacement_refresh_token_stored"] = bool(response.refresh_token)
 
         client = GitHubUserAccessClient(response.access_token)
         try:
@@ -378,24 +378,35 @@ def _redact_user_review_thread_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _redact_user_capability_report(report: dict[str, Any]) -> dict[str, Any]:
+    report_repo = report.get("repo")
+    report_pr = report.get("pr")
     return {
         "actor_login_present": bool(report.get("actor_login")),
-        "repo": report.get("repo"),
-        "pr": report.get("pr"),
+        "repo_present": bool(report_repo),
+        "pr_present": report_pr is not None,
         "threads": [
-            _redact_user_thread_capability(index, thread)
+            _redact_user_thread_capability(index, thread, report_repo, report_pr)
             for index, thread in enumerate(report.get("threads") or [])
         ],
     }
 
 
-def _redact_user_thread_capability(index: int, thread: dict[str, Any]) -> dict[str, Any]:
+def _redact_user_thread_capability(
+    index: int,
+    thread: dict[str, Any],
+    report_repo: Any,
+    report_pr: Any,
+) -> dict[str, Any]:
+    thread_repo = thread.get("repo")
+    thread_pr = thread.get("pr")
     return {
         "index": index,
         "thread_id_present": bool(thread.get("thread_id")),
         "type": thread.get("type"),
-        "repo": thread.get("repo"),
-        "pr": thread.get("pr"),
+        "repo_present": bool(thread_repo),
+        "repo_matches_report": bool(report_repo and thread_repo == report_repo),
+        "pr_present": thread_pr is not None,
+        "pr_matches_report": bool(report_pr is not None and thread_pr == report_pr),
         "isResolved": thread.get("isResolved"),
         "isOutdated": thread.get("isOutdated"),
         "viewerCanResolve": thread.get("viewerCanResolve"),
