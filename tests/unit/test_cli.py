@@ -173,6 +173,10 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
 ) -> None:
     baseline_calls: list[str] = []
     events: list[str] = []
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
 
     async def fake_query_review_thread_capabilities(
         client: Any,
@@ -184,10 +188,17 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
     ) -> ReviewThreadCapabilityReport:
         del client
         baseline_calls.append(app_slug)
-        events.append("baseline")
+        if app_slug == "iterwheel-countdown":
+            events.append("app-baseline")
+            actor_login = "iterwheel-countdown[bot]"
+            viewer_can_resolve = False
+        else:
+            events.append("pat-actor")
+            actor_login = "raw-machine-user-login"
+            viewer_can_resolve = True
         return ReviewThreadCapabilityReport(
             app_slug=app_slug,
-            actor_login="iterwheel-countdown[bot]",
+            actor_login=actor_login,
             repository=repository,
             pr=pr,
             threads=(
@@ -198,7 +209,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
                     pr=pr,
                     is_resolved=False,
                     is_outdated=False,
-                    viewer_can_resolve=False,
+                    viewer_can_resolve=viewer_can_resolve,
                     viewer_can_reply=True,
                 ),
             ),
@@ -213,7 +224,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
         thread_ids: list[str],
     ) -> ReviewThreadResolveCanaryReport:
         del client
-        assert events == ["baseline", "token"]
+        assert events == ["app-baseline", "token", "pat-actor"]
         assert app_slug == DEDICATED_PAT_FALLBACK_SLUG
         before = ReviewThreadCapabilityReport(
             app_slug=app_slug,
@@ -300,7 +311,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
     )
 
     assert result.exit_code == 0
-    assert baseline_calls == ["iterwheel-countdown"]
+    assert baseline_calls == ["iterwheel-countdown", DEDICATED_PAT_FALLBACK_SLUG]
     assert f"actor: {DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR}" in result.stdout
     assert "applied=True" in result.stdout
     assert f"resolvedBy={DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR}" in result.stdout
@@ -308,9 +319,137 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
     assert "secret-pat" not in result.stdout
 
 
+def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_expected_login_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN", raising=False)
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+    monkeypatch.setattr(
+        "voyager.cli._read_pat_token",
+        lambda command: (_ for _ in ()).throw(AssertionError("token should not load")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager-sandbox",
+            "--pr",
+            "42",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            "fake-token-command",
+            "--resolve",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN is not set" in result.stderr
+
+
+def test_vyg_countdown_review_thread_diagnostic_pat_resolve_blocks_wrong_pat_viewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
+
+    async def fake_query_review_thread_capabilities(
+        client: Any,
+        *,
+        app_slug: str,
+        repository: str,
+        pr: int,
+        thread_ids: list[str],
+    ) -> ReviewThreadCapabilityReport:
+        del client
+        if app_slug == "iterwheel-countdown":
+            events.append("app-baseline")
+            actor_login = "iterwheel-countdown[bot]"
+            viewer_can_resolve = False
+        else:
+            events.append("pat-actor")
+            actor_login = "wrong-machine-user-login"
+            viewer_can_resolve = True
+        return ReviewThreadCapabilityReport(
+            app_slug=app_slug,
+            actor_login=actor_login,
+            repository=repository,
+            pr=pr,
+            threads=(
+                ReviewThreadCapability(
+                    thread_id=thread_ids[0],
+                    type_name="PullRequestReviewThread",
+                    repository=repository,
+                    pr=pr,
+                    is_resolved=False,
+                    is_outdated=False,
+                    viewer_can_resolve=viewer_can_resolve,
+                    viewer_can_reply=True,
+                ),
+            ),
+        )
+
+    async def fake_run_review_thread_resolve_canary(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("PAT resolve should not run for the wrong viewer")
+
+    monkeypatch.setattr(
+        "voyager.core.countdown_diagnostic.query_review_thread_capabilities",
+        fake_query_review_thread_capabilities,
+    )
+    monkeypatch.setattr(
+        "voyager.core.countdown_diagnostic.run_review_thread_resolve_canary",
+        fake_run_review_thread_resolve_canary,
+    )
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: SimpleNamespace(apps={"iterwheel-countdown": object()}),
+    )
+    monkeypatch.setattr("voyager.cli._read_pat_token", lambda command: "secret-pat")
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager-sandbox",
+            "--pr",
+            "42",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            "fake-token-command",
+            "--resolve",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, click.ClickException)
+    assert "Dedicated PAT viewer did not match expected login" in str(result.exception)
+    assert events == ["app-baseline", "pat-actor"]
+    assert "wrong-machine-user-login" not in result.stdout
+    assert "wrong-machine-user-login" not in result.stderr
+    assert "secret-pat" not in result.stdout
+    assert "secret-pat" not in result.stderr
+
+
 def test_vyg_countdown_review_thread_diagnostic_pat_resolve_blocks_without_app_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
+
     async def fake_query_review_thread_capabilities(
         client: Any,
         *,

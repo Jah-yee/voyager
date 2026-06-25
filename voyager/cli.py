@@ -124,6 +124,14 @@ def review_thread_diagnostic(
             "The command is split with shlex and is not run through a shell."
         ),
     ),
+    pat_expected_login_env: str = typer.Option(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "--pat-expected-login-env",
+        help=(
+            "Environment variable containing the expected dedicated PAT GitHub login. "
+            "Required for --pat-token-command --resolve."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Query Countdown review-thread resolver capability, optionally resolving canary threads."""
@@ -166,8 +174,13 @@ def review_thread_diagnostic(
 
     client: GitHubAppClient | GitHubTokenReviewThreadClient | None = None
     app_baseline_client: GitHubAppClient | None = None
+    expected_pat_login: str | None = None
     diagnostic_slug = app_slug
     if has_pat_token_command and resolve:
+        try:
+            expected_pat_login = _expected_viewer_login_from_env(pat_expected_login_env)
+        except click.ClickException as exc:
+            _exit_with_error(exc.message)
         cfg = load_config(config)
         if app_slug not in cfg.apps:
             typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
@@ -212,6 +225,18 @@ def review_thread_diagnostic(
                     except click.ClickException as exc:
                         _exit_with_error(exc.message)
                     active_client = GitHubTokenReviewThreadClient(pat_token)
+                    pat_actor = await query_review_thread_capabilities(
+                        active_client,
+                        app_slug=diagnostic_slug,
+                        repository=repo,
+                        pr=pr,
+                        thread_ids=thread_ids,
+                    )
+                    assert expected_pat_login is not None
+                    _validate_dedicated_pat_expected_actor(
+                        pat_actor.actor_login,
+                        expected_pat_login,
+                    )
                 assert active_client is not None
                 return await run_review_thread_resolve_canary(
                     active_client,
@@ -436,6 +461,16 @@ def _expected_viewer_login_from_env(env_name: str | None) -> str | None:
 
 def _viewer_login_matches_expected(viewer_login: str, expected_viewer_login: str) -> bool:
     return viewer_login.casefold() == expected_viewer_login.casefold()
+
+
+def _validate_dedicated_pat_expected_actor(
+    actor_login: str,
+    expected_viewer_login: str,
+) -> None:
+    if not _viewer_login_matches_expected(actor_login, expected_viewer_login):
+        raise click.ClickException(
+            "Dedicated PAT viewer did not match expected login; refusing PAT fallback resolve"
+        )
 
 
 def _echo_thread_capabilities(threads: list[dict[str, Any]]) -> None:
