@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
 from voyager.core.github_app import (
     GITHUB_API,
     GITHUB_API_VERSION,
-    GitHubAppClient,
     GitHubGraphQLError,
 )
 
@@ -38,6 +37,26 @@ query ReviewThreadCapabilities($threadIds: [ID!]!) {
   }
 }
 """
+
+
+class ReviewThreadClient(Protocol):
+    async def aclose(self) -> None: ...
+
+    async def graphql(
+        self,
+        app_slug: str,
+        repository: str,
+        *,
+        query: str,
+        variables: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def resolve_review_thread(
+        self,
+        app_slug: str,
+        repository: str,
+        thread_id: str,
+    ) -> dict[str, Any]: ...
 
 
 class GitHubTokenReviewThreadClient:
@@ -234,7 +253,7 @@ def _thread_capability_from_node(
 
 
 async def query_review_thread_capabilities(
-    client: GitHubAppClient,
+    client: ReviewThreadClient,
     *,
     app_slug: str = COUNTDOWN_AGENT_SLUG,
     repository: str,
@@ -286,7 +305,7 @@ def _skip_reason(
 
 
 async def run_review_thread_resolve_canary(
-    client: GitHubAppClient,
+    client: ReviewThreadClient,
     *,
     app_slug: str = COUNTDOWN_AGENT_SLUG,
     repository: str,

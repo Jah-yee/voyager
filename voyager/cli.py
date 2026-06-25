@@ -309,7 +309,7 @@ def user_review_thread_diagnostic(
                 report: (
                     ReviewThreadCapabilityReport | ReviewThreadResolveCanaryReport
                 ) = await run_review_thread_resolve_canary(
-                    client,  # type: ignore[arg-type]
+                    client,
                     app_slug="github-app-user",
                     repository=repo,
                     pr=pr,
@@ -317,7 +317,7 @@ def user_review_thread_diagnostic(
                 )
             else:
                 report = await query_review_thread_capabilities(
-                    client,  # type: ignore[arg-type]
+                    client,
                     app_slug="github-app-user",
                     repository=repo,
                     pr=pr,

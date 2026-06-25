@@ -61,7 +61,7 @@ def test_vyg_countdown_help_shows_review_thread_diagnostic() -> None:
 
 
 def test_read_pat_token_suppresses_child_stderr(capsys: pytest.CaptureFixture[str]) -> None:
-    command = f'{sys.executable} -c "import sys; print(\\\"secret-pat\\\"); print(\\\"leak\\\", file=sys.stderr)"'
+    command = f'{sys.executable} -c "import sys; print(\\"secret-pat\\"); print(\\"leak\\", file=sys.stderr)"'
 
     token = _read_pat_token(command)
 
@@ -111,7 +111,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
         lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
     )
 
-    token_command = f'{sys.executable} -c "print(\\\"secret-pat\\\")"'
+    token_command = f'{sys.executable} -c "print(\\"secret-pat\\")"'
     result = runner.invoke(
         app,
         [
