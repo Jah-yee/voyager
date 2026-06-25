@@ -140,6 +140,34 @@ def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
     assert "secret-pat" not in result.stdout
 
 
+def test_vyg_countdown_review_thread_diagnostic_empty_pat_command_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager-sandbox",
+            "--pr",
+            "42",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            "",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--pat-token-command must not be empty" in result.stderr
+
+
 def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -417,6 +445,37 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_sandbox_rep
             "PRRT_private",
             "--pat-token-command",
             "fake-token-command",
+            "--resolve",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--pat-token-command --resolve is only allowed for: iterwheel/voyager-sandbox" in (
+        result.stderr
+    )
+
+
+def test_vyg_countdown_review_thread_diagnostic_empty_pat_resolve_uses_pat_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager",
+            "--pr",
+            "215",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            "",
             "--resolve",
         ],
     )

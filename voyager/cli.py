@@ -141,17 +141,19 @@ def review_thread_diagnostic(
     )
     from voyager.core.github_app import GitHubAppClient
 
-    if pat_token_command and app_slug != "iterwheel-countdown":
+    has_pat_token_command = pat_token_command is not None
+
+    if has_pat_token_command and app_slug != "iterwheel-countdown":
         typer.echo("ERROR: --app cannot be combined with --pat-token-command", err=True)
         raise typer.Exit(code=1)
-    if pat_token_command and resolve and len(thread_ids) != 1:
+    if has_pat_token_command and resolve and len(thread_ids) != 1:
         typer.echo(
             "ERROR: --pat-token-command --resolve requires exactly one --thread-id",
             err=True,
         )
         raise typer.Exit(code=1)
     if (
-        pat_token_command
+        has_pat_token_command
         and resolve
         and repo not in DEDICATED_PAT_FALLBACK_RESOLVE_ALLOWED_REPOSITORIES
     ):
@@ -165,15 +167,16 @@ def review_thread_diagnostic(
     client: GitHubAppClient | GitHubTokenReviewThreadClient | None = None
     app_baseline_client: GitHubAppClient | None = None
     diagnostic_slug = app_slug
-    if pat_token_command and resolve:
+    if has_pat_token_command and resolve:
         cfg = load_config(config)
         if app_slug not in cfg.apps:
             typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
             raise typer.Exit(code=1)
         app_baseline_client = GitHubAppClient(cfg.apps)
         diagnostic_slug = DEDICATED_PAT_FALLBACK_SLUG
-    elif pat_token_command:
+    elif has_pat_token_command:
         try:
+            assert pat_token_command is not None
             pat_token = _read_pat_token(pat_token_command)
         except click.ClickException as exc:
             _exit_with_error(exc.message)
@@ -783,6 +786,10 @@ def _read_pat_token(command: str) -> str:
 
     try:
         argv = _pat_token_command_argv(command)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
         completed = subprocess.run(  # nosec B603
             argv,
             stdout=subprocess.PIPE,
@@ -791,12 +798,7 @@ def _read_pat_token(command: str) -> str:
             check=True,
             timeout=_PAT_TOKEN_COMMAND_TIMEOUT_SECONDS,
         )
-    except (
-        RuntimeError,
-        OSError,
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-    ) as exc:
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise click.ClickException("PAT token command failed") from exc
 
     token = completed.stdout.strip()
