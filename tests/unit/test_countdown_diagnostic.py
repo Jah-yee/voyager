@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from voyager.core.countdown_diagnostic import (
+    DEDICATED_PAT_FALLBACK_SLUG,
+    GitHubTokenReviewThreadClient,
     query_review_thread_capabilities,
     run_review_thread_resolve_canary,
 )
@@ -207,3 +209,54 @@ async def test_resolve_canary_preserves_github_client_failures_and_requeries_aft
     assert report.operations[0].reason == expected_reason
     assert report.after.threads[0].is_resolved is False
     assert len(client.graphql_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_token_client_queries_capabilities_without_printing_token() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["authorization"] == "Bearer secret-pat"
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "viewer": {"login": "dedicated-fallback-user"},
+                    "nodes": [
+                        {
+                            "__typename": "PullRequestReviewThread",
+                            "id": "PRRT_private",
+                            "isResolved": False,
+                            "isOutdated": False,
+                            "viewerCanResolve": True,
+                            "viewerCanReply": True,
+                            "pullRequest": {
+                                "number": 42,
+                                "repository": {"nameWithOwner": "iterwheel/voyager-sandbox"},
+                            },
+                        }
+                    ],
+                }
+            },
+            request=request,
+        )
+
+    client = GitHubTokenReviewThreadClient("secret-pat")
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        report = await query_review_thread_capabilities(
+            client,  # type: ignore[arg-type]
+            app_slug=DEDICATED_PAT_FALLBACK_SLUG,
+            repository="iterwheel/voyager-sandbox",
+            pr=42,
+            thread_ids=["PRRT_private"],
+        )
+    finally:
+        await client.aclose()
+
+    assert report.actor_login == "dedicated-fallback-user"
+    assert report.app_slug == DEDICATED_PAT_FALLBACK_SLUG
+    assert report.threads[0].viewer_can_resolve is True
+    assert len(requests) == 1

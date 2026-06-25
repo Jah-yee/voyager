@@ -14,7 +14,11 @@ import click
 import pytest
 from typer.testing import CliRunner
 
-from voyager.cli import _store_refresh_token, _store_refresh_token_argv, app
+from voyager.cli import _read_pat_token, _store_refresh_token, _store_refresh_token_argv, app
+from voyager.core.countdown_diagnostic import (
+    ReviewThreadCapability,
+    ReviewThreadCapabilityReport,
+)
 from voyager.core.github_app_user_auth import DeviceCodeResponse, UserAccessTokenResponse
 
 # Force a wide terminal in tests so Typer/Rich does not wrap `--host`
@@ -54,6 +58,80 @@ def test_vyg_countdown_help_shows_review_thread_diagnostic() -> None:
     assert "user-review-thread-diagnostic" in result.stdout
     assert "user-device-code" in result.stdout
     assert "user-refresh-check" in result.stdout
+
+
+def test_read_pat_token_suppresses_child_stderr(capsys: pytest.CaptureFixture[str]) -> None:
+    command = f'{sys.executable} -c "import sys; print(\\\"secret-pat\\\"); print(\\\"leak\\\", file=sys.stderr)"'
+
+    token = _read_pat_token(command)
+
+    captured = capsys.readouterr()
+    assert token == "secret-pat"
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_query_review_thread_capabilities(
+        client: Any,
+        *,
+        app_slug: str,
+        repository: str,
+        pr: int,
+        thread_ids: list[str],
+    ) -> ReviewThreadCapabilityReport:
+        del client
+        return ReviewThreadCapabilityReport(
+            app_slug=app_slug,
+            actor_login="iterwheel-countdown-user",
+            repository=repository,
+            pr=pr,
+            threads=(
+                ReviewThreadCapability(
+                    thread_id=thread_ids[0],
+                    type_name="PullRequestReviewThread",
+                    repository=repository,
+                    pr=pr,
+                    is_resolved=False,
+                    is_outdated=False,
+                    viewer_can_resolve=True,
+                    viewer_can_reply=True,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "voyager.core.countdown_diagnostic.query_review_thread_capabilities",
+        fake_query_review_thread_capabilities,
+    )
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+
+    token_command = f'{sys.executable} -c "print(\\\"secret-pat\\\")"'
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager-sandbox",
+            "--pr",
+            "42",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            token_command,
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "actor: iterwheel-countdown-user" in result.stdout
+    assert "viewerCanResolve=True" in result.stdout
+    assert "secret-pat" not in result.stdout
 
 
 def test_vyg_countdown_user_refresh_check_requires_env() -> None:

@@ -5,9 +5,15 @@ from typing import Any
 
 import httpx
 
-from voyager.core.github_app import GitHubAppClient, GitHubGraphQLError
+from voyager.core.github_app import (
+    GITHUB_API,
+    GITHUB_API_VERSION,
+    GitHubAppClient,
+    GitHubGraphQLError,
+)
 
 COUNTDOWN_AGENT_SLUG = "iterwheel-countdown"
+DEDICATED_PAT_FALLBACK_SLUG = "dedicated-pat-fallback"
 
 _THREAD_CAPABILITY_QUERY = """
 query ReviewThreadCapabilities($threadIds: [ID!]!) {
@@ -32,6 +38,74 @@ query ReviewThreadCapabilities($threadIds: [ID!]!) {
   }
 }
 """
+
+
+class GitHubTokenReviewThreadClient:
+    """Minimal GraphQL client for explicit operator-provided fallback tokens."""
+
+    def __init__(self, token: str) -> None:
+        if not token.strip():
+            raise ValueError("token must not be empty")
+        self._token = token.strip()
+        self._client = httpx.AsyncClient(timeout=15)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def graphql(
+        self,
+        app_slug: str,
+        repository: str,
+        *,
+        query: str,
+        variables: dict[str, Any],
+    ) -> dict[str, Any]:
+        del app_slug, repository
+        response = await self._client.post(
+            f"{GITHUB_API}/graphql",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {self._token}",
+                "X-GitHub-Api-Version": GITHUB_API_VERSION,
+                "User-Agent": "voyager-countdown-dedicated-pat-canary",
+            },
+            json={"query": query, "variables": variables},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        errors = payload.get("errors") or []
+        if errors:
+            raise GitHubGraphQLError(errors)
+        return payload.get("data") or {}
+
+    async def resolve_review_thread(
+        self,
+        app_slug: str,
+        repository: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        del app_slug
+        query = """
+        mutation ResolveReviewThread($threadId: ID!) {
+          resolveReviewThread(input: {threadId: $threadId}) {
+            thread {
+              id
+              isResolved
+              isOutdated
+              resolvedBy {
+                login
+              }
+            }
+          }
+        }
+        """
+        data = await self.graphql(
+            DEDICATED_PAT_FALLBACK_SLUG,
+            repository,
+            query=query,
+            variables={"threadId": thread_id},
+        )
+        return (((data or {}).get("resolveReviewThread") or {}).get("thread")) or {}
 
 
 @dataclass(frozen=True)

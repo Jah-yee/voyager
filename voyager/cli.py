@@ -18,6 +18,7 @@ app.add_typer(bridge_app, name="bridge")
 app.add_typer(countdown_app, name="countdown")
 
 _STORE_REFRESH_TOKEN_TIMEOUT_SECONDS = 30
+_PAT_TOKEN_COMMAND_TIMEOUT_SECONDS = 30
 
 
 @app.command("version")
@@ -115,6 +116,14 @@ def review_thread_diagnostic(
         "--resolve",
         help="Run a controlled resolveReviewThread canary after capability checks.",
     ),
+    pat_token_command: str | None = typer.Option(
+        None,
+        "--pat-token-command",
+        help=(
+            "Command that prints a dedicated PAT fallback token on stdout. "
+            "The command is split with shlex and is not run through a shell."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Query Countdown review-thread resolver capability, optionally resolving canary threads."""
@@ -122,6 +131,8 @@ def review_thread_diagnostic(
 
     from voyager.core.config import load_config
     from voyager.core.countdown_diagnostic import (
+        DEDICATED_PAT_FALLBACK_SLUG,
+        GitHubTokenReviewThreadClient,
         ReviewThreadCapabilityReport,
         ReviewThreadResolveCanaryReport,
         query_review_thread_capabilities,
@@ -129,25 +140,40 @@ def review_thread_diagnostic(
     )
     from voyager.core.github_app import GitHubAppClient
 
-    cfg = load_config(config)
-    if app_slug not in cfg.apps:
-        typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
+    if pat_token_command and app_slug != "iterwheel-countdown":
+        typer.echo("ERROR: --app cannot be combined with --pat-token-command", err=True)
         raise typer.Exit(code=1)
 
-    async def _run() -> ReviewThreadCapabilityReport | ReviewThreadResolveCanaryReport:
+    try:
+        pat_token = _read_pat_token(pat_token_command) if pat_token_command else None
+    except click.ClickException as exc:
+        _exit_with_error(exc.message)
+
+    client: GitHubAppClient | GitHubTokenReviewThreadClient
+    diagnostic_slug = app_slug
+    if pat_token is not None:
+        client = GitHubTokenReviewThreadClient(pat_token)
+        diagnostic_slug = DEDICATED_PAT_FALLBACK_SLUG
+    else:
+        cfg = load_config(config)
+        if app_slug not in cfg.apps:
+            typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
+            raise typer.Exit(code=1)
         client = GitHubAppClient(cfg.apps)
+
+    async def _run() -> ReviewThreadCapabilityReport | ReviewThreadResolveCanaryReport:
         try:
             if resolve:
                 return await run_review_thread_resolve_canary(
                     client,
-                    app_slug=app_slug,
+                    app_slug=diagnostic_slug,
                     repository=repo,
                     pr=pr,
                     thread_ids=thread_ids,
                 )
             return await query_review_thread_capabilities(
                 client,
-                app_slug=app_slug,
+                app_slug=diagnostic_slug,
                 repository=repo,
                 pr=pr,
                 thread_ids=thread_ids,
@@ -699,6 +725,57 @@ def _store_refresh_token_argv(command: str) -> list[str]:
     resolved = shutil.which(executable)
     if not resolved:
         raise RuntimeError(f"secret-store command executable not found: {executable}")
+    return [resolved, *argv[1:]]
+
+
+def _read_pat_token(command: str) -> str:
+    import subprocess  # nosec B404
+
+    try:
+        argv = _pat_token_command_argv(command)
+        completed = subprocess.run(  # nosec B603
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=True,
+            timeout=_PAT_TOKEN_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (
+        RuntimeError,
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        raise click.ClickException("PAT token command failed") from exc
+
+    token = completed.stdout.strip()
+    if not token:
+        raise click.ClickException("PAT token command did not produce a token")
+    return token
+
+
+def _pat_token_command_argv(command: str) -> list[str]:
+    import shlex
+    import shutil
+
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid --pat-token-command: {exc}") from exc
+    if not argv:
+        raise RuntimeError("--pat-token-command must not be empty")
+
+    executable = argv[0]
+    if os.sep in executable or (os.altsep and os.altsep in executable):
+        executable_path = Path(executable)
+        if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
+            raise RuntimeError(f"PAT token command is not executable: {executable}")
+        return argv
+
+    resolved = shutil.which(executable)
+    if not resolved:
+        raise RuntimeError(f"PAT token command executable not found: {executable}")
     return [resolved, *argv[1:]]
 
 

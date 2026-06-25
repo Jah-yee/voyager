@@ -175,6 +175,21 @@ Do not use this HYP to:
    If the mutation runs, record whether the operation applied, the
    post-mutation `isResolved` value, and the resolved-by actor class.
 
+   The CLI entry point for the PAT leg is:
+
+   ```bash
+   uv run vyg countdown review-thread-diagnostic \
+     --repo iterwheel/voyager-sandbox \
+     --pr "<private-sandbox-pr-number>" \
+     --thread-id "<operator-note-thread-node-id>" \
+     --pat-token-command 'security find-generic-password -a "<dedicated-machine-user-login>" -s voyager/countdown-dedicated-pat -w' \
+     --json
+   ```
+
+   Use `--resolve` only after the App-token baseline for the same target thread
+   reports `viewerCanResolve=false` and the PAT-token leg reports
+   `viewerCanResolve=true`.
+
 6. **Rollback**
 
    Revoke the PAT after the canary window or when the route is abandoned. If the
@@ -230,3 +245,4 @@ Before this route can become production behavior, a follow-up CHG must define:
 |------|--------|----|
 | 2026-06-25 | Initial HYP for the dedicated machine-user PAT fallback canary after fine-grained PAT resource-owner scoping proved unavailable for the outside-collaborator account shape. | Codex |
 | 2026-06-25 | Added the macOS Keychain service convention and safe save/read commands for the 30-day classic PAT canary. | Codex |
+| 2026-06-25 | Added the `vyg countdown review-thread-diagnostic --pat-token-command` canary entry point and documented that `--resolve` still requires the App-token baseline first. | Codex |
