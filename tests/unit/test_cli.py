@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from voyager.cli import _read_pat_token, _store_refresh_token, _store_refresh_token_argv, app
 from voyager.core.countdown_diagnostic import (
+    DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR,
     DEDICATED_PAT_FALLBACK_SLUG,
     ReviewThreadCapability,
     ReviewThreadCapabilityReport,
@@ -89,7 +90,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
         del client
         return ReviewThreadCapabilityReport(
             app_slug=app_slug,
-            actor_login="dedicated-fallback-user",
+            actor_login="raw-machine-user-login",
             repository=repository,
             pr=pr,
             threads=(
@@ -133,8 +134,9 @@ def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
     )
 
     assert result.exit_code == 0
-    assert "actor: dedicated-fallback-user" in result.stdout
+    assert f"actor: {DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR}" in result.stdout
     assert "viewerCanResolve=True" in result.stdout
+    assert "raw-machine-user-login" not in result.stdout
     assert "secret-pat" not in result.stdout
 
 
@@ -187,7 +189,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
         assert app_slug == DEDICATED_PAT_FALLBACK_SLUG
         before = ReviewThreadCapabilityReport(
             app_slug=app_slug,
-            actor_login="dedicated-fallback-user",
+            actor_login="raw-machine-user-login",
             repository=repository,
             pr=pr,
             threads=(
@@ -205,7 +207,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
         )
         after = ReviewThreadCapabilityReport(
             app_slug=app_slug,
-            actor_login="dedicated-fallback-user",
+            actor_login="raw-machine-user-login",
             repository=repository,
             pr=pr,
             threads=(
@@ -228,7 +230,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
                     thread_id=thread_ids[0],
                     applied=True,
                     reason=None,
-                    resolved_by="dedicated-fallback-user",
+                    resolved_by="raw-machine-user-login",
                 ),
             ),
             after=after,
@@ -271,8 +273,10 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
 
     assert result.exit_code == 0
     assert baseline_calls == ["iterwheel-countdown"]
-    assert "actor: dedicated-fallback-user" in result.stdout
+    assert f"actor: {DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR}" in result.stdout
     assert "applied=True" in result.stdout
+    assert f"resolvedBy={DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR}" in result.stdout
+    assert "raw-machine-user-login" not in result.stdout
     assert "secret-pat" not in result.stdout
 
 
@@ -386,6 +390,41 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_one_thread(
 
     assert result.exit_code == 1
     assert "requires exactly one --thread-id" in result.stderr
+
+
+def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_sandbox_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+    monkeypatch.setattr(
+        "voyager.cli._read_pat_token",
+        lambda command: (_ for _ in ()).throw(AssertionError("token should not load")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager",
+            "--pr",
+            "215",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            "fake-token-command",
+            "--resolve",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--pat-token-command --resolve is only allowed for: iterwheel/voyager-sandbox" in (
+        result.stderr
+    )
 
 
 def test_vyg_countdown_user_refresh_check_requires_env() -> None:

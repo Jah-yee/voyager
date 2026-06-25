@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
 import pytest
 
 from voyager.core.countdown_diagnostic import (
+    DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR,
     DEDICATED_PAT_FALLBACK_SLUG,
     GitHubTokenReviewThreadClient,
+    ReviewThreadCapability,
+    ReviewThreadCapabilityReport,
+    ReviewThreadResolveCanaryReport,
+    ReviewThreadResolveOperation,
     query_review_thread_capabilities,
     run_review_thread_resolve_canary,
 )
@@ -229,6 +235,50 @@ async def test_resolve_canary_preserves_github_client_failures_and_requeries_aft
     assert len(client.graphql_calls) == 2
 
 
+def test_dedicated_pat_public_dict_redacts_actor_and_resolved_by() -> None:
+    raw_login = "raw-machine-user-login"
+    report = ReviewThreadCapabilityReport(
+        app_slug=DEDICATED_PAT_FALLBACK_SLUG,
+        actor_login=raw_login,
+        repository="iterwheel/voyager-sandbox",
+        pr=42,
+        threads=(
+            ReviewThreadCapability(
+                thread_id="PRRT_private",
+                type_name="PullRequestReviewThread",
+                repository="iterwheel/voyager-sandbox",
+                pr=42,
+                is_resolved=False,
+                is_outdated=False,
+                viewer_can_resolve=True,
+                viewer_can_reply=True,
+            ),
+        ),
+    )
+    canary = ReviewThreadResolveCanaryReport(
+        before=report,
+        operations=(
+            ReviewThreadResolveOperation(
+                thread_id="PRRT_private",
+                applied=True,
+                reason=None,
+                resolved_by=raw_login,
+            ),
+        ),
+        after=report,
+    )
+
+    public_report = report.to_public_dict()
+    public_canary = canary.to_public_dict()
+
+    assert public_report["actor_login"] == DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR
+    assert public_canary["before"]["actor_login"] == DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR
+    assert public_canary["after"]["actor_login"] == DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR
+    assert public_canary["operations"][0]["resolvedBy"] == DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR
+    assert raw_login not in json.dumps(public_report)
+    assert raw_login not in json.dumps(public_canary)
+
+
 @pytest.mark.asyncio
 async def test_token_client_queries_capabilities_without_printing_token() -> None:
     requests: list[httpx.Request] = []
@@ -240,7 +290,7 @@ async def test_token_client_queries_capabilities_without_printing_token() -> Non
             200,
             json={
                 "data": {
-                    "viewer": {"login": "dedicated-fallback-user"},
+                    "viewer": {"login": "raw-machine-user-login"},
                     "nodes": [
                         {
                             "__typename": "PullRequestReviewThread",
@@ -274,7 +324,7 @@ async def test_token_client_queries_capabilities_without_printing_token() -> Non
     finally:
         await client.aclose()
 
-    assert report.actor_login == "dedicated-fallback-user"
+    assert report.actor_login == "raw-machine-user-login"
     assert report.app_slug == DEDICATED_PAT_FALLBACK_SLUG
     assert report.threads[0].viewer_can_resolve is True
     assert len(requests) == 1

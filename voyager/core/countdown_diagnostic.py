@@ -13,6 +13,8 @@ from voyager.core.github_app import (
 
 COUNTDOWN_AGENT_SLUG = "iterwheel-countdown"
 DEDICATED_PAT_FALLBACK_SLUG = "dedicated-pat-fallback"
+DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR = "dedicated-pat-fallback-user"
+DEDICATED_PAT_FALLBACK_RESOLVE_ALLOWED_REPOSITORIES = frozenset({"iterwheel/voyager-sandbox"})
 
 _THREAD_CAPABILITY_QUERY = """
 query ReviewThreadCapabilities($threadIds: [ID!]!) {
@@ -164,7 +166,7 @@ class ReviewThreadCapabilityReport:
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "app_slug": self.app_slug,
-            "actor_login": self.actor_login,
+            "actor_login": _public_actor_login(self.app_slug, self.actor_login),
             "repo": self.repository,
             "pr": self.pr,
             "threads": [thread.to_public_dict() for thread in self.threads],
@@ -178,12 +180,15 @@ class ReviewThreadResolveOperation:
     reason: str | None
     resolved_by: str | None = None
 
-    def to_public_dict(self) -> dict[str, Any]:
+    def to_public_dict(self, *, redact_resolved_by: bool = False) -> dict[str, Any]:
+        resolved_by = self.resolved_by
+        if redact_resolved_by and resolved_by:
+            resolved_by = DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR
         return {
             "thread_id": self.thread_id,
             "applied": self.applied,
             "reason": self.reason,
-            "resolvedBy": self.resolved_by,
+            "resolvedBy": resolved_by,
         }
 
 
@@ -194,11 +199,21 @@ class ReviewThreadResolveCanaryReport:
     after: ReviewThreadCapabilityReport
 
     def to_public_dict(self) -> dict[str, Any]:
+        redact_pat_actor = self.before.app_slug == DEDICATED_PAT_FALLBACK_SLUG
         return {
             "before": self.before.to_public_dict(),
-            "operations": [operation.to_public_dict() for operation in self.operations],
+            "operations": [
+                operation.to_public_dict(redact_resolved_by=redact_pat_actor)
+                for operation in self.operations
+            ],
             "after": self.after.to_public_dict(),
         }
+
+
+def _public_actor_login(app_slug: str, actor_login: str) -> str:
+    if app_slug == DEDICATED_PAT_FALLBACK_SLUG:
+        return DEDICATED_PAT_FALLBACK_PUBLIC_ACTOR
+    return actor_login
 
 
 def _thread_capability_from_node(

@@ -131,6 +131,7 @@ def review_thread_diagnostic(
 
     from voyager.core.config import load_config
     from voyager.core.countdown_diagnostic import (
+        DEDICATED_PAT_FALLBACK_RESOLVE_ALLOWED_REPOSITORIES,
         DEDICATED_PAT_FALLBACK_SLUG,
         GitHubTokenReviewThreadClient,
         ReviewThreadCapabilityReport,
@@ -146,6 +147,17 @@ def review_thread_diagnostic(
     if pat_token_command and resolve and len(thread_ids) != 1:
         typer.echo(
             "ERROR: --pat-token-command --resolve requires exactly one --thread-id",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if (
+        pat_token_command
+        and resolve
+        and repo not in DEDICATED_PAT_FALLBACK_RESOLVE_ALLOWED_REPOSITORIES
+    ):
+        allowed_repos = ", ".join(sorted(DEDICATED_PAT_FALLBACK_RESOLVE_ALLOWED_REPOSITORIES))
+        typer.echo(
+            f"ERROR: --pat-token-command --resolve is only allowed for: {allowed_repos}",
             err=True,
         )
         raise typer.Exit(code=1)
