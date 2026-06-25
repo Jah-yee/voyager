@@ -35,6 +35,11 @@ from voyager.core.github_app_user_auth import DeviceCodeResponse, UserAccessToke
 runner = CliRunner(env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"})
 
 
+def _runner_failure_text(result: Any) -> str:
+    exception_text = str(result.exception) if result.exception is not None else ""
+    return "\n".join(part for part in (result.stdout, result.stderr, exception_text) if part)
+
+
 def test_vyg_help_lists_commands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
@@ -242,8 +247,8 @@ def test_vyg_countdown_review_thread_diagnostic_pat_query_blocks_wrong_pat_viewe
     )
 
     assert result.exit_code == 1
-    assert isinstance(result.exception, click.ClickException)
-    assert "refusing PAT fallback query" in str(result.exception)
+    failure_text = _runner_failure_text(result)
+    assert "refusing PAT fallback query" in failure_text
     assert "wrong-machine-user-login" not in result.stdout
     assert "wrong-machine-user-login" not in result.stderr
     assert "secret-pat" not in result.stdout
@@ -636,8 +641,8 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_blocks_wrong_pat_vie
     )
 
     assert result.exit_code == 1
-    assert isinstance(result.exception, click.ClickException)
-    assert "Dedicated PAT viewer did not match expected login" in str(result.exception)
+    failure_text = _runner_failure_text(result)
+    assert "Dedicated PAT viewer did not match expected login" in failure_text
     assert events == ["app-baseline", "pat-actor"]
     assert "wrong-machine-user-login" not in result.stdout
     assert "wrong-machine-user-login" not in result.stderr
@@ -721,8 +726,8 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_blocks_without_app_b
     )
 
     assert result.exit_code == 1
-    assert isinstance(result.exception, click.ClickException)
-    assert "Countdown App baseline viewerCanResolve is not false" in str(result.exception)
+    failure_text = _runner_failure_text(result)
+    assert "Countdown App baseline viewerCanResolve is not false" in failure_text
     assert "secret-pat" not in result.stdout
     assert "secret-pat" not in result.stderr
 

@@ -1718,6 +1718,7 @@ def _run_dispatch(ctx, *, dry_run: bool, repo: str, pr: int) -> None:
         investigator=None,
         known_limitation_store=None,
         expected_sha=None,
+        cfg=None,
     ):
         return stub_automation
 
