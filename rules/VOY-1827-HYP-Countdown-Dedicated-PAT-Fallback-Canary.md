@@ -4,7 +4,7 @@
 **Last updated:** 2026-06-25
 **Last reviewed:** 2026-06-25
 **Status:** Hypothesis
-**Related:** VOY-1805, VOY-1806, VOY-1807
+**Related:** VOY-1805, VOY-1806, VOY-1807, VOY-1828
 
 ---
 
@@ -190,6 +190,10 @@ Do not use this HYP to:
    reports `viewerCanResolve=false` and the PAT-token leg reports
    `viewerCanResolve=true`.
 
+   On Wukong, run the full App-baseline plus PAT-resolve canary through
+   VOY-1828. Keep the private sandbox PR number and review-thread node ID in
+   operator notes only.
+
 6. **Rollback**
 
    Revoke the PAT after the canary window or when the route is abandoned. If the
@@ -246,3 +250,4 @@ Before this route can become production behavior, a follow-up CHG must define:
 | 2026-06-25 | Initial HYP for the dedicated machine-user PAT fallback canary after fine-grained PAT resource-owner scoping proved unavailable for the outside-collaborator account shape. | Codex |
 | 2026-06-25 | Added the macOS Keychain service convention and safe save/read commands for the 30-day classic PAT canary. | Codex |
 | 2026-06-25 | Added the `vyg countdown review-thread-diagnostic --pat-token-command` canary entry point and documented that `--resolve` still requires the App-token baseline first. | Codex |
+| 2026-06-25 | Linked VOY-1828 as the Wukong-specific full canary SOP. | Codex |

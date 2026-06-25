@@ -38,6 +38,7 @@
 | 1825 | REF | Loop-Convergence Policy |
 | 1826 | CHG | Clearance Manual-Close Dedupe (Completed) |
 | 1827 | HYP | Countdown Dedicated PAT Fallback Canary |
+| 1828 | SOP | Countdown Dedicated PAT Wukong Canary |
 
 ---
 
@@ -54,3 +55,4 @@
 | 2026-06-21 | Added VOY-1826 Clearance Manual-Close Dedupe CHG | Codex |
 | 2026-06-21 | Marked VOY-1826 Clearance Manual-Close Dedupe CHG completed | Codex |
 | 2026-06-25 | Added VOY-1827 Countdown Dedicated PAT Fallback Canary HYP | Codex |
+| 2026-06-25 | Added VOY-1828 Countdown Dedicated PAT Wukong Canary SOP | Codex |

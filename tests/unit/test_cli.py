@@ -85,7 +85,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
         del client
         return ReviewThreadCapabilityReport(
             app_slug=app_slug,
-            actor_login="iterwheel-countdown-user",
+            actor_login="dedicated-fallback-user",
             repository=repository,
             pr=pr,
             threads=(
@@ -129,7 +129,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
     )
 
     assert result.exit_code == 0
-    assert "actor: iterwheel-countdown-user" in result.stdout
+    assert "actor: dedicated-fallback-user" in result.stdout
     assert "viewerCanResolve=True" in result.stdout
     assert "secret-pat" not in result.stdout
 
