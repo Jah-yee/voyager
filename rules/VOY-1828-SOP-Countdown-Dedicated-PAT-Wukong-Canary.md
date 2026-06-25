@@ -75,7 +75,10 @@ Keep them in shell-local variables or a private note. Do not commit them.
 ## Step 1: Store or Confirm the PAT on Wukong
 
 If the dedicated PAT is not already in Wukong Keychain, save it by prompting
-for the secret value. Do not pass the token as a shell argument.
+for the secret value. Keep the bare `-w` as the final argument; macOS
+`security add-generic-password -h` documents that final-position form as the
+interactive password prompt. Do not pass the token as `-w <token>` because that
+exposes it through process arguments.
 
 ```bash
 security add-generic-password -U \

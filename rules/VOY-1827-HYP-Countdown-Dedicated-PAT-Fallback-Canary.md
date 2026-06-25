@@ -139,8 +139,10 @@ Do not use this HYP to:
    | Label | `Voyager Countdown dedicated PAT` |
    | Comment | `Issue #214 sandbox resolver canary; classic PAT; expires 2026-07-25` |
 
-   Save the token by prompting for the secret value. Do not pass the token as a
-   shell argument:
+   Save the token by prompting for the secret value. Keep the bare `-w` as the
+   final argument; macOS `security add-generic-password -h` documents that
+   final-position form as the interactive password prompt. Do not pass the token
+   as `-w <token>` because that exposes it through process arguments:
 
    ```bash
    security add-generic-password -U \
