@@ -80,6 +80,11 @@ def test_read_pat_token_suppresses_child_stderr(capsys: pytest.CaptureFixture[st
 def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
+
     async def fake_query_review_thread_capabilities(
         client: Any,
         *,
@@ -141,9 +146,117 @@ def test_vyg_countdown_review_thread_diagnostic_pat_command_avoids_config(
     assert "secret-pat" not in result.stdout
 
 
+def test_vyg_countdown_review_thread_diagnostic_pat_query_requires_expected_login_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN", raising=False)
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+    monkeypatch.setattr(
+        "voyager.cli._read_pat_token",
+        lambda command: (_ for _ in ()).throw(AssertionError("token should not load")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager-sandbox",
+            "--pr",
+            "42",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            "fake-token-command",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN is not set" in result.stderr
+
+
+def test_vyg_countdown_review_thread_diagnostic_pat_query_blocks_wrong_pat_viewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
+
+    async def fake_query_review_thread_capabilities(
+        client: Any,
+        *,
+        app_slug: str,
+        repository: str,
+        pr: int,
+        thread_ids: list[str],
+    ) -> ReviewThreadCapabilityReport:
+        del client
+        return ReviewThreadCapabilityReport(
+            app_slug=app_slug,
+            actor_login="wrong-machine-user-login",
+            repository=repository,
+            pr=pr,
+            threads=(
+                ReviewThreadCapability(
+                    thread_id=thread_ids[0],
+                    type_name="PullRequestReviewThread",
+                    repository=repository,
+                    pr=pr,
+                    is_resolved=False,
+                    is_outdated=False,
+                    viewer_can_resolve=True,
+                    viewer_can_reply=True,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "voyager.core.countdown_diagnostic.query_review_thread_capabilities",
+        fake_query_review_thread_capabilities,
+    )
+    monkeypatch.setattr("voyager.cli._read_pat_token", lambda command: "secret-pat")
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager-sandbox",
+            "--pr",
+            "42",
+            "--thread-id",
+            "PRRT_private",
+            "--pat-token-command",
+            "fake-token-command",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, click.ClickException)
+    assert "refusing PAT fallback query" in str(result.exception)
+    assert "wrong-machine-user-login" not in result.stdout
+    assert "wrong-machine-user-login" not in result.stderr
+    assert "secret-pat" not in result.stdout
+    assert "secret-pat" not in result.stderr
+
+
 def test_vyg_countdown_review_thread_diagnostic_empty_pat_command_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
     monkeypatch.setattr(
         "voyager.core.config.load_config",
         lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
@@ -172,6 +285,11 @@ def test_vyg_countdown_review_thread_diagnostic_empty_pat_command_errors(
 def test_vyg_countdown_review_thread_diagnostic_pat_query_failure_uses_safe_error_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
+
     async def fake_query_review_thread_capabilities(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("GitHub GraphQL dedicated PAT request failed: HTTP 401")
 
@@ -211,6 +329,11 @@ def test_vyg_countdown_review_thread_diagnostic_pat_query_failure_uses_safe_erro
 def test_vyg_countdown_review_thread_diagnostic_pat_graphql_errors_use_safe_error_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "VOYAGER_COUNTDOWN_DEDICATED_PAT_EXPECTED_LOGIN",
+        "raw-machine-user-login",
+    )
+
     async def fake_query_review_thread_capabilities(*args: Any, **kwargs: Any) -> None:
         raise GitHubGraphQLError([{"type": "FORBIDDEN", "message": "raw thread id and secret-pat"}])
 

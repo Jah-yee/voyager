@@ -195,6 +195,7 @@ uv run vyg countdown review-thread-diagnostic \
   --pr "$VOYAGER_CANARY_PR" \
   --thread-id "$VOYAGER_CANARY_THREAD_ID" \
   --pat-token-command "security find-generic-password -a ${VOYAGER_PAT_ACCOUNT:?} -s voyager/countdown-dedicated-pat -w" \
+  --pat-expected-login-env VOYAGER_PAT_ACCOUNT \
   --json
 ```
 
@@ -202,6 +203,7 @@ Required result:
 
 - `app_slug` is `dedicated-pat-fallback`
 - actor class is dedicated machine user
+- the CLI accepted the private expected-login check before redacting the actor
 - `type` is `PullRequestReviewThread`
 - `repository` is the private sandbox repository
 - `isResolved=false`

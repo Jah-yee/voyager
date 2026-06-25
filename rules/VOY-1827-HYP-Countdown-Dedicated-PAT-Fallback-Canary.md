@@ -177,14 +177,17 @@ Do not use this HYP to:
    If the mutation runs, record whether the operation applied, the
    post-mutation `isResolved` value, and the resolved-by actor class.
 
-   The CLI entry point for the PAT leg is:
+   The CLI entry point for the PAT leg is below. Keep `VOYAGER_PAT_ACCOUNT` in
+   operator-local state only; it is used to verify the PAT viewer before the
+   CLI redacts the actor class:
 
    ```bash
    uv run vyg countdown review-thread-diagnostic \
      --repo iterwheel/voyager-sandbox \
      --pr "<private-sandbox-pr-number>" \
      --thread-id "<operator-note-thread-node-id>" \
-     --pat-token-command 'security find-generic-password -a "<dedicated-machine-user-login>" -s voyager/countdown-dedicated-pat -w' \
+     --pat-token-command "security find-generic-password -a ${VOYAGER_PAT_ACCOUNT:?} -s voyager/countdown-dedicated-pat -w" \
+     --pat-expected-login-env VOYAGER_PAT_ACCOUNT \
      --json
    ```
 

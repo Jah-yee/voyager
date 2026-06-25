@@ -129,7 +129,7 @@ def review_thread_diagnostic(
         "--pat-expected-login-env",
         help=(
             "Environment variable containing the expected dedicated PAT GitHub login. "
-            "Required for --pat-token-command --resolve."
+            "Required for --pat-token-command."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
@@ -176,11 +176,12 @@ def review_thread_diagnostic(
     app_baseline_client: GitHubAppClient | None = None
     expected_pat_login: str | None = None
     diagnostic_slug = app_slug
-    if has_pat_token_command and resolve:
+    if has_pat_token_command:
         try:
             expected_pat_login = _expected_viewer_login_from_env(pat_expected_login_env)
         except click.ClickException as exc:
             _exit_with_error(exc.message)
+    if has_pat_token_command and resolve:
         cfg = load_config(config)
         if app_slug not in cfg.apps:
             typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
@@ -246,13 +247,21 @@ def review_thread_diagnostic(
                     thread_ids=thread_ids,
                 )
             assert active_client is not None
-            return await query_review_thread_capabilities(
+            report = await query_review_thread_capabilities(
                 active_client,
                 app_slug=diagnostic_slug,
                 repository=repo,
                 pr=pr,
                 thread_ids=thread_ids,
             )
+            if has_pat_token_command:
+                assert expected_pat_login is not None
+                _validate_dedicated_pat_expected_actor(
+                    report.actor_login,
+                    expected_pat_login,
+                    operation="query",
+                )
+            return report
         finally:
             if active_client is not None:
                 await active_client.aclose()
@@ -471,10 +480,12 @@ def _viewer_login_matches_expected(viewer_login: str, expected_viewer_login: str
 def _validate_dedicated_pat_expected_actor(
     actor_login: str,
     expected_viewer_login: str,
+    *,
+    operation: str = "resolve",
 ) -> None:
     if not _viewer_login_matches_expected(actor_login, expected_viewer_login):
         raise click.ClickException(
-            "Dedicated PAT viewer did not match expected login; refusing PAT fallback resolve"
+            f"Dedicated PAT viewer did not match expected login; refusing PAT fallback {operation}"
         )
 
 
