@@ -142,6 +142,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     baseline_calls: list[str] = []
+    events: list[str] = []
 
     async def fake_query_review_thread_capabilities(
         client: Any,
@@ -153,6 +154,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
     ) -> ReviewThreadCapabilityReport:
         del client
         baseline_calls.append(app_slug)
+        events.append("baseline")
         return ReviewThreadCapabilityReport(
             app_slug=app_slug,
             actor_login="iterwheel-countdown[bot]",
@@ -181,6 +183,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
         thread_ids: list[str],
     ) -> ReviewThreadResolveCanaryReport:
         del client
+        assert events == ["baseline", "token"]
         assert app_slug == DEDICATED_PAT_FALLBACK_SLUG
         before = ReviewThreadCapabilityReport(
             app_slug=app_slug,
@@ -243,8 +246,12 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_app_baselin
         "voyager.core.config.load_config",
         lambda config=None: SimpleNamespace(apps={"iterwheel-countdown": object()}),
     )
+    monkeypatch.setattr(
+        "voyager.cli._read_pat_token",
+        lambda command: events.append("token") or "secret-pat",
+    )
 
-    token_command = f'{sys.executable} -c "print(\\"secret-pat\\")"'
+    token_command = "fake-token-command"
     result = runner.invoke(
         app,
         [
@@ -315,8 +322,13 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_blocks_without_app_b
         "voyager.core.config.load_config",
         lambda config=None: SimpleNamespace(apps={"iterwheel-countdown": object()}),
     )
+    monkeypatch.setattr(
+        "voyager.cli._read_pat_token",
+        lambda command: (_ for _ in ()).throw(
+            AssertionError("token should not load before App baseline passes")
+        ),
+    )
 
-    token_command = f'{sys.executable} -c "print(\\"secret-pat\\")"'
     result = runner.invoke(
         app,
         [
@@ -329,7 +341,7 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_blocks_without_app_b
             "--thread-id",
             "PRRT_private",
             "--pat-token-command",
-            token_command,
+            "fake-token-command",
             "--resolve",
         ],
     )
@@ -339,6 +351,41 @@ def test_vyg_countdown_review_thread_diagnostic_pat_resolve_blocks_without_app_b
     assert "Countdown App baseline viewerCanResolve is not false" in str(result.exception)
     assert "secret-pat" not in result.stdout
     assert "secret-pat" not in result.stderr
+
+
+def test_vyg_countdown_review_thread_diagnostic_pat_resolve_requires_one_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "voyager.core.config.load_config",
+        lambda config=None: (_ for _ in ()).throw(AssertionError("config should not load")),
+    )
+    monkeypatch.setattr(
+        "voyager.cli._read_pat_token",
+        lambda command: (_ for _ in ()).throw(AssertionError("token should not load")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "countdown",
+            "review-thread-diagnostic",
+            "--repo",
+            "iterwheel/voyager-sandbox",
+            "--pr",
+            "42",
+            "--thread-id",
+            "PRRT_private_1",
+            "--thread-id",
+            "PRRT_private_2",
+            "--pat-token-command",
+            "fake-token-command",
+            "--resolve",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "requires exactly one --thread-id" in result.stderr
 
 
 def test_vyg_countdown_user_refresh_check_requires_env() -> None:

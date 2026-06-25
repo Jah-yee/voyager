@@ -143,22 +143,28 @@ def review_thread_diagnostic(
     if pat_token_command and app_slug != "iterwheel-countdown":
         typer.echo("ERROR: --app cannot be combined with --pat-token-command", err=True)
         raise typer.Exit(code=1)
+    if pat_token_command and resolve and len(thread_ids) != 1:
+        typer.echo(
+            "ERROR: --pat-token-command --resolve requires exactly one --thread-id",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
-    try:
-        pat_token = _read_pat_token(pat_token_command) if pat_token_command else None
-    except click.ClickException as exc:
-        _exit_with_error(exc.message)
-
-    client: GitHubAppClient | GitHubTokenReviewThreadClient
+    client: GitHubAppClient | GitHubTokenReviewThreadClient | None = None
     app_baseline_client: GitHubAppClient | None = None
     diagnostic_slug = app_slug
-    if pat_token is not None:
-        if resolve:
-            cfg = load_config(config)
-            if app_slug not in cfg.apps:
-                typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
-                raise typer.Exit(code=1)
-            app_baseline_client = GitHubAppClient(cfg.apps)
+    if pat_token_command and resolve:
+        cfg = load_config(config)
+        if app_slug not in cfg.apps:
+            typer.echo(f"ERROR: app {app_slug!r} is not configured", err=True)
+            raise typer.Exit(code=1)
+        app_baseline_client = GitHubAppClient(cfg.apps)
+        diagnostic_slug = DEDICATED_PAT_FALLBACK_SLUG
+    elif pat_token_command:
+        try:
+            pat_token = _read_pat_token(pat_token_command)
+        except click.ClickException as exc:
+            _exit_with_error(exc.message)
         client = GitHubTokenReviewThreadClient(pat_token)
         diagnostic_slug = DEDICATED_PAT_FALLBACK_SLUG
     else:
@@ -169,6 +175,7 @@ def review_thread_diagnostic(
         client = GitHubAppClient(cfg.apps)
 
     async def _run() -> ReviewThreadCapabilityReport | ReviewThreadResolveCanaryReport:
+        active_client = client
         try:
             if resolve:
                 if app_baseline_client is not None:
@@ -184,22 +191,31 @@ def review_thread_diagnostic(
                         repository=repo,
                         pr=pr,
                     )
+                    assert pat_token_command is not None
+                    try:
+                        pat_token = _read_pat_token(pat_token_command)
+                    except click.ClickException as exc:
+                        _exit_with_error(exc.message)
+                    active_client = GitHubTokenReviewThreadClient(pat_token)
+                assert active_client is not None
                 return await run_review_thread_resolve_canary(
-                    client,
+                    active_client,
                     app_slug=diagnostic_slug,
                     repository=repo,
                     pr=pr,
                     thread_ids=thread_ids,
                 )
+            assert active_client is not None
             return await query_review_thread_capabilities(
-                client,
+                active_client,
                 app_slug=diagnostic_slug,
                 repository=repo,
                 pr=pr,
                 thread_ids=thread_ids,
             )
         finally:
-            await client.aclose()
+            if active_client is not None:
+                await active_client.aclose()
             if app_baseline_client is not None:
                 await app_baseline_client.aclose()
 
