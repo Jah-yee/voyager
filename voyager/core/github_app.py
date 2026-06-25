@@ -330,6 +330,7 @@ class GitHubAppClient:
                   isResolved
                   isOutdated
                   viewerCanResolve
+                  viewerCanReply
                   path
                   line
                   originalLine
