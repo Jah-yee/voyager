@@ -40,6 +40,7 @@ def _thread(
     can_resolve: bool = True,
     can_reply: bool = True,
     comments: list[tuple[str, str]] | None = None,
+    truncated: bool = False,
 ) -> dict:
     return {
         "id": tid,
@@ -47,7 +48,10 @@ def _thread(
         "isOutdated": outdated,
         "viewerCanResolve": can_resolve,
         "viewerCanReply": can_reply,
-        "comments": {"nodes": [{"author": {"login": a}, "body": b} for a, b in (comments or [])]},
+        "comments": {
+            "pageInfo": {"hasNextPage": truncated},
+            "nodes": [{"author": {"login": a}, "body": b} for a, b in (comments or [])],
+        },
     }
 
 
@@ -235,6 +239,18 @@ class TestGateVeto:
         assert all(d.action == "vetoed" for d in summary.decisions)
         assert "gate_error" in summary.decisions[0].reason
 
+    async def test_truncated_comments_veto_without_calling_gate(self) -> None:
+        # A thread with more comments than we fetched must fail closed: the gate would
+        # judge on a partial prefix that may omit a later "still broken" reply.
+        read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): [_thread(tid="A", truncated=True)]})
+        fn, resolved = _fake_resolver()
+        gate = FakeGate(GateVerdict(True, "looks fixed"))
+        summary = await _run(read, gate, resolve_fn=fn)
+        assert resolved == []
+        assert gate.seen == []  # gate never consulted on a truncated thread
+        assert summary.decisions[0].action == "vetoed"
+        assert summary.decisions[0].reason == "comments_truncated"
+
     async def test_injection_approve_all_cannot_resolve_noncandidates(self) -> None:
         # Gate approves EVERYTHING (simulating prompt-injection success). Non-candidates
         # (resolved/outdated/can't-resolve) must STILL never resolve — the deterministic
@@ -278,6 +294,22 @@ class TestCap:
         summary = await _run(read, FakeGate(), dry_run=True, max_resolves=2)
         assert summary.would_resolve == 2
         assert summary.capped is True
+
+    async def test_failed_attempts_count_against_cap(self) -> None:
+        # The cap bounds APPROVED ATTEMPTS, not just successes: a resolver that keeps
+        # failing must still stop the loop at max_resolves (blast-radius guarantee).
+        threads = [_thread(tid=f"T{i}") for i in range(5)]
+        read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): threads})
+        attempts: list[Candidate] = []
+
+        def _always_fail(cand: Candidate, _gql) -> Decision:
+            attempts.append(cand)
+            return Decision(cand.repo, cand.pr, cand.thread_id, "resolve_failed", "boom")
+
+        summary = await _run(read, FakeGate(), resolve_fn=_always_fail, max_resolves=2)
+        assert len(attempts) == 2
+        assert summary.capped is True
+        assert summary.resolved == 0
 
 
 class TestRedaction:

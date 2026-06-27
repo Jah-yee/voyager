@@ -92,6 +92,7 @@ query ReviewThreadsWithComments($owner: String!, $name: String!, $number: Int!, 
           viewerCanResolve
           viewerCanReply
           comments(first: 20) {
+            pageInfo { hasNextPage }
             nodes { author { login } body }
           }
         }
@@ -110,6 +111,9 @@ class Candidate:
     pr: int
     thread_id: str
     comments: tuple[tuple[str, str], ...]  # (author_login, body)
+    # True if the thread has more comments than we fetched — the gate must fail
+    # closed, since a later "still broken" comment may be missing from the prefix.
+    comments_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -368,12 +372,14 @@ async def _candidates_for_pr(gql: ReadGqlFn, repo: str, pr: int) -> list[Candida
             ts: ThreadState = _parse_thread_node(node)
             if not ts.thread_id or not _should_resolve(ts):
                 continue
+            comments_page = (node.get("comments") or {}).get("pageInfo") or {}
             candidates.append(
                 Candidate(
                     repo=repo,
                     pr=pr,
                     thread_id=ts.thread_id,
                     comments=_thread_comments(node),
+                    comments_truncated=bool(comments_page.get("hasNextPage")),
                 )
             )
         page = threads.get("pageInfo") or {}
@@ -454,7 +460,11 @@ async def run_resolve_loop(
     capped = False
 
     def _approved() -> int:
-        return sum(1 for d in decisions if d.action in ("resolved", "would_resolve"))
+        # Bound APPROVED resolve ATTEMPTS, not just successes: a live run where the
+        # resolver keeps returning resolve_failed/skipped_stale must still hit the cap.
+        # Every gate-approved candidate yields a non-vetoed decision (would_resolve in
+        # dry-run; resolved/skipped_stale/resolve_failed live).
+        return sum(1 for d in decisions if d.action != "vetoed")
 
     def _record(d: Decision) -> None:
         decisions.append(d)
@@ -509,6 +519,10 @@ async def run_resolve_loop(
 
 async def _gate_verdict(gate: ShouldResolveGate, cand: Candidate) -> GateVerdict:
     """Call the gate, FAIL CLOSED on any error/exception (default to veto/skip)."""
+    # Truncated comment list → the gate would judge on a partial prefix; veto without
+    # asking it, since a later "still broken" comment may be missing.
+    if cand.comments_truncated:
+        return GateVerdict(False, "comments_truncated")
     try:
         verdict = await gate.should_resolve(cand)
     except Exception as exc:
