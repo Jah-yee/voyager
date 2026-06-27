@@ -88,7 +88,10 @@ def read_machine_token(run: Callable[..., Any] = subprocess.run) -> str:
     """
     try:
         proc = run(
-            ["gh", "auth", "token", "--user", MACHINE_ACCOUNT],
+            # Pin --hostname github.com: the GraphQL client always posts to
+            # api.github.com, so reading the token from a GH_HOST-configured
+            # Enterprise credential store would resolve against the wrong host.
+            ["gh", "auth", "token", "--hostname", "github.com", "--user", MACHINE_ACCOUNT],
             capture_output=True,
             text=True,
             timeout=30,
@@ -283,6 +286,14 @@ def resolve_conversations(
             details.append(("", "skipped_empty_thread_id"))
         else:
             node = gql(_NODE_QUERY, {"threadId": thread_id}).get("node") or {}
+            ts = _parse_thread_node(node)
+            if not ts.thread_id:
+                # null node / non-review-thread node = mistyped or inaccessible id.
+                # For one explicit target, fail loud instead of exiting "skipped:1".
+                # No id in the message (VOY-1828): node IDs are sensitive.
+                raise ResolveConversationError(
+                    "requested review thread not found or not accessible"
+                )
             # Node IDs are global: a thread from another repo would otherwise pass
             # the allowlist on the user-supplied `repo` alone. Verify it belongs here.
             owning = _node_repo(node)
@@ -290,7 +301,6 @@ def resolve_conversations(
                 raise ResolveConversationError(
                     f"thread does not belong to {repo!r} (allowlist bypass blocked)"
                 )
-            ts = _parse_thread_node(node)
             r, s, d = _apply_thread(ts, dry_run=dry_run, gql=gql)
             resolved += r
             skipped += s

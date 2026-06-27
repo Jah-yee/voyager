@@ -297,7 +297,15 @@ class TestReadMachineToken:
         run = self._make_run(returncode=0, stdout="ghp_abc123\n")
         read_machine_token(run=run)
         run.assert_called_once_with(
-            ["gh", "auth", "token", "--user", "iterwheel-countdown-user"],
+            [
+                "gh",
+                "auth",
+                "token",
+                "--hostname",
+                "github.com",
+                "--user",
+                "iterwheel-countdown-user",
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -712,6 +720,24 @@ class TestReviewFixes:
         assert "not found" in msg.lower()
         # VOY-1828: non-sandbox errors must not leak the raw PR number.
         assert "99999" not in msg
+
+    def test_single_thread_missing_node_raises(self) -> None:
+        # GitHub returns node: null for a mistyped / inaccessible / non-review node.
+        gql = _SmartGql([{"node": None}])
+        with pytest.raises(ResolveConversationError) as ei:
+            resolve_conversations(repo="iterwheel/voyager", thread_id="PRRT_GONE", gql=gql)
+        msg = str(ei.value)
+        assert "not found" in msg.lower() or "not accessible" in msg.lower()
+        # VOY-1828: must not echo the thread node id.
+        assert "PRRT_GONE" not in msg
+        gql.assert_no_mutations()
+
+    def test_single_thread_wrong_type_node_raises(self) -> None:
+        # A non-PullRequestReviewThread node returns an empty fragment ({}).
+        gql = _SmartGql([{"node": {}}])
+        with pytest.raises(ResolveConversationError):
+            resolve_conversations(repo="iterwheel/voyager", thread_id="ISSUE_1", gql=gql)
+        gql.assert_no_mutations()
 
     def test_has_next_page_with_null_cursor_raises(self) -> None:
         page = _pr_response([_thread_node(id="PRRT_1")], has_next_page=True, end_cursor=None)
