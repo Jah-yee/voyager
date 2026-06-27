@@ -20,12 +20,17 @@ Hard constraints (enforced by construction):
 
 from __future__ import annotations
 
+import os
 import subprocess  # nosec B404
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+# gh treats these as the github.com token and lets them override the stored
+# credential, so they must be stripped before reading the machine account token.
+_AMBIENT_TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 
 MACHINE_ACCOUNT: str = "iterwheel-countdown-user"
 RESOLVE_ALLOWED_REPOS: frozenset[str] = frozenset(
@@ -86,6 +91,11 @@ def read_machine_token(run: Callable[..., Any] = subprocess.run) -> str:
     Uses getattr defensively so test doubles can be plain objects.
     Never logs or re-raises the token value.
     """
+    # Strip ambient GH_TOKEN/GITHUB_TOKEN: gh would otherwise return that token
+    # (the owner could be anyone — e.g. a CI bot or the human) instead of the
+    # stored iterwheel-countdown-user credential, silently resolving as the
+    # wrong identity. Belt to the viewer-login check in resolve_conversations.
+    scrubbed_env = {k: v for k, v in os.environ.items() if k not in _AMBIENT_TOKEN_ENV}
     try:
         proc = run(
             # Pin --hostname github.com: the GraphQL client always posts to
@@ -95,6 +105,7 @@ def read_machine_token(run: Callable[..., Any] = subprocess.run) -> str:
             capture_output=True,
             text=True,
             timeout=30,
+            env=scrubbed_env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         # Never chain (from None): the original may carry argv/env; type name only.
@@ -224,7 +235,31 @@ query GetReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: 
 }
 """
 
-_ALLOWED_OPERATIONS: frozenset[str] = frozenset({_RESOLVE_MUTATION, _NODE_QUERY, _PR_THREADS_QUERY})
+_VIEWER_QUERY = """
+query Viewer {
+  viewer {
+    login
+  }
+}
+"""
+
+_ALLOWED_OPERATIONS: frozenset[str] = frozenset(
+    {_RESOLVE_MUTATION, _NODE_QUERY, _PR_THREADS_QUERY, _VIEWER_QUERY}
+)
+
+
+def _assert_machine_identity(gql: GraphQLFn) -> None:
+    """Fail closed unless the authenticated viewer IS the machine account.
+
+    Last line of defense for the 'never resolve as the human identity'
+    guarantee: even if the wrong token slipped through env scrubbing, no
+    mutation fires unless the live viewer login matches MACHINE_ACCOUNT.
+    """
+    login = ((gql(_VIEWER_QUERY, {}).get("viewer") or {}).get("login")) or ""
+    if login != MACHINE_ACCOUNT:
+        raise ResolveConversationError(
+            f"authenticated identity is not {MACHINE_ACCOUNT!r}; refusing to resolve"
+        )
 
 
 def _node_repo(node: dict[str, Any]) -> str | None:
@@ -275,6 +310,10 @@ def resolve_conversations(
         raise ResolveConversationError(
             "exactly one of pr or thread_id must be provided, not both or neither"
         )
+
+    # Hard identity gate before any read/mutation: refuse unless the live token
+    # actually belongs to the machine account.
+    _assert_machine_identity(gql)
 
     resolved = 0
     skipped = 0

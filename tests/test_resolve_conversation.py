@@ -89,18 +89,24 @@ class _SmartGql:
         self,
         pages: list[dict],
         mutation_response: dict | None = None,
+        viewer_login: str = "iterwheel-countdown-user",
     ) -> None:
         self._pages = list(pages)
         self._page_idx = 0
         self._mutation_response = (
             mutation_response if mutation_response is not None else _RESOLVE_MUTATION_OK
         )
+        self._viewer_login = viewer_login
         self.all_calls: list[tuple[str, dict]] = []
         self.mutation_calls: list[tuple[str, dict]] = []
         self.query_calls: list[tuple[str, dict]] = []
 
     def __call__(self, query: str, variables: dict) -> dict:
         self.all_calls.append((query, variables))
+        if "query viewer" in query.lower():
+            # Identity gate: default to the machine account so existing tests pass.
+            # (Matches the dedicated viewer op, not the viewerCanResolve field.)
+            return {"viewer": {"login": self._viewer_login}}
         if "mutation" in query.lower():
             self.mutation_calls.append((query, variables))
             if "resolveReviewThread" not in query:
@@ -296,20 +302,33 @@ class TestReadMachineToken:
     def test_success_calls_correct_gh_command(self) -> None:
         run = self._make_run(returncode=0, stdout="ghp_abc123\n")
         read_machine_token(run=run)
-        run.assert_called_once_with(
-            [
-                "gh",
-                "auth",
-                "token",
-                "--hostname",
-                "github.com",
-                "--user",
-                "iterwheel-countdown-user",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        run.assert_called_once()
+        args, kwargs = run.call_args
+        assert args[0] == [
+            "gh",
+            "auth",
+            "token",
+            "--hostname",
+            "github.com",
+            "--user",
+            "iterwheel-countdown-user",
+        ]
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] == 30
+
+    def test_ambient_github_tokens_are_scrubbed_from_subprocess_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GH_TOKEN", "ambient-gh")
+        monkeypatch.setenv("GITHUB_TOKEN", "ambient-github")
+        monkeypatch.setenv("PATH", "/usr/bin")  # an unrelated var must survive
+        run = self._make_run(returncode=0, stdout="ghp_abc123\n")
+        read_machine_token(run=run)
+        env = run.call_args.kwargs["env"]
+        assert "GH_TOKEN" not in env
+        assert "GITHUB_TOKEN" not in env
+        assert env.get("PATH") == "/usr/bin"
 
     def test_nonzero_returncode_raises_resolve_error(self) -> None:
         run = self._make_run(returncode=1, stdout="")
@@ -720,6 +739,25 @@ class TestReviewFixes:
         assert "not found" in msg.lower()
         # VOY-1828: non-sandbox errors must not leak the raw PR number.
         assert "99999" not in msg
+
+    def test_wrong_viewer_identity_refuses_and_no_mutation(self) -> None:
+        # Token belongs to someone other than the machine account → refuse.
+        gql = _SmartGql([_pr_response([_thread_node(id="PRRT_1")])], viewer_login="ryosaeba1985")
+        with pytest.raises(ResolveConversationError) as ei:
+            resolve_conversations(repo="iterwheel/voyager", pr=1, gql=gql)
+        assert "identity" in str(ei.value).lower()
+        gql.assert_no_mutations()
+
+    def test_empty_viewer_login_refuses(self) -> None:
+        gql = _SmartGql([_pr_response([_thread_node(id="PRRT_1")])], viewer_login="")
+        with pytest.raises(ResolveConversationError):
+            resolve_conversations(repo="iterwheel/voyager", pr=1, gql=gql)
+        gql.assert_no_mutations()
+
+    def test_identity_checked_even_in_dry_run(self) -> None:
+        gql = _SmartGql([_pr_response([_thread_node(id="PRRT_1")])], viewer_login="someoneelse")
+        with pytest.raises(ResolveConversationError):
+            resolve_conversations(repo="iterwheel/voyager", pr=1, dry_run=True, gql=gql)
 
     def test_single_thread_missing_node_raises(self) -> None:
         # GitHub returns node: null for a mistyped / inaccessible / non-review node.
