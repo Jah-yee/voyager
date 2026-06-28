@@ -66,15 +66,36 @@ class FakeReadGql:
         head_sha: str = "deadbeef",
         fail_repos: set[str] | None = None,
         pull_missing: set[tuple[str, int]] | None = None,
+        comment_counts: dict[str, int | None] | None = None,
     ) -> None:
         self._pr_numbers = pr_numbers
         self._threads = threads
         self._head_sha = head_sha
         self._fail_repos = fail_repos or set()
         self._pull_missing = pull_missing or set()
+        # tid -> live comment count for the freshness re-read; defaults to the thread's
+        # own comment count so unchanged threads resolve. Override to simulate a race.
+        self._comment_counts = comment_counts or {}
+
         self.calls: list[str] = []
 
+    def _default_count(self, tid: str) -> int | None:
+        for nodes in self._threads.values():
+            for n in nodes:
+                if n.get("id") == tid:
+                    return len((n.get("comments") or {}).get("nodes") or [])
+        return None
+
     async def __call__(self, query: str, variables: dict) -> dict:
+        if "ThreadFreshness" in query:
+            tid = variables["threadId"]
+            if tid in self._comment_counts:
+                total = self._comment_counts[tid]
+            else:
+                total = self._default_count(tid)
+            if total is None:
+                return {"node": None}
+            return {"node": {"comments": {"totalCount": total}}}
         repo = f"{variables['owner']}/{variables['name']}"
         if "OpenPullRequestNumbers" in query:
             self.calls.append(f"prs:{repo}")
@@ -357,6 +378,33 @@ class TestCap:
         assert len(attempts) == 2
         assert summary.capped is True
         assert summary.resolved == 0
+
+
+class TestCommentFreshness:
+    async def test_new_comment_between_gate_and_resolve_skips(self) -> None:
+        # Live count (2) differs from what the gate saw (1) → fail closed, no resolve.
+        threads = [_thread(tid="A", comments=[("r", "please fix")])]
+        read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): threads}, comment_counts={"A": 2})
+        fn, resolved = _fake_resolver()
+        summary = await _run(read, FakeGate(GateVerdict(True, "ok")), resolve_fn=fn)
+        assert resolved == []
+        assert summary.decisions[0].action == "skipped_stale"
+        assert summary.decisions[0].reason == "comments_changed"
+
+    async def test_unreadable_count_skips(self) -> None:
+        threads = [_thread(tid="A", comments=[("r", "please fix")])]
+        read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): threads}, comment_counts={"A": None})
+        fn, resolved = _fake_resolver()
+        summary = await _run(read, FakeGate(GateVerdict(True, "ok")), resolve_fn=fn)
+        assert resolved == []
+        assert summary.decisions[0].action == "skipped_stale"
+
+    async def test_unchanged_count_resolves(self) -> None:
+        threads = [_thread(tid="A", comments=[("r", "please fix")])]
+        read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): threads})  # default count matches
+        fn, resolved = _fake_resolver()
+        await _run(read, FakeGate(GateVerdict(True, "ok")), resolve_fn=fn)
+        assert [c.thread_id for c in resolved] == ["A"]
 
 
 class TestRedaction:

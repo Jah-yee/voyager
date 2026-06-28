@@ -49,10 +49,12 @@ addressed. A safety layer is required before unattended resolution is sane.
 3. **Untrusted-content framing.** Thread comment bodies are framed as DATA; the
    system prompt forbids following instructions embedded in them (reuses the
    `clearance/investigator.py` structured-verdict + robust-JSON pattern).
-4. **Evidence freshness.** Freshness is enforced at thread-state level, not by a PR
-   head SHA: `resolve_conversations` re-fetches the thread immediately before the
-   mutation and skips it unless it is still mechanically resolvable, so a thread that
-   moved between judgment and action is skipped (`skipped_stale`), not blindly resolved.
+4. **Evidence freshness.** Two-level, not by a PR head SHA. (a) Thread state:
+   `resolve_conversations` re-fetches the thread immediately before the mutation and
+   skips it unless still mechanically resolvable. (b) Comment evidence: the loop re-reads
+   the thread's live comment count just before mutating and skips (`skipped_stale`,
+   `comments_changed`, fail-closed on an unreadable count) if it differs from what the
+   gate judged — so a reviewer commenting between judgment and action is not overrun.
 5. **Identity gate.** The resolve mutation goes through `resolve_conversations`,
    which hard-gates `viewer.login == iterwheel-countdown-user` and is resolve-only.
 6. **Blast radius.** `--max-resolves` caps resolves per run (`capped=True`, never

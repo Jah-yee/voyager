@@ -102,6 +102,18 @@ query ReviewThreadsWithComments($owner: String!, $name: String!, $number: Int!, 
 }
 """
 
+# Re-read JUST the live comment count of one thread, to detect a comment added between
+# the gate's judgment and the resolve mutation (TOCTOU on stale gate evidence).
+_THREAD_FRESHNESS_QUERY = """
+query ThreadFreshness($threadId: ID!) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 1) { totalCount }
+    }
+  }
+}
+"""
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -278,7 +290,7 @@ def load_repo_list(path: Path) -> list[str]:
 
 
 _ALLOWED_READ_QUERIES: frozenset[str] = frozenset(
-    {_OPEN_PR_NUMBERS_QUERY, _PR_THREADS_WITH_COMMENTS_QUERY}
+    {_OPEN_PR_NUMBERS_QUERY, _PR_THREADS_WITH_COMMENTS_QUERY, _THREAD_FRESHNESS_QUERY}
 )
 
 
@@ -363,6 +375,16 @@ def _thread_comments(node: dict[str, Any]) -> tuple[tuple[str, str], ...]:
         body = c.get("body") or ""
         out.append((str(author), str(body)))
     return tuple(out)
+
+
+async def _thread_comment_count(gql: ReadGqlFn, thread_id: str) -> int | None:
+    """Live comment count for one thread; None if it can't be read (fail closed)."""
+    data = await gql(_THREAD_FRESHNESS_QUERY, {"threadId": thread_id})
+    node = (data or {}).get("node")
+    if not node:
+        return None
+    total = (node.get("comments") or {}).get("totalCount")
+    return total if isinstance(total, int) else None
 
 
 async def _candidates_for_pr(gql: ReadGqlFn, repo: str, pr: int) -> list[Candidate]:
@@ -519,6 +541,14 @@ async def run_resolve_loop(
                     continue
                 if dry_run:
                     _record(Decision(repo, pr, cand.thread_id, "would_resolve", verdict.reason))
+                    continue
+                # TOCTOU guard: a reviewer may have added a comment between the gate's
+                # read and now. The resolver only re-checks thread STATE (not comments),
+                # so re-read the live comment count and fail closed if it changed — stale
+                # gate evidence must not resolve newly-active dissent.
+                live_count = await _thread_comment_count(read_gql, cand.thread_id)
+                if live_count is None or live_count != len(cand.comments):
+                    _record(Decision(repo, pr, cand.thread_id, "skipped_stale", "comments_changed"))
                     continue
                 # Write-ahead the resolve INTENT before mutating: if the audit sink is
                 # unwritable, _append_audit raises here and the run aborts BEFORE the
