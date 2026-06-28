@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -28,6 +30,7 @@ class FakeClient:
     trigger_acks: list[bool] = field(default_factory=lambda: [True])
     inline_comments: list[dict[str, Any]] = field(default_factory=list)
     issue_comments: list[dict[str, Any]] = field(default_factory=list)
+    issue_comment_batches: list[list[dict[str, Any]]] = field(default_factory=list)
     thumbs: list[dict[str, Any]] = field(default_factory=list)
     trigger_count: int = 0
 
@@ -64,6 +67,8 @@ class FakeClient:
 
     def pull_issue_comments(self, repo: str, pr: int) -> list[dict[str, Any]]:
         del repo, pr
+        if self.issue_comment_batches:
+            return self.issue_comment_batches.pop(0)
         return self.issue_comments
 
 
@@ -80,6 +85,12 @@ def _opts(**overrides: Any) -> WatchOptions:
     }
     values.update(overrides)
     return WatchOptions(**values)
+
+
+def _encoded_records(records: list[dict[str, Any]]) -> str:
+    return "\n".join(
+        base64.b64encode(json.dumps(item).encode("utf-8")).decode("ascii") for item in records
+    )
 
 
 def test_dropped_trigger_is_retried_and_second_ack_sets_cutoff() -> None:
@@ -179,6 +190,52 @@ def test_no_trigger_uses_last_trigger_cutoff_and_detects_paginated_clean_comment
     assert result.exit_code == CODE_OK
     assert client.trigger_count == 0
     assert "detecting codex activity after: 2026-06-28T09:59:00Z" in result.output
+
+
+def test_gh_cli_latest_trigger_ignores_operator_notes_that_mention_codex_review() -> None:
+    def fake_run(args: list[str]) -> str:
+        assert "--paginate" in args
+        assert "repos/iterwheel/voyager/issues/225/comments" in args
+        return _encoded_records(
+            [
+                {
+                    "created_at": "2026-06-28T09:59:00Z",
+                    "body": "@codex review",
+                },
+                {
+                    "created_at": "2026-06-28T10:05:00Z",
+                    "body": "waiting on @codex review before resolving threads",
+                },
+            ]
+        )
+
+    client = GhCliClient(run=fake_run)
+
+    assert client.latest_trigger_created_at("iterwheel/voyager", 225) == _ts("2026-06-28T09:59:00Z")
+
+
+def test_short_timeout_polls_with_ceiling_count() -> None:
+    client = FakeClient(
+        issue_comment_batches=[
+            [],
+            [
+                {
+                    "user": {"login": BOT},
+                    "created_at": "2026-06-28T10:00:03Z",
+                    "body": "Codex Review: No major issues found.\n\nReviewed commit: abc1234",
+                }
+            ],
+        ]
+    )
+
+    result = watch_codex_review(
+        client,
+        _opts(timeout_seconds=60, poll_interval_seconds=40),
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.exit_code == CODE_OK
+    assert "signal @ iter 2" in result.output
 
 
 def test_gh_cli_uses_paginate_for_detection_lists() -> None:

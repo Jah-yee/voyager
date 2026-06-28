@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import re
 import subprocess  # nosec B404
 import sys
@@ -99,7 +100,7 @@ class GhCliClient:
         triggers = [
             _parse_time(str(item.get("created_at")))
             for item in self.pull_issue_comments(repo, pr)
-            if TRIGGER_BODY in str(item.get("body") or "")
+            if _is_trigger_comment(str(item.get("body") or ""))
         ]
         return max(triggers) if triggers else None
 
@@ -334,7 +335,11 @@ def _poll_count(timeout_seconds: int, poll_interval_seconds: int) -> int:
         return 1
     if poll_interval_seconds <= 0:
         return 1
-    return max(1, timeout_seconds // poll_interval_seconds)
+    return max(1, math.ceil(timeout_seconds / poll_interval_seconds))
+
+
+def _is_trigger_comment(body: str) -> bool:
+    return body.strip() == TRIGGER_BODY
 
 
 def _signal_label(kind: str) -> str:
