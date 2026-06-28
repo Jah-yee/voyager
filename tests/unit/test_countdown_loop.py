@@ -221,6 +221,25 @@ class TestListOpenPrNumbers:
 
         assert await cl._list_open_pr_numbers(gql, REAL) == [1, 2, 3]
 
+    async def test_candidates_dedupe_threads_across_pages(self) -> None:
+        # Overlapping/repeated reviewThreads pages must not double-gate a thread.
+        pages = [
+            {
+                "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                "nodes": [_thread(tid="T1"), _thread(tid="T2")],
+            },
+            {"pageInfo": {"hasNextPage": False}, "nodes": [_thread(tid="T2"), _thread(tid="T3")]},
+        ]
+        calls = {"n": 0}
+
+        async def gql(query: str, variables: dict) -> dict:
+            page = pages[calls["n"]]
+            calls["n"] += 1
+            return {"repository": {"pullRequest": {"reviewThreads": page}}}
+
+        cands = await cl._candidates_for_pr(gql, REAL, 1)
+        assert [c.thread_id for c in cands] == ["T1", "T2", "T3"]
+
 
 class TestPrefilter:
     async def test_only_resolvable_threads_become_candidates(self) -> None:

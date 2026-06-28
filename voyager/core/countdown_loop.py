@@ -369,6 +369,7 @@ async def _candidates_for_pr(gql: ReadGqlFn, repo: str, pr: int) -> list[Candida
     """Enumerate a PR's review threads and keep only mechanically-resolvable ones."""
     owner, name = repo.split("/", 1)
     candidates: list[Candidate] = []
+    seen_threads: set[str] = set()
     after: str | None = None
     seen_cursors: set[str] = set()
     while True:
@@ -384,6 +385,9 @@ async def _candidates_for_pr(gql: ReadGqlFn, repo: str, pr: int) -> list[Candida
             ts: ThreadState = _parse_thread_node(node)
             if not ts.thread_id or not _should_resolve(ts):
                 continue
+            if ts.thread_id in seen_threads:
+                continue  # overlapping/repeated pages must not double-gate a thread
+            seen_threads.add(ts.thread_id)
             comments_page = (node.get("comments") or {}).get("pageInfo") or {}
             candidates.append(
                 Candidate(

@@ -68,7 +68,10 @@ trigger_and_confirm_ack() {
   [ -n "$ts" ] && SINCE="$ts"   # detect only activity after OUR trigger
   echo "triggered: $url"
   for _ in 1 2 3 4 5 6; do
-    ack="$(api "repos/$REPO/issues/comments/$cid/reactions" --jq 'length' || echo 0)"
+    # Must be Codex's OWN 👀 — a human/other-bot reaction must NOT count as an ack,
+    # else a deduped/dropped trigger looks acked and we wait for a verdict never started.
+    ack="$(api "repos/$REPO/issues/comments/$cid/reactions" \
+      --jq "[.[] | select(.content==\"eyes\" and .user.login==\"$BOT\")] | length" || echo 0)"
     [ "${ack:-0}" -gt 0 ] && { echo "  codex acked 👀"; return 0; }
     sleep 10
   done
