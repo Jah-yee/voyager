@@ -38,7 +38,9 @@ addressed. A safety layer is required before unattended resolution is sane.
 
 1. **Deterministic prefilter first.** A thread is a candidate only if the machine
    account can mechanically resolve it (`resolve_conversation._should_resolve`
-   semantics: unresolved, `viewerCanResolve`, `viewerCanReply`, not outdated). The
+   semantics: unresolved, `viewerCanResolve`, `viewerCanReply`; outdated threads ARE
+   candidates — `viewerCanResolve` is the authorization, outdated just means the line
+   moved). The
    LLM never sees a non-candidate and cannot promote one.
 2. **LLM can only say "no".** It returns `{should_resolve: bool, reason}`. `true`
    lets a candidate proceed; anything else (false, parse failure, refusal, error,

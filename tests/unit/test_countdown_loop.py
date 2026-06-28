@@ -199,14 +199,14 @@ class TestPrefilter:
         threads = [
             _thread(tid="A"),  # resolvable
             _thread(tid="B", resolved=True),  # already resolved
-            _thread(tid="C", outdated=True),  # outdated
+            _thread(tid="C", outdated=True),  # outdated — STILL a candidate (not a gate)
             _thread(tid="D", can_resolve=False),  # cannot resolve
             _thread(tid="E", can_reply=False),  # cannot reply
         ]
         read = FakeReadGql({SANDBOX: [7]}, {(SANDBOX, 7): threads})
         gate = FakeGate(GateVerdict(True, "ok"))
         await _run(read, gate)
-        assert [c.thread_id for c in gate.seen] == ["A"]
+        assert [c.thread_id for c in gate.seen] == ["A", "C"]
 
     async def test_pr_not_found_is_tolerated_target_error(self) -> None:
         read = FakeReadGql({SANDBOX: [9]}, {}, pull_missing={(SANDBOX, 9)})
@@ -253,12 +253,12 @@ class TestGateVeto:
 
     async def test_injection_approve_all_cannot_resolve_noncandidates(self) -> None:
         # Gate approves EVERYTHING (simulating prompt-injection success). Non-candidates
-        # (resolved/outdated/can't-resolve) must STILL never resolve — the deterministic
-        # prefilter is the hard boundary.
+        # (resolved/can't-resolve/can't-reply) must STILL never resolve — the
+        # deterministic prefilter is the hard boundary. (Outdated is NOT a non-candidate.)
         threads = [
             _thread(tid="A"),  # the only real candidate
             _thread(tid="B", resolved=True),
-            _thread(tid="C", outdated=True),
+            _thread(tid="C", can_reply=False),
             _thread(tid="D", can_resolve=False),
         ]
         read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): threads})
