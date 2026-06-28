@@ -94,11 +94,12 @@ lock → gate_repos(requested ∩ RESOLVE_ALLOWED_REPOS)
 
 ### CLI
 
-`vyg countdown resolve-loop --repos <file> [--max-resolves N] [--dry-run] [--json] [--show-raw]`
+`vyg countdown resolve-loop --repos <file> [--max-resolves N] [--dry-run] [--json]`
 - `--repos`: `OWNER/REPO`-per-line file; each must also be in the ceiling allowlist or
   it is reported as skipped.
 - `--dry-run`: enumerate + gate (incl. LLM judgment) but issue no mutation.
-- `--json` emits the redacted dict; `--show-raw` is the sandbox-only opt-in for raw IDs.
+- `--json` emits the redacted dict. There is NO `--show-raw`: redaction keys only on repo
+  membership (sandbox shows raw IDs, non-sandbox never does), with no operator override.
 
 ### Testing
 

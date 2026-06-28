@@ -194,6 +194,34 @@ class TestRepoList:
 # --------------------------------------------------------------------------- #
 
 
+class TestListOpenPrNumbers:
+    async def test_null_repository_raises(self) -> None:
+        # null repository (token lost access / repo renamed) must error, not look healthy.
+        async def gql(query: str, variables: dict) -> dict:
+            return {"repository": None}
+
+        with pytest.raises(cl.ResolveConversationError, match="repository not found"):
+            await cl._list_open_pr_numbers(gql, REAL)
+
+    async def test_dedupes_pr_numbers_across_pages(self) -> None:
+        # Overlapping/repeated pages must not double-enumerate the same PR.
+        pages = [
+            {
+                "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                "nodes": [{"number": 1}, {"number": 2}],
+            },
+            {"pageInfo": {"hasNextPage": False}, "nodes": [{"number": 2}, {"number": 3}]},
+        ]
+        calls = {"n": 0}
+
+        async def gql(query: str, variables: dict) -> dict:
+            page = pages[calls["n"]]
+            calls["n"] += 1
+            return {"repository": {"pullRequests": page}}
+
+        assert await cl._list_open_pr_numbers(gql, REAL) == [1, 2, 3]
+
+
 class TestPrefilter:
     async def test_only_resolvable_threads_become_candidates(self) -> None:
         threads = [

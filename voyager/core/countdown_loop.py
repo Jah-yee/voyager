@@ -329,14 +329,22 @@ def make_read_gql(
 async def _list_open_pr_numbers(gql: ReadGqlFn, repo: str) -> list[int]:
     owner, name = repo.split("/", 1)
     numbers: list[int] = []
+    seen_numbers: set[int] = set()
     after: str | None = None
     seen_cursors: set[str] = set()
     while True:
         data = await gql(_OPEN_PR_NUMBERS_QUERY, {"owner": owner, "name": name, "after": after})
-        conn = (((data or {}).get("repository") or {}).get("pullRequests")) or {}
+        repository = (data or {}).get("repository")
+        if repository is None:
+            # A null repository (token lost access, repo renamed/deleted) must be a hard
+            # error — NOT an empty list, which would look like a healthy zero-PR scan and
+            # leave systemic_failure false on an unattended run.
+            raise ResolveConversationError(f"repository not found in {repo!r}")
+        conn = (repository.get("pullRequests")) or {}
         for node in conn.get("nodes") or []:
             number = node.get("number")
-            if isinstance(number, int):
+            if isinstance(number, int) and number not in seen_numbers:
+                seen_numbers.add(number)  # overlapping/repeated pages must not double-scan
                 numbers.append(number)
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):

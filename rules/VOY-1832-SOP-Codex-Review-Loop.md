@@ -17,17 +17,22 @@ this SOP documents the contract that script encodes and why it exists.
 ## Why
 
 Codex's GitHub surface has three traps that break naive `gh api` polling — all hit
-repeatedly during PR #224 (5+ rounds), causing hours of false waits and false signals:
+repeatedly during PR #224 (8+ rounds), causing hours of false waits and false signals:
 
-1. **Trigger dedupe.** Posting `@codex review` again too soon is silently dropped — the
-   review never runs. Two triggers in one night acked nothing for ~20 min each.
-2. **List-endpoint lag.** `/pulls/{n}/reviews` is eventually-consistent (lags minutes);
-   a review fetchable by ID can be absent from the list. Polling it yields false
-   "still waiting" long after the verdict landed.
+1. **Pagination (the big one).** `/pulls/{n}/reviews` and `/pulls/{n}/comments` return
+   **30 per page, oldest-first**, and `gh api` does **not** auto-paginate. Without
+   `--paginate` you only ever see the 30 OLDEST items (the stale re-anchored comments)
+   and NEVER the newest verdict, which sits on a later page. This masquerades as "codex
+   stalled / rate-limited" — it is not; codex reviewed fine, the poller was blind.
+   (PR #224: 4 "stalls" in a row were all this bug.) With `--paginate`, note that
+   `--jq '...|length'` emits a length *per page* — emit one line per match and count
+   with `wc -l`.
+2. **Trigger dedupe.** Posting `@codex review` again too soon is silently dropped — the
+   review never runs. Confirm Codex's 👀 ack on your trigger comment.
 3. **Comment re-anchoring.** An unresolved old review comment is re-anchored to the new
    head commit, so it carries the **new** `commit_id` but keeps its **old** `created_at`.
    Detecting "new findings" by `commit_id == head` false-positives on stale, already-
-   fixed comments.
+   fixed comments — key on `created_at` instead.
 
 Without a documented contract these mistakes recur every session.
 
@@ -51,12 +56,12 @@ Without a documented contract these mistakes recur every session.
 2. **Confirm the ack.** Verify Codex reacted 👀 to *your* trigger comment within ~60s.
    No ack ⇒ the trigger was dropped (dedupe) ⇒ re-trigger.
 3. **Record the cutoff.** Capture the trigger comment's `created_at` as `SINCE`.
-4. **Poll for a genuine verdict** — keyed on `created_at/submitted_at > SINCE`, **never**
-   on `commit_id` or raw counts:
+4. **Poll for a genuine verdict** — always `gh api --paginate` (the lists are 30/page,
+   oldest-first); key on `created_at/submitted_at > SINCE`, **never** on `commit_id` or
+   raw counts. Count matches with `wc -l`, not `--jq length` (which is per-page under
+   `--paginate`):
    - **Findings** = ≥1 Codex inline comment in `/pulls/{n}/comments` with `created_at > SINCE`.
    - **Clean** = a 👍 reaction by Codex on the PR (and no new inline comments).
-   - Use the inline-comments endpoint + PR reactions (timely); do not gate on the
-     `/pulls/{n}/reviews` list (lags).
 5. **Be patient; don't kill the poll early.** Codex can ack then stall. Use a generous
    timeout (20–30 min) and re-trigger after timeout rather than aborting.
 6. **Fix and re-loop.** Address findings, push, then return to Step 1 on the new head.
@@ -91,12 +96,14 @@ scripts/codex-review-watch.sh 224 --timeout-min 25
 scripts/codex-review-watch.sh 224 --no-trigger
 ```
 
-**Anti-pattern (do NOT do this).** Polling the reviews list and keying on the head SHA:
+**Anti-pattern (do NOT do this).** No `--paginate`, and keying on the head SHA:
 
 ```bash
-# WRONG: /reviews lags (false "still waiting"); and re-anchored OLD comments carry the
-# new commit_id, so this reports stale, already-fixed findings as if they were new.
-gh api repos/iterwheel/voyager/pulls/224/reviews \
+# WRONG on two counts:
+#  - no --paginate → only the 30 OLDEST comments (stale re-anchors); the new verdict is
+#    on a later page and is never seen → looks like "codex stalled".
+#  - commit_id match → re-anchored OLD comments carry the new commit_id → false findings.
+gh api repos/iterwheel/voyager/pulls/224/comments \
   --jq '[.[] | select(.commit_id|startswith("<head>"))] | length'
 ```
 
@@ -107,3 +114,4 @@ gh api repos/iterwheel/voyager/pulls/224/reviews \
 | Date | Change | By |
 |------|--------|----|
 | 2026-06-28 | Initial version — codifies the PR #224 Codex-loop lessons (trigger dedupe, list-endpoint lag, comment re-anchoring) | Claude Code |
+| 2026-06-28 | Corrected root cause: pagination (30/page oldest-first, no auto-paginate) — the earlier "list-endpoint lag" framing was wrong; the 4 apparent "stalls" were missed later pages | Claude Code |
