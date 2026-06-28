@@ -22,10 +22,11 @@ import errno
 import fcntl
 import json
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -115,6 +116,47 @@ query ThreadFreshness($threadId: ID!) {
 """
 
 
+class State(Enum):
+    """Explicit candidate-level resolve-loop states."""
+
+    CAP_GUARD = "cap_guard"
+    GATE_GUARD = "gate_guard"
+    DRY_RUN_GUARD = "dry_run_guard"
+    FRESHNESS_GUARD = "freshness_guard"
+    AUDIT_WRITE_AHEAD = "audit_write_ahead"
+    RESOLVE = "resolve"
+    CAPPED = "capped"
+    VETOED = "vetoed"
+    WOULD_RESOLVE = "would_resolve"
+    SKIPPED_STALE = "skipped_stale"
+    RESOLVED = "resolved"
+    RESOLVE_FAILED = "resolve_failed"
+
+
+TERMINAL_STATES: frozenset[State] = frozenset(
+    {
+        State.CAPPED,
+        State.VETOED,
+        State.WOULD_RESOLVE,
+        State.SKIPPED_STALE,
+        State.RESOLVED,
+        State.RESOLVE_FAILED,
+    }
+)
+
+TERMINAL_DECISION_ACTIONS: dict[State, str] = {
+    State.VETOED: "vetoed",
+    State.WOULD_RESOLVE: "would_resolve",
+    State.SKIPPED_STALE: "skipped_stale",
+    State.RESOLVED: "resolved",
+    State.RESOLVE_FAILED: "resolve_failed",
+}
+
+_DECISION_ACTION_TERMINALS: dict[str, State] = {
+    action: state for state, action in TERMINAL_DECISION_ACTIONS.items()
+}
+
+
 @dataclass(frozen=True)
 class Candidate:
     """A review thread that passed the deterministic (mechanically-resolvable) prefilter."""
@@ -174,6 +216,33 @@ class Decision:
         else:
             out["redacted"] = True
         return out
+
+
+@dataclass
+class _CandidateFlow:
+    repo: str
+    pr: int
+    candidate: Candidate
+    gate: ShouldResolveGate
+    read_gql: ReadGqlFn
+    resolve_gql: Any
+    do_resolve: Any
+    dry_run: bool
+    max_resolves: int
+    approved_count: int
+    timestamp: str
+    audit_path: Path | None
+    verdict: GateVerdict | None = None
+    decision: Decision | None = None
+
+
+@dataclass(frozen=True)
+class _CandidateFlowResult:
+    state: State
+    decision: Decision | None
+
+
+_Transition = Callable[[_CandidateFlow], Awaitable[State]]
 
 
 @dataclass(frozen=True)
@@ -457,6 +526,90 @@ def _append_audit(path: Path, record: dict[str, Any]) -> None:
             os.close(fd)
 
 
+async def _transition_cap_guard(ctx: _CandidateFlow) -> State:
+    if ctx.approved_count >= ctx.max_resolves:
+        return State.CAPPED
+    return State.GATE_GUARD
+
+
+async def _transition_gate_guard(ctx: _CandidateFlow) -> State:
+    ctx.verdict = await _gate_verdict(ctx.gate, ctx.candidate)
+    if not ctx.verdict.should_resolve:
+        ctx.decision = Decision(
+            ctx.repo,
+            ctx.pr,
+            ctx.candidate.thread_id,
+            TERMINAL_DECISION_ACTIONS[State.VETOED],
+            ctx.verdict.reason,
+        )
+        return State.VETOED
+    return State.DRY_RUN_GUARD
+
+
+async def _transition_dry_run_guard(ctx: _CandidateFlow) -> State:
+    if not ctx.dry_run:
+        return State.FRESHNESS_GUARD
+    verdict = ctx.verdict or GateVerdict(True, "ok")
+    ctx.decision = Decision(
+        ctx.repo,
+        ctx.pr,
+        ctx.candidate.thread_id,
+        TERMINAL_DECISION_ACTIONS[State.WOULD_RESOLVE],
+        verdict.reason,
+    )
+    return State.WOULD_RESOLVE
+
+
+async def _transition_freshness_guard(ctx: _CandidateFlow) -> State:
+    live_count = await _thread_comment_count(ctx.read_gql, ctx.candidate.thread_id)
+    if live_count is None or live_count != len(ctx.candidate.comments):
+        ctx.decision = Decision(
+            ctx.repo,
+            ctx.pr,
+            ctx.candidate.thread_id,
+            TERMINAL_DECISION_ACTIONS[State.SKIPPED_STALE],
+            "comments_changed",
+        )
+        return State.SKIPPED_STALE
+    return State.AUDIT_WRITE_AHEAD
+
+
+async def _transition_audit_write_ahead(ctx: _CandidateFlow) -> State:
+    if ctx.audit_path is not None:
+        verdict = ctx.verdict or GateVerdict(True, "ok")
+        intent = Decision(ctx.repo, ctx.pr, ctx.candidate.thread_id, "resolving", verdict.reason)
+        _append_audit(ctx.audit_path, {"ts": ctx.timestamp, "dry_run": False, **intent.public()})
+    return State.RESOLVE
+
+
+async def _transition_resolve(ctx: _CandidateFlow) -> State:
+    ctx.decision = _safe_resolve(ctx.do_resolve, ctx.candidate, ctx.resolve_gql)
+    return _DECISION_ACTION_TERMINALS[ctx.decision.action]
+
+
+_TRANSITION_TABLE: dict[State, _Transition] = {
+    State.CAP_GUARD: _transition_cap_guard,
+    State.GATE_GUARD: _transition_gate_guard,
+    State.DRY_RUN_GUARD: _transition_dry_run_guard,
+    State.FRESHNESS_GUARD: _transition_freshness_guard,
+    State.AUDIT_WRITE_AHEAD: _transition_audit_write_ahead,
+    State.RESOLVE: _transition_resolve,
+}
+
+
+async def _drive_candidate_to_terminal(ctx: _CandidateFlow) -> _CandidateFlowResult:
+    state = State.CAP_GUARD
+    while state not in TERMINAL_STATES:
+        state = await _TRANSITION_TABLE[state](ctx)
+    return _CandidateFlowResult(state=state, decision=ctx.decision)
+
+
+def _assert_resolver_identity_guard(resolve_fn: Any, resolve_gql: Any) -> None:
+    # Run-level guard by design: wrong identity must abort before any LLM fan-out.
+    if resolve_fn is None:
+        _assert_machine_identity(resolve_gql)
+
+
 # --------------------------------------------------------------------------- #
 # Loop
 # --------------------------------------------------------------------------- #
@@ -495,8 +648,7 @@ async def run_resolve_loop(
     # LLM call per candidate across every repo. Done even in dry-run: that mode still
     # enumerates threads and ships their comments to the LLM, so a wrong identity must
     # abort there too (matches resolve_conversations, which gates identity regardless).
-    if resolve_fn is None:
-        _assert_machine_identity(resolve_gql)
+    _assert_resolver_identity_guard(resolve_fn, resolve_gql)
 
     decisions: list[Decision] = []
     scanned: list[str] = []
@@ -539,31 +691,27 @@ async def run_resolve_loop(
                 continue
             prs_enumerated += 1
             for cand in candidates:
-                if _approved() >= max_resolves:
+                result = await _drive_candidate_to_terminal(
+                    _CandidateFlow(
+                        repo=repo,
+                        pr=pr,
+                        candidate=cand,
+                        gate=gate,
+                        read_gql=read_gql,
+                        resolve_gql=resolve_gql,
+                        do_resolve=do_resolve,
+                        dry_run=dry_run,
+                        max_resolves=max_resolves,
+                        approved_count=_approved(),
+                        timestamp=when,
+                        audit_path=audit_path,
+                    )
+                )
+                if result.state is State.CAPPED:
                     capped = True
                     break
-                verdict = await _gate_verdict(gate, cand)
-                if not verdict.should_resolve:
-                    _record(Decision(repo, pr, cand.thread_id, "vetoed", verdict.reason))
-                    continue
-                if dry_run:
-                    _record(Decision(repo, pr, cand.thread_id, "would_resolve", verdict.reason))
-                    continue
-                # TOCTOU guard: a reviewer may have added a comment between the gate's
-                # read and now. The resolver only re-checks thread STATE (not comments),
-                # so re-read the live comment count and fail closed if it changed — stale
-                # gate evidence must not resolve newly-active dissent.
-                live_count = await _thread_comment_count(read_gql, cand.thread_id)
-                if live_count is None or live_count != len(cand.comments):
-                    _record(Decision(repo, pr, cand.thread_id, "skipped_stale", "comments_changed"))
-                    continue
-                # Write-ahead the resolve INTENT before mutating: if the audit sink is
-                # unwritable, _append_audit raises here and the run aborts BEFORE the
-                # thread is touched — no unattended mutation without a trail.
-                if audit_path is not None:
-                    intent = Decision(repo, pr, cand.thread_id, "resolving", verdict.reason)
-                    _append_audit(audit_path, {"ts": when, "dry_run": False, **intent.public()})
-                _record(_safe_resolve(do_resolve, cand, resolve_gql))
+                if result.decision is not None:
+                    _record(result.decision)
 
     return LoopSummary(
         repos_scanned=tuple(scanned),

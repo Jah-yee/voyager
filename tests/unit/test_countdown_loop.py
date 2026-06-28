@@ -543,6 +543,140 @@ class TestAudit:
 
 
 # --------------------------------------------------------------------------- #
+# Candidate FSM transitions
+# --------------------------------------------------------------------------- #
+
+
+def _fsm_context(
+    read_gql,
+    gate,
+    *,
+    candidate: Candidate | None = None,
+    do_resolve=None,
+    dry_run: bool = False,
+    max_resolves: int = 20,
+    approved_count: int = 0,
+    audit_path: Path | None = None,
+):
+    return cl._CandidateFlow(
+        repo=SANDBOX,
+        pr=1,
+        candidate=candidate or Candidate(SANDBOX, 1, "A", (("r", "please fix"),)),
+        gate=gate,
+        read_gql=read_gql,
+        resolve_gql=object(),
+        do_resolve=do_resolve or _fake_resolver()[0],
+        dry_run=dry_run,
+        max_resolves=max_resolves,
+        approved_count=approved_count,
+        timestamp="2026-06-28T00:00:00+00:00",
+        audit_path=audit_path,
+    )
+
+
+class TestCandidateFSM:
+    def test_terminal_states_preserve_wire_actions(self) -> None:
+        assert {
+            cl.State.CAPPED,
+            cl.State.VETOED,
+            cl.State.WOULD_RESOLVE,
+            cl.State.SKIPPED_STALE,
+            cl.State.RESOLVED,
+            cl.State.RESOLVE_FAILED,
+        } == cl.TERMINAL_STATES
+        assert cl.TERMINAL_DECISION_ACTIONS == {
+            cl.State.VETOED: "vetoed",
+            cl.State.WOULD_RESOLVE: "would_resolve",
+            cl.State.SKIPPED_STALE: "skipped_stale",
+            cl.State.RESOLVED: "resolved",
+            cl.State.RESOLVE_FAILED: "resolve_failed",
+        }
+
+    async def test_cap_guard_terminal_does_not_call_gate(self) -> None:
+        read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): [_thread(tid="A")]})
+        gate = FakeGate(GateVerdict(True, "ok"))
+        result = await cl._drive_candidate_to_terminal(
+            _fsm_context(read, gate, max_resolves=2, approved_count=2)
+        )
+        assert result.state is cl.State.CAPPED
+        assert result.decision is None
+        assert gate.seen == []
+
+    async def test_truncation_guard_vetoes_before_gate(self) -> None:
+        read = FakeReadGql({SANDBOX: [1]}, {(SANDBOX, 1): [_thread(tid="A")]})
+        gate = FakeGate(GateVerdict(True, "ok"))
+        candidate = Candidate(SANDBOX, 1, "A", (("r", "please fix"),), comments_truncated=True)
+        result = await cl._drive_candidate_to_terminal(
+            _fsm_context(read, gate, candidate=candidate)
+        )
+        assert result.state is cl.State.VETOED
+        assert result.decision == Decision(SANDBOX, 1, "A", "vetoed", "comments_truncated")
+        assert gate.seen == []
+
+    async def test_dry_run_terminal_skips_freshness_and_resolve(self) -> None:
+        read = FakeReadGql(
+            {SANDBOX: [1]},
+            {(SANDBOX, 1): [_thread(tid="A", comments=[("r", "please fix")])]},
+            comment_counts={"A": 99},
+        )
+        attempts: list[Candidate] = []
+
+        def _track(cand: Candidate, _gql) -> Decision:
+            attempts.append(cand)
+            return Decision(cand.repo, cand.pr, cand.thread_id, "resolved", "ok")
+
+        result = await cl._drive_candidate_to_terminal(
+            _fsm_context(read, FakeGate(GateVerdict(True, "ok")), do_resolve=_track, dry_run=True)
+        )
+        assert result.state is cl.State.WOULD_RESOLVE
+        assert result.decision == Decision(SANDBOX, 1, "A", "would_resolve", "ok")
+        assert attempts == []
+
+    async def test_freshness_guard_skips_stale_without_resolve(self) -> None:
+        read = FakeReadGql(
+            {SANDBOX: [1]},
+            {(SANDBOX, 1): [_thread(tid="A", comments=[("r", "please fix")])]},
+            comment_counts={"A": 2},
+        )
+        attempts: list[Candidate] = []
+
+        def _track(cand: Candidate, _gql) -> Decision:
+            attempts.append(cand)
+            return Decision(cand.repo, cand.pr, cand.thread_id, "resolved", "ok")
+
+        result = await cl._drive_candidate_to_terminal(
+            _fsm_context(read, FakeGate(GateVerdict(True, "ok")), do_resolve=_track)
+        )
+        assert result.state is cl.State.SKIPPED_STALE
+        assert result.decision == Decision(SANDBOX, 1, "A", "skipped_stale", "comments_changed")
+        assert attempts == []
+
+    async def test_write_ahead_audit_precedes_resolve(self, tmp_path: Path) -> None:
+        audit = tmp_path / "audit.jsonl"
+        read = FakeReadGql(
+            {SANDBOX: [1]},
+            {(SANDBOX, 1): [_thread(tid="A", comments=[("r", "please fix")])]},
+        )
+        events: list[str] = []
+
+        def _track(cand: Candidate, _gql) -> Decision:
+            events.append(audit.read_text(encoding="utf-8"))
+            return Decision(cand.repo, cand.pr, cand.thread_id, "resolved", "ok")
+
+        result = await cl._drive_candidate_to_terminal(
+            _fsm_context(
+                read,
+                FakeGate(GateVerdict(True, "ok")),
+                do_resolve=_track,
+                audit_path=audit,
+            )
+        )
+        assert result.state is cl.State.RESOLVED
+        assert result.decision == Decision(SANDBOX, 1, "A", "resolved", "ok")
+        assert '"action":"resolving"' in events[0]
+
+
+# --------------------------------------------------------------------------- #
 # _do_resolve integration with the real resolve_conversations
 # --------------------------------------------------------------------------- #
 
