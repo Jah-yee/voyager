@@ -14,7 +14,10 @@
 #
 # Usage:
 #   scripts/codex-review-watch.sh <PR> [--repo OWNER/REPO] [--no-trigger]
-#                                      [--bot LOGIN] [--timeout-min N]
+#                                      [--bot LOGIN] [--timeout-min N] [--since ISO8601]
+#
+# --no-trigger: don't post a trigger; anchor the cutoff to the last @codex review
+#   comment (override with --since) so a verdict posted before this run isn't missed.
 #
 # Exit: 0 = clean (👍) · 2 = findings (printed) · 1 = operational error / timed out.
 set -euo pipefail
@@ -23,6 +26,7 @@ REPO="iterwheel/voyager"
 BOT="chatgpt-codex-connector[bot]"
 TRIGGER=1
 TIMEOUT_MIN=30
+SINCE_OVERRIDE=""
 PR=""
 
 while [ $# -gt 0 ]; do
@@ -30,6 +34,7 @@ while [ $# -gt 0 ]; do
     --repo) REPO="$2"; shift 2 ;;
     --bot) BOT="$2"; shift 2 ;;
     --no-trigger) TRIGGER=0; shift ;;
+    --since) SINCE_OVERRIDE="$2"; shift 2 ;;
     --timeout-min) TIMEOUT_MIN="$2"; shift 2 ;;
     -h|--help) grep '^# ' "$0" | sed 's/^# //'; exit 0 ;;
     *) PR="$1"; shift ;;
@@ -68,8 +73,14 @@ new_thumbs() {
 }
 
 HEAD="$(head_sha)"
-SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"   # default cutoff (used by --no-trigger)
+SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"   # default cutoff; refined below per mode
 echo "watching $REPO#$PR @ ${HEAD:0:7} (bot=$BOT, timeout=${TIMEOUT_MIN}m)"
+
+# created_at of the most recent `@codex review` trigger comment (any author), or empty.
+latest_trigger_ts() {
+  api --paginate "repos/$REPO/issues/$PR/comments" \
+    --jq "[.[] | select(.body | contains(\"@codex review\"))] | last | .created_at" 2>/dev/null || true
+}
 
 trigger_and_confirm_ack() {
   local url cid ack ts
@@ -92,6 +103,13 @@ trigger_and_confirm_ack() {
 
 if [ "$TRIGGER" -eq 1 ]; then
   trigger_and_confirm_ack || { echo "retrying trigger once…"; trigger_and_confirm_ack || true; }
+elif [ -n "$SINCE_OVERRIDE" ]; then
+  SINCE="$SINCE_OVERRIDE"   # explicit cutoff wins
+else
+  # --no-trigger: anchor to the LAST real @codex review trigger, not "now", so a verdict
+  # posted in the gap before this invocation (or a prior watcher) is not missed.
+  rec="$(latest_trigger_ts)"
+  [ -n "$rec" ] && [ "$rec" != "null" ] && SINCE="$rec"
 fi
 echo "detecting codex activity after: $SINCE"
 
