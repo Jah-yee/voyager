@@ -121,16 +121,6 @@ ACTION_SKIPPED_STALE = "skipped_stale"
 ACTION_RESOLVED = "resolved"
 ACTION_RESOLVE_FAILED = "resolve_failed"
 
-WIRE_DECISION_ACTIONS: frozenset[str] = frozenset(
-    {
-        ACTION_VETOED,
-        ACTION_WOULD_RESOLVE,
-        ACTION_SKIPPED_STALE,
-        ACTION_RESOLVED,
-        ACTION_RESOLVE_FAILED,
-    }
-)
-
 
 @dataclass(frozen=True)
 class Candidate:
@@ -528,6 +518,7 @@ async def _dry_run_guard(ctx: _CandidateFlow) -> Decision | None:
 
 
 async def _freshness_guard(ctx: _CandidateFlow) -> Decision | None:
+    # TOCTOU guard: stale gate evidence must not resolve newly active reviewer dissent.
     live_count = await _thread_comment_count(ctx.read_gql, ctx.candidate.thread_id)
     if live_count is None or live_count != len(ctx.candidate.comments):
         return Decision(
@@ -541,6 +532,7 @@ async def _freshness_guard(ctx: _CandidateFlow) -> Decision | None:
 
 
 async def _audit_write_ahead_guard(ctx: _CandidateFlow) -> Decision | None:
+    # Write-ahead intent: if audit cannot persist, abort before mutating GitHub state.
     if ctx.audit_path is not None:
         verdict = ctx.verdict or GateVerdict(True, "ok")
         intent = Decision(ctx.repo, ctx.pr, ctx.candidate.thread_id, "resolving", verdict.reason)
@@ -712,7 +704,7 @@ def _safe_resolve(do_resolve: Any, cand: Candidate, resolve_gql: Any) -> Decisio
     try:
         return do_resolve(cand, resolve_gql)  # type: ignore[no-any-return]
     except _TOLERATED_ERRORS as exc:
-        return Decision(cand.repo, cand.pr, cand.thread_id, "resolve_failed", str(exc))
+        return Decision(cand.repo, cand.pr, cand.thread_id, ACTION_RESOLVE_FAILED, str(exc))
 
 
 def _do_resolve(cand: Candidate, resolve_gql: Any) -> Decision:
@@ -720,12 +712,18 @@ def _do_resolve(cand: Candidate, resolve_gql: Any) -> Decision:
     try:
         summary = resolve_conversations(repo=cand.repo, thread_id=cand.thread_id, gql=resolve_gql)
     except ResolveConversationError as exc:
-        return Decision(cand.repo, cand.pr, cand.thread_id, "resolve_failed", str(exc))
+        return Decision(cand.repo, cand.pr, cand.thread_id, ACTION_RESOLVE_FAILED, str(exc))
     if summary.resolved == 1:
-        return Decision(cand.repo, cand.pr, cand.thread_id, "resolved", "ok")
+        return Decision(cand.repo, cand.pr, cand.thread_id, ACTION_RESOLVED, "ok")
     # resolved != 1: distinguish "mutation fired but GitHub did not confirm" (a real
     # failure) from "thread was no longer resolvable at apply" (benign skip).
     actions = {action for _tid, action in summary.details}
     if "verify_failed" in actions:
-        return Decision(cand.repo, cand.pr, cand.thread_id, "resolve_failed", "verify_failed")
-    return Decision(cand.repo, cand.pr, cand.thread_id, "skipped_stale", "not_resolvable_at_apply")
+        return Decision(cand.repo, cand.pr, cand.thread_id, ACTION_RESOLVE_FAILED, "verify_failed")
+    return Decision(
+        cand.repo,
+        cand.pr,
+        cand.thread_id,
+        ACTION_SKIPPED_STALE,
+        "not_resolvable_at_apply",
+    )

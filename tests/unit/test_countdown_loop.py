@@ -577,12 +577,12 @@ def _guard_context(
 class TestCandidateGuardList:
     def test_wire_actions_preserved_without_fsm_indirection(self) -> None:
         assert {
-            "vetoed",
-            "would_resolve",
-            "skipped_stale",
-            "resolved",
-            "resolve_failed",
-        } == cl.WIRE_DECISION_ACTIONS
+            cl.ACTION_VETOED,
+            cl.ACTION_WOULD_RESOLVE,
+            cl.ACTION_SKIPPED_STALE,
+            cl.ACTION_RESOLVED,
+            cl.ACTION_RESOLVE_FAILED,
+        } == {"vetoed", "would_resolve", "skipped_stale", "resolved", "resolve_failed"}
         assert not hasattr(cl, "State")
         assert not hasattr(cl, "_TRANSITION_TABLE")
         assert not hasattr(cl, "_drive_candidate_to_terminal")
