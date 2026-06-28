@@ -71,18 +71,16 @@ runs one stable document to cite.
 |-----|---------------|-------|
 | `<worker-agent>` | `implementer` | Preferred GREEN-phase implementation worker for substantial changes. Defined as a personal Codex custom agent in `~/.codex/agents/implementer.toml`; see fallback below for clean checkouts. |
 | `<test-writer-worker-agent>` | `test_writer` | Preferred distinct RED-phase test writer. Defined as a personal Codex custom agent in `~/.codex/agents/test_writer.toml`; this opts Voyager into COR-1500's two-worker TDD split. See fallback below for clean checkouts. |
+| `<worker-agent-fallback>` (extension) | `codex worker subagent labelled implementer`; non-Codex fallback: `trinity-glm via droid exec` | Clean-checkout GREEN fallback when the personal `implementer` agent is unavailable. Not a COR-1622 key. |
+| `<test-writer-worker-agent-fallback>` (extension) | `codex worker subagent labelled test_writer`; non-Codex fallback: distinct `trinity-glm via droid exec` session | Clean-checkout RED fallback when the personal `test_writer` agent is unavailable. Not a COR-1622 key. |
 | `<worker-min-loc>` | `30` | Orchestrator may edit directly at or below 30 lines in one function; larger changes dispatch to the worker lane. |
 
 These two Codex values rely on Codex loading personal custom agents from
 `~/.codex/agents/` and spawning separate sub-agent sessions for the two `name`
-values. In clean Codex checkouts where those personal agents are not installed,
-the orchestrator must use two built-in `worker` subagents with explicit prompts:
-one labelled `test_writer` that may edit only tests/fixtures/test helpers for
-RED, and one labelled `implementer` that may edit production/supporting files
-for GREEN and must not weaken the RED tests. Non-Codex runtimes that cannot
-spawn two isolated worker contexts may fall back to the prior concrete worker
-lane, `trinity-glm via droid exec`, but must still keep RED and GREEN authorship
-distinct per COR-1500.
+values. When using the fallback rows, the RED-labelled worker may edit only
+tests/fixtures/test helpers, and the GREEN-labelled worker may edit production
+or supporting files but must not weaken the RED tests. All fallback dispatches
+must still keep RED and GREEN authorship distinct per COR-1500.
 
 ### R-Count Cap (COR-1617 Phase 8)
 
@@ -496,6 +494,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |
 | 2026-06-28 | Added clean-checkout fallback dispatch guidance for the personal Codex `test_writer` and `implementer` custom agents. | Codex |
 | 2026-06-28 | Changed worker dispatch to personal Codex custom agents and added a distinct test-writer worker to opt into COR-1500's two-worker TDD split. | Codex |
 | 2026-06-20 | Scoped the in-body VOY-1825 reference to Assembly source-issue fix loops without overriding the VOY-1811 R-count cap. | Codex |
