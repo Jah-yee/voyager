@@ -34,6 +34,10 @@ repeatedly during PR #224 (8+ rounds), causing hours of false waits and false si
    head commit, so it carries the **new** `commit_id` but keeps its **old** `created_at`.
    Detecting "new findings" by `commit_id == head` false-positives on stale, already-
    fixed comments — key on `created_at` instead.
+4. **Clean verdict surfaces.** Codex may report a clean review as a PR comment such as
+   `Codex Review: Didn't find any major issues` with a `Reviewed commit:` line, not only
+   as a thumbs-up reaction. A clean comment is valid only when its reviewed commit
+   matches the current PR head prefix and no newer inline findings exist.
 
 Without a documented contract these mistakes recur every session.
 
@@ -62,7 +66,11 @@ Without a documented contract these mistakes recur every session.
    raw counts. Count matches with `wc -l`, not `--jq length` (which is per-page under
    `--paginate`):
    - **Findings** = ≥1 Codex inline comment in `/pulls/{n}/comments` with `created_at > SINCE`.
-   - **Clean** = a 👍 reaction by Codex on the PR (and no new inline comments).
+   - **Clean** = either:
+     - a Codex clean summary PR comment after `SINCE` whose `Reviewed commit:` value
+       matches the current head SHA prefix, or
+     - a 👍 reaction by Codex with no PR head change since the trigger.
+     In both cases, there must be no new inline comments after `SINCE`.
 5. **Be patient; don't kill the poll early.** Codex can ack then stall. Use a generous
    timeout (20–30 min) and re-trigger after timeout rather than aborting.
 6. **Fix and re-loop.** Address findings, push, then return to Step 1 on the new head.
@@ -71,10 +79,11 @@ Without a documented contract these mistakes recur every session.
    resolves run as `iterwheel-countdown-user`, never the human identity. Outdated
    threads are resolvable by default (`VOY-1831`; `_should_resolve` does not gate on
    `isOutdated`).
-8. **Done** when Codex returns a clean 👍 on the current head with zero open findings.
-   Before accepting a clean verdict, re-check the PR head SHA: the 👍 is a PR-level
-   reaction carrying no commit, so if a new commit landed mid-wait the 👍 is for the old
-   head — re-trigger on the new head rather than green-lighting it.
+8. **Done** when Codex returns a clean verdict on the current head with zero open
+   findings. Before accepting a clean verdict, re-check the PR head SHA: a 👍 is a
+   PR-level reaction carrying no commit, and a clean summary comment is valid only for
+   the `Reviewed commit:` it names. If a new commit landed mid-wait, re-trigger on the
+   new head rather than green-lighting it.
 
 ### Reference implementation
 
@@ -92,7 +101,7 @@ port (iterwheel/voyager issue #225 — adopt once it needs tests / grows / becom
 
 ```bash
 scripts/codex-review-watch.sh 224 --timeout-min 25
-# → exit 2 + printed findings, OR exit 0 "CLEAN — codex reacted 👍"
+# → exit 2 + printed findings, OR exit 0 with a clean Codex verdict for the current head
 ```
 
 **Keep waiting without re-triggering** (a trigger already fired this round):
@@ -118,5 +127,6 @@ gh api repos/iterwheel/voyager/pulls/224/comments \
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-06-28 | Accept Codex clean summary comments with matching `Reviewed commit:` as clean verdicts, not only thumbs-up reactions. | Codex |
 | 2026-06-28 | Initial version — codifies the PR #224 Codex-loop lessons (trigger dedupe, list-endpoint lag, comment re-anchoring) | Claude Code |
 | 2026-06-28 | Corrected root cause: pagination (30/page oldest-first, no auto-paginate) — the earlier "list-endpoint lag" framing was wrong; the 4 apparent "stalls" were missed later pages | Claude Code |
