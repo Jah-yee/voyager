@@ -4,7 +4,7 @@
 **Last updated:** 2026-06-28
 **Last reviewed:** 2026-06-20
 **Status:** Active
-**Related:** COR-1500 (TDD Development Workflow), COR-1617 (Multi-Agent Workflow Loop), COR-1618 (Out-of-Band Consent Auto-Pick), COR-1619 (Orchestrator vs Worker Dispatch), COR-1622 (Multi-Agent Loop Project Configuration), VOY-1805 (GitHub Bot Accounts), VOY-1807 (GitHub App Registry), VOY-1810 (Release Process), VOY-1825 (Loop-Convergence Policy)
+**Related:** COR-1500 (TDD Development Workflow), COR-1617 (Multi-Agent Workflow Loop), COR-1618 (Out-of-Band Consent Auto-Pick), COR-1619 (Orchestrator vs Worker Dispatch), COR-1622 (Multi-Agent Loop Project Configuration), VOY-1805 (GitHub Bot Accounts), VOY-1807 (GitHub App Registry), VOY-1810 (Release Process), VOY-1825 (Loop-Convergence Policy), VOY-1833 (Voyager Multi-Agent Loop Operation)
 
 ---
 
@@ -14,6 +14,10 @@ Voyager's project-layer instantiation of the COR-1622 parameter schema for the
 COR-1617 Multi-Agent Workflow Loop. This REF supplies the concrete repository,
 identity, review-panel, worker, bot, and runtime values that an orchestrator must
 use when running the loop for `iterwheel/voyager`.
+
+The procedural entry point for running the loop is `VOY-1833`. Operators may
+still type `follow VOY-1811`; agents should route that phrase to `VOY-1833` and
+load this REF for the concrete parameter bindings.
 
 This document is forward-looking. Voyager has the Blueprint, Stack, and Clearance
 automation stack installed, but the full COR-1617 loop has not been exercised in
@@ -204,7 +208,7 @@ The chain forms a durable self-bootstrapping loop with no external scheduler.
 | **Restart-aware** | `task_create` persists in TaskManager; chain resumes after TUI restart. |
 | **No lock files** | TaskManager serializes durable tasks; no concurrency guard needed. |
 | **No env sourcing** | Agent inherits the TUI session environment (API keys, gh auth, cwd). |
-| **No shell scripting** | All loop logic lives in VOY-1811; no wrapper script required. |
+| **No shell scripting** | Loop procedure lives in VOY-1833 and bindings live in VOY-1811; no wrapper script required. |
 | **Cross-platform** | Works on any OS where DeepSeek TUI runs. |
 
 ### Limitations
@@ -217,10 +221,11 @@ The chain forms a durable self-bootstrapping loop with no external scheduler.
 - **Bootstrap requires operator.** The first task in the chain must be enqueued
   manually (e.g. `follow VOY-1811 once`). After that, the chain self-sustains.
 
-## Invocation
+## Invocation Binding
 
 Voyager-specific shorthand for starting the COR-1617 loop with this REF's
-parameters. The three variants are mutually exclusive.
+parameters. The three variants are mutually exclusive. See `VOY-1833` for the
+operator procedure that executes these bindings.
 
 Only `follow VOY-1811 for #N` qualifies for COR-1618's Normative Bypass Clause
 because it names a target issue in live chat. The other variants name only this
@@ -494,6 +499,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-06-28 | Added VOY-1833 as the procedural SOP for executing this REF's multi-agent loop bindings. | Codex |
 | 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |
 | 2026-06-28 | Added clean-checkout fallback dispatch guidance for the personal Codex `test_writer` and `implementer` custom agents. | Codex |
 | 2026-06-28 | Changed worker dispatch to personal Codex custom agents and added a distinct test-writer worker to opt into COR-1500's two-worker TDD split. | Codex |

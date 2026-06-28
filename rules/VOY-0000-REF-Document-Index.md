@@ -43,6 +43,7 @@
 | 1830 | CHG | Remove Countdown Dedicated PAT and User-Token Canary Machinery (Proposed) |
 | 1831 | PRP | Countdown Multi-Repo Resolve-Loop on Machine-Account Resolver (Draft) |
 | 1832 | SOP | Codex Review Loop |
+| 1833 | SOP | Voyager Multi-Agent Loop Operation |
 
 ---
 
@@ -65,3 +66,4 @@
 | 2026-06-28 | Added VOY-1831 PRP Countdown Multi-Repo Resolve-Loop (number reused; prior unmerged 1831 was retracted per VOY-1830) | Claude Code |
 | 2026-06-28 | Added VOY-1832 SOP Codex Review Loop | Claude Code |
 | 2026-06-28 | Reclassified VOY-1827 from unsupported HYP to REF for Alfred validation compatibility | Codex |
+| 2026-06-28 | Added VOY-1833 SOP Voyager Multi-Agent Loop Operation | Codex |
