@@ -1,10 +1,10 @@
 # REF-1811: Multi-Agent Loop Configuration
 
 **Applies to:** VOY project (`iterwheel/voyager`)
-**Last updated:** 2026-06-20
+**Last updated:** 2026-06-28
 **Last reviewed:** 2026-06-20
 **Status:** Active
-**Related:** COR-1617 (Multi-Agent Workflow Loop), COR-1618 (Out-of-Band Consent Auto-Pick), COR-1622 (Multi-Agent Loop Project Configuration), VOY-1805 (GitHub Bot Accounts), VOY-1807 (GitHub App Registry), VOY-1810 (Release Process), VOY-1825 (Loop-Convergence Policy)
+**Related:** COR-1500 (TDD Development Workflow), COR-1617 (Multi-Agent Workflow Loop), COR-1618 (Out-of-Band Consent Auto-Pick), COR-1619 (Orchestrator vs Worker Dispatch), COR-1622 (Multi-Agent Loop Project Configuration), VOY-1805 (GitHub Bot Accounts), VOY-1807 (GitHub App Registry), VOY-1810 (Release Process), VOY-1825 (Loop-Convergence Policy)
 
 ---
 
@@ -69,8 +69,15 @@ runs one stable document to cite.
 
 | Key | Voyager value | Notes |
 |-----|---------------|-------|
-| `<worker-agent>` | `trinity-glm via droid exec` | Default implementation worker for substantial changes. |
+| `<worker-agent>` | `implementer` | Default GREEN-phase implementation worker for substantial changes. Defined as a personal Codex custom agent in `~/.codex/agents/implementer.toml`. |
+| `<test-writer-worker-agent>` | `test_writer` | Distinct RED-phase test writer. Defined as a personal Codex custom agent in `~/.codex/agents/test_writer.toml`; this opts Voyager into COR-1500's two-worker TDD split. |
 | `<worker-min-loc>` | `30` | Orchestrator may edit directly at or below 30 lines in one function; larger changes dispatch to the worker lane. |
+
+These two Codex values rely on Codex loading personal custom agents from
+`~/.codex/agents/` and spawning separate sub-agent sessions for the two `name`
+values. If a runtime cannot guarantee separate context, it must dispatch
+different model identifiers or pause before implementation rather than claiming
+the two-worker split is active.
 
 ### R-Count Cap (COR-1617 Phase 8)
 
@@ -274,7 +281,7 @@ under this REF.
 | 2 — Branch & identity | ❌ aspirational | COR-1505-style hygiene is practiced manually, but not as a VOY-1811 loop phase. |
 | 3 — Plan | ❌ aspirational | Voyager issues may carry plans, but no loop-generated CHG sizing phase is active. |
 | 4 — Plan-review | ❌ aspirational | Trinity reviews are used ad hoc; not yet a required pre-implementation loop gate. |
-| 5 — Dispatch | ❌ aspirational | GLM/Droid worker dispatch is available but not yet the default decision-tree path. |
+| 5 — Dispatch | ❌ aspirational | Codex-managed test-writer and implementer subagent dispatch is configured but not yet run as the default decision-tree path. |
 | 6 — Verify implementation | ❌ aspirational | Local validation exists per PR, but not as an automated COR-1617 phase. |
 | 7 — PR open | ❌ aspirational | PRs are opened manually with `gh`, not by an autonomous loop. |
 | 8 — Iterate | ❌ aspirational | CI, Codex, and Clearance loops run on PRs, but no VOY-1811-controlled R-loop exists. |
@@ -484,6 +491,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-06-28 | Changed worker dispatch to personal Codex custom agents and added a distinct test-writer worker to opt into COR-1500's two-worker TDD split. | Codex |
 | 2026-06-20 | Scoped the in-body VOY-1825 reference to Assembly source-issue fix loops without overriding the VOY-1811 R-count cap. | Codex |
 | 2026-06-20 | Added VOY-1825 Loop-Convergence Policy as the convergence decision policy reference. | Codex |
 | 2026-05-23 | Added §Autonomous Operation: makes the loop-mode contract explicit, enumerates valid operator-pause points, and forbids "should I keep going?" prompts during Phase 8 polling. Session-independent guarantee so new sessions inherit the default. Surfaced by operator feedback during the #69 Phase 8 run. | Claude (via VOY-1811 #69) |
