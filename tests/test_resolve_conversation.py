@@ -245,6 +245,20 @@ class TestAllowlist:
         monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
         assert "some-owner/private-repo" not in _RAW_IDENTIFIER_REPOS
 
+    def test_allowlist_miss_error_never_enumerates_entries(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "secret-owner/secret-repo")
+        with pytest.raises(ResolveConversationError, match="allowlist") as excinfo:
+            resolve_conversations(repo="other/unknown", pr=1, gql=lambda q, v: {})
+        assert "secret-owner" not in str(excinfo.value)
+        assert "iterwheel/voyager" not in str(excinfo.value)
+
+    def test_thread_ownership_check_is_case_insensitive(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
+        node = _node_in_repo(_thread_node(id="PRRT_S", is_resolved=True), "Some-Owner/Private-Repo")
+        gql = _SmartGql([_node_response(node)])
+        result = resolve_conversations(repo="some-owner/private-repo", thread_id="PRRT_S", gql=gql)
+        assert isinstance(result, ResolveSummary)
+
     def test_resolve_conversations_accepts_env_repo(self, monkeypatch) -> None:
         monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
         gql = _SmartGql([_pr_response([])])
