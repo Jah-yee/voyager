@@ -32,12 +32,12 @@ from typing import Any, Protocol
 import httpx
 
 from voyager.core.resolve_conversation import (
-    RESOLVE_ALLOWED_REPOS,
     ResolveConversationError,
     ThreadState,
     _assert_machine_identity,
     _parse_thread_node,
     _should_resolve,
+    resolve_allowed_repos,
     resolve_conversations,
 )
 
@@ -280,13 +280,17 @@ def single_instance_lock(path: Path = DEFAULT_LOCK_PATH) -> Iterator[None]:
 def gate_repos(
     requested: Sequence[str],
     *,
-    ceiling: frozenset[str] = RESOLVE_ALLOWED_REPOS,
+    ceiling: frozenset[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Split *requested* into ``(allowed, skipped)`` by the allowlist ceiling.
 
     Order preserved, duplicates collapsed. A repo outside the ceiling is rejected
     even if requested — the resolver allowlist is the only authorization boundary.
+    ``ceiling=None`` resolves the effective allowlist (built-ins + operator-local
+    env extras) at call time.
     """
+    if ceiling is None:
+        ceiling = resolve_allowed_repos()
     allowed: list[str] = []
     skipped: list[str] = []
     seen: set[str] = set()
@@ -579,7 +583,7 @@ def run_resolve_loop(
     gate: ShouldResolveGate,
     read_gql: ReadGqlFn,
     resolve_gql: Any,
-    ceiling: frozenset[str] = RESOLVE_ALLOWED_REPOS,
+    ceiling: frozenset[str] | None = None,
     max_resolves: int = DEFAULT_MAX_RESOLVES,
     dry_run: bool = False,
     timestamp: str | None = None,
