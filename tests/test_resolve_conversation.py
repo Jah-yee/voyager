@@ -230,6 +230,12 @@ class TestAllowlist:
         effective = resolve_allowed_repos()
         assert {"a-owner/r1", "b-owner/r2", "c-owner/r3"} < effective
 
+    def test_env_entries_normalized_to_lowercase(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "Some-Owner/Private-Repo")
+        effective = resolve_allowed_repos()
+        assert "some-owner/private-repo" in effective
+        assert "Some-Owner/Private-Repo" not in effective
+
     def test_env_malformed_entry_fails_closed(self, monkeypatch) -> None:
         monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "not-a-repo-path")
         with pytest.raises(ResolveConversationError):

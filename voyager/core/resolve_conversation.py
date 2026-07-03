@@ -59,7 +59,9 @@ def resolve_allowed_repos() -> frozenset[str]:
             raise ResolveConversationError(
                 f"{_EXTRA_REPOS_ENV} entry {token!r} is not a valid owner/repo path"
             )
-        extras.add(token)
+        # GitHub repo paths are case-insensitive; load_repo_list() lowercases
+        # requested entries, so extras must normalize the same way to match.
+        extras.add(token.lower())
     return RESOLVE_ALLOWED_REPOS | frozenset(extras)
 
 
