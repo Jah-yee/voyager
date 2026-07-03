@@ -98,17 +98,24 @@ def resolve_conversation(
     The only GraphQL mutation issued is resolveReviewThread.
     """
     from voyager.core.resolve_conversation import (
-        RESOLVE_ALLOWED_REPOS,
         ResolveConversationError,
         make_github_gql,
         read_machine_token,
+        resolve_allowed_repos,
         resolve_conversations,
     )
 
     # Gate ALL usage errors (allowlist + target selection) BEFORE reading the
     # machine token: a bad invocation must never touch the credential store, which
     # would otherwise mask a usage error as an auth failure on gh-less hosts.
-    if repo not in RESOLVE_ALLOWED_REPOS:
+    try:
+        allowed = resolve_allowed_repos()
+    except ResolveConversationError as exc:
+        # Malformed VOYAGER_RESOLVE_EXTRA_REPOS is an expected fail-closed
+        # configuration path — report it like any usage error, no traceback.
+        typer.echo(f"ERROR: {exc}")
+        raise typer.Exit(code=1) from exc
+    if repo not in allowed:
         typer.echo(f"ERROR: repo {repo!r} is not in the resolve allowlist")
         raise typer.Exit(code=1)
     pr_val = pr or None

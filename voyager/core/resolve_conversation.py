@@ -21,6 +21,7 @@ Hard constraints (enforced by construction):
 from __future__ import annotations
 
 import os
+import re
 import subprocess  # nosec B404
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,6 +37,37 @@ MACHINE_ACCOUNT: str = "iterwheel-countdown-bot"
 RESOLVE_ALLOWED_REPOS: frozenset[str] = frozenset(
     {"iterwheel/voyager", "iterwheel/voyager-sandbox"}
 )
+_EXTRA_REPOS_ENV = "VOYAGER_RESOLVE_EXTRA_REPOS"
+_REPO_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$")
+
+
+def resolve_allowed_repos() -> frozenset[str]:
+    """Effective allowlist: built-in repos plus operator-local extras.
+
+    ``VOYAGER_RESOLVE_EXTRA_REPOS`` (comma- and/or whitespace-separated
+    ``owner/repo`` entries) lets an operator authorize additional repos from
+    their local environment without naming them in this source tree. Parsing is
+    FAIL-CLOSED: any malformed entry raises instead of being skipped, so a typo
+    cannot silently authorize or drop a repo. Extra repos never join
+    ``_RAW_IDENTIFIER_REPOS`` — their public output stays masked — and the
+    fixed-identity, single-mutation constraints are unchanged.
+    """
+    raw = os.environ.get(_EXTRA_REPOS_ENV, "")
+    extras: set[str] = set()
+    for idx, token in enumerate(raw.replace(",", " ").split(), start=1):
+        if not _REPO_PATTERN.match(token):
+            # Do not echo the token: a malformed entry is typically a typo'd
+            # PRIVATE repo name, and countdown commands print this message
+            # verbatim into logs. Report only the variable name + position.
+            raise ResolveConversationError(
+                f"{_EXTRA_REPOS_ENV} entry #{idx} is not a valid owner/repo path"
+            )
+        # GitHub repo paths are case-insensitive; load_repo_list() lowercases
+        # requested entries, so extras must normalize the same way to match.
+        extras.add(token.lower())
+    return RESOLVE_ALLOWED_REPOS | frozenset(extras)
+
+
 _RAW_IDENTIFIER_REPOS: frozenset[str] = frozenset({"iterwheel/voyager-sandbox"})
 
 GraphQLFn = Callable[[str, dict[str, Any]], dict[str, Any]]
@@ -303,10 +335,10 @@ def resolve_conversations(
     Raises ResolveConversationError for allowlist violations, argument errors,
     auth failures, and GraphQL errors.
     """
-    if repo not in RESOLVE_ALLOWED_REPOS:
-        raise ResolveConversationError(
-            f"Repo {repo!r} is not in the allowlist ({sorted(RESOLVE_ALLOWED_REPOS)})"
-        )
+    # Never enumerate the allowlist in errors: with operator-local env extras
+    # it can contain private repo names, and the CLI prints this message verbatim.
+    if repo not in resolve_allowed_repos():
+        raise ResolveConversationError(f"Repo {repo!r} is not in the resolve allowlist")
     if (pr is None) == (thread_id is None):
         raise ResolveConversationError(
             "exactly one of pr or thread_id must be provided, not both or neither"
@@ -336,8 +368,10 @@ def resolve_conversations(
                 )
             # Node IDs are global: a thread from another repo would otherwise pass
             # the allowlist on the user-supplied `repo` alone. Verify it belongs here.
+            # GitHub's nameWithOwner carries canonical casing; repo is normalized
+            # lowercase (load_repo_list / env extras). Compare case-insensitively.
             owning = _node_repo(node)
-            if owning is not None and owning != repo:
+            if owning is not None and owning.lower() != repo.lower():
                 raise ResolveConversationError(
                     f"thread does not belong to {repo!r} (allowlist bypass blocked)"
                 )

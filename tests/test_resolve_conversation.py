@@ -11,6 +11,7 @@ import pytest
 
 from voyager.core.resolve_conversation import (
     _NODE_QUERY,
+    _RAW_IDENTIFIER_REPOS,
     _RESOLVE_MUTATION,
     MACHINE_ACCOUNT,
     RESOLVE_ALLOWED_REPOS,
@@ -20,6 +21,7 @@ from voyager.core.resolve_conversation import (
     _should_resolve,
     make_github_gql,
     read_machine_token,
+    resolve_allowed_repos,
     resolve_conversations,
 )
 
@@ -212,6 +214,67 @@ class TestAllowlist:
 
     def test_allowlist_has_exactly_two_entries(self) -> None:
         assert len(RESOLVE_ALLOWED_REPOS) == 2
+
+    def test_effective_allowlist_defaults_to_builtin(self, monkeypatch) -> None:
+        monkeypatch.delenv("VOYAGER_RESOLVE_EXTRA_REPOS", raising=False)
+        assert resolve_allowed_repos() == RESOLVE_ALLOWED_REPOS
+
+    def test_env_extends_effective_allowlist(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
+        effective = resolve_allowed_repos()
+        assert "some-owner/private-repo" in effective
+        assert effective > RESOLVE_ALLOWED_REPOS
+
+    def test_env_accepts_comma_and_whitespace_separators(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", " a-owner/r1, b-owner/r2  c-owner/r3 ")
+        effective = resolve_allowed_repos()
+        assert {"a-owner/r1", "b-owner/r2", "c-owner/r3"} < effective
+
+    def test_env_entries_normalized_to_lowercase(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "Some-Owner/Private-Repo")
+        effective = resolve_allowed_repos()
+        assert "some-owner/private-repo" in effective
+        assert "Some-Owner/Private-Repo" not in effective
+
+    def test_env_malformed_entry_fails_closed(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "not-a-repo-path")
+        with pytest.raises(ResolveConversationError):
+            resolve_allowed_repos()
+
+    def test_env_malformed_error_never_echoes_the_token(self, monkeypatch) -> None:
+        monkeypatch.setenv(
+            "VOYAGER_RESOLVE_EXTRA_REPOS", "secret-owner/private-repo/, ok-owner/ok-repo"
+        )
+        with pytest.raises(ResolveConversationError) as excinfo:
+            resolve_allowed_repos()
+        msg = str(excinfo.value)
+        assert "secret-owner" not in msg
+        assert "private-repo" not in msg
+        assert "entry #1" in msg
+
+    def test_env_repo_never_gains_raw_identifiers(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
+        assert "some-owner/private-repo" not in _RAW_IDENTIFIER_REPOS
+
+    def test_allowlist_miss_error_never_enumerates_entries(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "secret-owner/secret-repo")
+        with pytest.raises(ResolveConversationError, match="allowlist") as excinfo:
+            resolve_conversations(repo="other/unknown", pr=1, gql=lambda q, v: {})
+        assert "secret-owner" not in str(excinfo.value)
+        assert "iterwheel/voyager" not in str(excinfo.value)
+
+    def test_thread_ownership_check_is_case_insensitive(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
+        node = _node_in_repo(_thread_node(id="PRRT_S", is_resolved=True), "Some-Owner/Private-Repo")
+        gql = _SmartGql([_node_response(node)])
+        result = resolve_conversations(repo="some-owner/private-repo", thread_id="PRRT_S", gql=gql)
+        assert isinstance(result, ResolveSummary)
+
+    def test_resolve_conversations_accepts_env_repo(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
+        gql = _SmartGql([_pr_response([])])
+        result = resolve_conversations(repo="some-owner/private-repo", pr=1, gql=gql)
+        assert isinstance(result, ResolveSummary)
 
     def test_unknown_repo_raises_resolve_error(self) -> None:
         with pytest.raises(ResolveConversationError, match="allowlist"):

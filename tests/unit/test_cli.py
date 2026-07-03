@@ -65,3 +65,17 @@ def test_vyg_bridge_serve_invokes_uvicorn_with_defaults(monkeypatch: pytest.Monk
     assert kwargs["host"] == "127.0.0.1"
     assert kwargs["port"] == 8787
     assert kwargs["log_level"] == "info"
+
+
+def test_countdown_resolve_conversation_malformed_env_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed VOYAGER_RESOLVE_EXTRA_REPOS must produce ERROR + exit 1, not a traceback."""
+    monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "not-a-repo-path")
+    result = runner.invoke(
+        app,
+        ["countdown", "resolve-conversation", "--repo", "iterwheel/voyager", "--pr", "1"],
+    )
+    assert result.exit_code == 1
+    assert "ERROR:" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
