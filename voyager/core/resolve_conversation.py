@@ -54,10 +54,13 @@ def resolve_allowed_repos() -> frozenset[str]:
     """
     raw = os.environ.get(_EXTRA_REPOS_ENV, "")
     extras: set[str] = set()
-    for token in raw.replace(",", " ").split():
+    for idx, token in enumerate(raw.replace(",", " ").split(), start=1):
         if not _REPO_PATTERN.match(token):
+            # Do not echo the token: a malformed entry is typically a typo'd
+            # PRIVATE repo name, and countdown commands print this message
+            # verbatim into logs. Report only the variable name + position.
             raise ResolveConversationError(
-                f"{_EXTRA_REPOS_ENV} entry {token!r} is not a valid owner/repo path"
+                f"{_EXTRA_REPOS_ENV} entry #{idx} is not a valid owner/repo path"
             )
         # GitHub repo paths are case-insensitive; load_repo_list() lowercases
         # requested entries, so extras must normalize the same way to match.

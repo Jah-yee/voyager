@@ -241,6 +241,17 @@ class TestAllowlist:
         with pytest.raises(ResolveConversationError):
             resolve_allowed_repos()
 
+    def test_env_malformed_error_never_echoes_the_token(self, monkeypatch) -> None:
+        monkeypatch.setenv(
+            "VOYAGER_RESOLVE_EXTRA_REPOS", "secret-owner/private-repo/, ok-owner/ok-repo"
+        )
+        with pytest.raises(ResolveConversationError) as excinfo:
+            resolve_allowed_repos()
+        msg = str(excinfo.value)
+        assert "secret-owner" not in msg
+        assert "private-repo" not in msg
+        assert "entry #1" in msg
+
     def test_env_repo_never_gains_raw_identifiers(self, monkeypatch) -> None:
         monkeypatch.setenv("VOYAGER_RESOLVE_EXTRA_REPOS", "some-owner/private-repo")
         assert "some-owner/private-repo" not in _RAW_IDENTIFIER_REPOS
