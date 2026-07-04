@@ -1,0 +1,75 @@
+#!/bin/zsh
+# Adaptive scheduler for `vyg countdown resolve-loop` (issue #279).
+#
+# Self-scheduling daemon loop: after each run, sleep COUNTDOWN_FAST_INTERVAL
+# when the run saw candidate threads (decision_count > 0), otherwise
+# COUNTDOWN_SLOW_INTERVAL. A consecutive fast-streak cap bounds LLM-gate cost:
+# the loop has no cross-run thread dedup, so a permanently-vetoed thread would
+# otherwise keep the fast lane (and one DeepSeek gate call per candidate per
+# run) open forever.
+#
+# Deployment contract (VOY-1835):
+#   - Template lives in the repo; copy to /Users/frank/.voyager/bin/ and
+#     chmod 755 before use. Do not run from a development checkout.
+#   - Sourced env file and repos allowlist are machine-local (chmod 600).
+#   - Run under launchd with KeepAlive (see the plist template); the script
+#     never exits on its own, so a disabled loop SLEEPS instead of exiting —
+#     exiting under KeepAlive would crash-loop through launchd throttling.
+#   - Single-instance safety comes from the loop's own lock file; a manual
+#     `vyg countdown resolve-loop` run alongside this daemon is safe (one of
+#     the two exits with AlreadyRunningError).
+
+set -u
+
+ENV_FILE="/Users/frank/.voyager/countdown-resolve-loop.env"
+REPOS_FILE="/Users/frank/.voyager/countdown-resolve-loop.repos"
+VYG="/Users/frank/.voyager/.venv/bin/vyg"
+
+fast_streak=0
+
+while true; do
+  # Re-source every iteration so env edits apply without a launchd reload.
+  set -a
+  source "$ENV_FILE"
+  set +a
+
+  slow="${COUNTDOWN_SLOW_INTERVAL:-3600}"
+  fast="${COUNTDOWN_FAST_INTERVAL:-300}"
+  streak_max="${COUNTDOWN_FAST_STREAK_MAX:-6}"
+
+  if [[ "${COUNTDOWN_RESOLVE_LOOP_ENABLED:-false}" != "true" ]]; then
+    echo "COUNTDOWN_RESOLVE_LOOP_ENABLED is not true; sleeping ${slow}s"
+    fast_streak=0
+    sleep "$slow"
+    continue
+  fi
+
+  out=$("$VYG" countdown resolve-loop \
+        --repos "$REPOS_FILE" \
+        --max-resolves "${COUNTDOWN_MAX_RESOLVES:-20}" \
+        --json) || out='{}'
+  # Pass the summary through so launchd's log captures the same JSON lines
+  # operators already grep (VOY-1835 §logs).
+  echo "$out"
+
+  decisions=$(printf '%s' "$out" | python3 -c \
+    'import json,sys
+try:
+    print(int(json.load(sys.stdin).get("decision_count", 0)))
+except Exception:
+    print(0)' 2>/dev/null || echo 0)
+
+  if [[ "$decisions" -gt 0 && "$fast_streak" -lt "$streak_max" ]]; then
+    fast_streak=$((fast_streak + 1))
+    echo "adaptive: ${decisions} decision(s); fast recheck in ${fast}s (streak ${fast_streak}/${streak_max})"
+    sleep "$fast"
+  else
+    if [[ "$decisions" -gt 0 ]]; then
+      echo "adaptive: fast-streak cap reached; backing off to ${slow}s"
+    else
+      echo "adaptive: idle; next check in ${slow}s"
+    fi
+    fast_streak=0
+    sleep "$slow"
+  fi
+done

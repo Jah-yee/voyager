@@ -1,7 +1,7 @@
 # SOP-1835: Countdown Resolve Loop Launchd Deployment
 
 **Applies to:** VOY project
-**Last updated:** 2026-06-28
+**Last updated:** 2026-07-04
 **Last reviewed:** 2026-06-28
 **Status:** Active
 **Related:** VOY-1814, VOY-1820, VOY-1831, VOY-1832, issue #229, issue #226
@@ -50,15 +50,18 @@ is backed by the loop's JSONL audit trail.
 
 | Path | Purpose |
 |------|---------|
-| `deploy/launchd/com.iterwheel.voyager.countdown-resolve-loop.plist` | Repo-safe scheduled launchd template. |
+| `deploy/launchd/com.iterwheel.voyager.countdown-resolve-loop.plist` | Repo-safe launchd template. `KeepAlive` daemon supervising the adaptive wrapper (issue #279). |
+| `deploy/wukong/countdown-resolve-loop-adaptive.sh` | Adaptive scheduler wrapper: runs the loop, then sleeps `COUNTDOWN_FAST_INTERVAL` (default 300 s) while runs see candidate threads or `COUNTDOWN_SLOW_INTERVAL` (default 3600 s) when idle, with a `COUNTDOWN_FAST_STREAK_MAX` (default 6) consecutive-fast cap bounding LLM-gate cost. Copy it locally before use. |
 | `deploy/wukong/countdown-resolve-loop.env.example` | Non-secret env-file template. Copy it locally before use. |
 | `deploy/wukong/countdown-resolve-loop.repos.example` | Non-secret repo allowlist template. Copy it locally before use. |
 | `scripts/build_wheel.sh` | Builds the deployable Voyager wheel with build commit metadata. |
 
-The plist sources `/Users/frank/.voyager/countdown-resolve-loop.env` through
-`/bin/zsh -lc` because launchd does not load dotenv files itself. The checked-in
-template also gates execution on `COUNTDOWN_RESOLVE_LOOP_ENABLED=true`, so merely
-installing the LaunchAgent does not perform live resolves.
+The wrapper sources `/Users/frank/.voyager/countdown-resolve-loop.env` on every
+iteration because launchd does not load dotenv files itself (and re-sourcing
+means env edits apply without a launchd reload). The wrapper gates execution on
+`COUNTDOWN_RESOLVE_LOOP_ENABLED=true` — when disabled it sleeps instead of
+exiting, because exiting under `KeepAlive` would crash-loop through launchd
+throttling. Merely installing the LaunchAgent does not perform live resolves.
 
 ### 2. Prepare Private Wukong Files
 
@@ -66,7 +69,8 @@ These files are machine-local and must not be committed:
 
 | Path | Contents | Required permissions |
 |------|----------|----------------------|
-| `/Users/frank/.voyager/countdown-resolve-loop.env` | `COUNTDOWN_RESOLVE_LOOP_ENABLED`, `COUNTDOWN_MAX_RESOLVES`, `VOYAGER_DEEPSEEK_API_KEY`, and non-secret runtime knobs. | `600` |
+| `/Users/frank/.voyager/countdown-resolve-loop.env` | `COUNTDOWN_RESOLVE_LOOP_ENABLED`, `COUNTDOWN_MAX_RESOLVES`, `VOYAGER_DEEPSEEK_API_KEY`, adaptive-interval knobs, and non-secret runtime knobs. | `600` |
+| `/Users/frank/.voyager/bin/countdown-resolve-loop-adaptive.sh` | Installed copy of the adaptive wrapper (from `deploy/wukong/`). | `755` |
 | `/Users/frank/.voyager/countdown-resolve-loop.repos` | OWNER/REPO allowlist consumed by `vyg countdown resolve-loop --repos`. | `600` |
 | `/Users/frank/.voyager/countdown-resolve-loop.audit.jsonl` | Redacted append-only resolve-loop audit trail written by `countdown_loop.py`. | file `600`, parent directory `700` preferred |
 | `/Users/frank/.voyager/countdown-resolve-loop.lock` | Single-instance lock file created by the loop. | parent directory `700` preferred |
@@ -127,6 +131,15 @@ else
   install -m 600 /Users/frank/.voyager/countdown-resolve-loop.repos \
     "/Users/frank/.voyager/countdown-resolve-loop.repos.backup.$(date -u +%Y%m%dT%H%M%SZ)"
 fi
+```
+
+Install the adaptive wrapper (always overwrite — it is code, not operator
+state; local edits belong in the repo template):
+
+```bash
+install -d -m 700 /Users/frank/.voyager/bin
+install -m 755 deploy/wukong/countdown-resolve-loop-adaptive.sh \
+  /Users/frank/.voyager/bin/countdown-resolve-loop-adaptive.sh
 ```
 
 Edit the private env file locally. Keep `COUNTDOWN_RESOLVE_LOOP_ENABLED=false`
@@ -217,8 +230,12 @@ launchctl enable gui/$(id -u)/com.iterwheel.voyager.countdown-resolve-loop
 launchctl kickstart -kp gui/$(id -u)/com.iterwheel.voyager.countdown-resolve-loop
 ```
 
-The checked-in plist runs at load and then every 3600 seconds. The loop's own
-flock prevents overlapping executions.
+The checked-in plist starts the adaptive wrapper at load and keeps it alive as
+a daemon. The wrapper owns the cadence: `COUNTDOWN_SLOW_INTERVAL` (default
+3600 s) between runs while idle, dropping to `COUNTDOWN_FAST_INTERVAL` (default
+300 s) while runs see candidate threads, for at most
+`COUNTDOWN_FAST_STREAK_MAX` (default 6) consecutive fast rechecks. The loop's
+own flock prevents overlapping executions, including against manual runs.
 
 ### 8. Operate the Scheduled Job
 
@@ -274,7 +291,9 @@ launchctl kickstart -kp gui/$(id -u)/com.iterwheel.voyager.countdown-resolve-loo
 
 If a safety concern is repo-specific, remove that repository from
 `/Users/frank/.voyager/countdown-resolve-loop.repos` or set
-`COUNTDOWN_RESOLVE_LOOP_ENABLED=false`, then kickstart the LaunchAgent.
+`COUNTDOWN_RESOLVE_LOOP_ENABLED=false`. The wrapper re-sources the env file
+every iteration, so the kill switch takes effect at the next wake without a
+launchd reload; `launchctl kickstart -kp` forces it immediately.
 
 ## Verification
 
@@ -308,4 +327,5 @@ Before declaring the scheduled deployment complete, record:
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-07-04 | Issue #279: switched the launchd job to a KeepAlive daemon running the adaptive wrapper (`deploy/wukong/countdown-resolve-loop-adaptive.sh`) — fast rechecks (default 300 s, capped at 6 consecutive) while runs see candidate threads, slow cadence (default 3600 s) when idle; wrapper install step, private-file row, operate/rollback notes updated. | Claude Code |
 | 2026-06-28 | Initial Countdown resolve-loop launchd deployment SOP for issue #229 | Codex |
