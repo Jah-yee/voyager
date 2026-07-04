@@ -29,8 +29,23 @@ fast_streak=0
 
 while true; do
   # Re-source every iteration so env edits apply without a launchd reload.
+  # Fail closed on reload: clear the managed variables first, so a vanished,
+  # unreadable, or truncated env file (or a deleted line) cannot leave a stale
+  # kill switch, credential, or interval from a prior iteration — the daemon
+  # keeps one long-lived shell, so leftovers would otherwise survive until a
+  # launchd restart.
+  unset COUNTDOWN_RESOLVE_LOOP_ENABLED COUNTDOWN_MAX_RESOLVES \
+        COUNTDOWN_FAST_INTERVAL COUNTDOWN_SLOW_INTERVAL \
+        COUNTDOWN_FAST_STREAK_MAX VOYAGER_DEEPSEEK_API_KEY \
+        VOYAGER_RESOLVE_EXTRA_REPOS
   set -a
-  source "$ENV_FILE"
+  if ! source "$ENV_FILE" 2>/dev/null; then
+    set +a
+    echo "adaptive: cannot source ${ENV_FILE}; failing closed, sleeping ${COUNTDOWN_SLOW_INTERVAL:-3600}s"
+    fast_streak=0
+    sleep "${COUNTDOWN_SLOW_INTERVAL:-3600}"
+    continue
+  fi
   set +a
 
   slow="${COUNTDOWN_SLOW_INTERVAL:-3600}"
