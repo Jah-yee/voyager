@@ -47,10 +47,21 @@ while true; do
   out=$("$VYG" countdown resolve-loop \
         --repos "$REPOS_FILE" \
         --max-resolves "${COUNTDOWN_MAX_RESOLVES:-20}" \
-        --json) || out='{}'
-  # Pass the summary through so launchd's log captures the same JSON lines
-  # operators already grep (VOY-1835 §logs).
+        --json)
+  rc=$?
+  # Pass the output through so launchd's log captures the same JSON lines
+  # operators already grep (VOY-1835 §logs) — and, on failure, the CLI's
+  # diagnostic (vyg reports errors via typer.echo on stdout). Never swallow it.
   echo "$out"
+
+  if [[ "$rc" -ne 0 ]]; then
+    # Real failures (auth, config, AlreadyRunningError) must look like
+    # failures, not like quiet runs; take the slow lane and say why.
+    echo "adaptive: vyg exited rc=${rc}; sleeping ${slow}s before retry"
+    fast_streak=0
+    sleep "$slow"
+    continue
+  fi
 
   decisions=$(printf '%s' "$out" | python3 -c \
     'import json,sys
