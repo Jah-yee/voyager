@@ -78,9 +78,12 @@ signal is the mutual-exclusion marker that prevents that collision.
 unexpired claim by another session as **taken** — skip it and move to the next
 candidate. The check has two parts:
 
-1. Scan the issue comments (`gh issue view <n> --json comments`) and collect
-   **every** `voy-claim` marker without a matching **valid**
-   `voy-claim-release` (author must satisfy `<claim-release>`'s author rule).
+1. Scan the issue comments (`gh issue view <n> --repo <repo> --json comments`
+   — the explicit `--repo` matters: from a fork checkout an unqualified
+   `gh issue view` resolves against the fork, misses the upstream `voy-claim`
+   comments, and defeats the gate) and collect **every** `voy-claim` marker
+   without a matching **valid** `voy-claim-release` (author must satisfy
+   `<claim-release>`'s author rule).
    Evaluating only the most recent claim is wrong: a losing parallel session
    may have posted a later claim and crashed without releasing it, and that
    stale straggler must not hide an earlier claim that is still live.
@@ -618,7 +621,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
-| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings with post-claim ownership verification (earliest-claim-wins tiebreak, codex PR #278 R2 P2), author-validated releases and an explicit open-PR lookup before claim-over (codex R3 P2 ×2); all-unreleased-claims evaluation and fork-aware PR lookup (codex R4 P2 ×2); server-side --head filter to defeat the --limit 30 pagination trap (codex R5 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
+| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings with post-claim ownership verification (earliest-claim-wins tiebreak, codex PR #278 R2 P2), author-validated releases and an explicit open-PR lookup before claim-over (codex R3 P2 ×2); all-unreleased-claims evaluation and fork-aware PR lookup (codex R4 P2 ×2); server-side --head filter to defeat the --limit 30 pagination trap (codex R5 P2); explicit --repo on the comments scan for fork checkouts (codex R6 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274: aligned with alfred FXA-2276 — added §R-Round Fixes for Enumerable-Dimension Findings (trigger definition, three MUST steps, COR-1628 task-brief binding, worked-example references to alfred PR #290/#307); switched worker dispatch to the COR-1628 sandboxed `codex exec` lane with personal Codex custom agents demoted to a local optimization (clean-checkout limitation noted); added §Session Handoff (COR-1209 Binding) and COR-1209/COR-1628 to Related. Adoption table untouched. | Claude Code |
 | 2026-06-28 | Added VOY-1833 as the procedural SOP for executing this REF's multi-agent loop bindings. | Codex |
 | 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |

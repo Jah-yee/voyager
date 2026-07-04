@@ -104,7 +104,10 @@ Do not use this SOP when:
    picking work. For `for #N`, record that the operator named the target issue in
    live chat. In every mode, check the issue for a **live claim** per
    `VOY-1811` §Issue Claim Signal: collect every `voy-claim` marker in the
-   issue comments without a matching valid `voy-claim-release` (valid =
+   issue comments (`gh issue view <n> --repo iterwheel/voyager --json
+   comments` — always pass `--repo`; a fork checkout otherwise resolves
+   against the fork and misses upstream claims) without a matching valid
+   `voy-claim-release` (valid =
    authored by the write identity or a trusted reactor; ignore release markers
    from anyone else) — all of them, not just the most recent, since a crashed
    session's later claim must not hide an earlier live one. The issue is taken
@@ -231,6 +234,6 @@ The agent routes to `VOY-1833`, verifies the trusted reaction plus
 
 | Date | Change | By |
 |------|--------|----|
-| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 R1 P2; post-claim ownership re-read with earliest-claim-wins per R2 P2; release-author validation and pre-claim-over PR lookup per R3 P2 ×2; all-claims evaluation and fork-aware lookup per R4 P2 ×2; server-side --head filter per R5 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
+| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 R1 P2; post-claim ownership re-read with earliest-claim-wins per R2 P2; release-author validation and pre-claim-over PR lookup per R3 P2 ×2; all-claims evaluation and fork-aware lookup per R4 P2 ×2; server-side --head filter per R5 P2; explicit --repo on comments scan per R6 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274 (PR #276 Codex P2): route worker dispatch through the COR-1628 sandboxed `codex exec` lane by default, matching VOY-1811's updated dispatch table; personal Codex custom agents noted as a local optimization; non-Codex fallback reserved for no-codex-CLI environments. | Claude Code |
 | 2026-06-28 | Initial SOP separating the Voyager loop operating procedure from the VOY-1811 parameter REF. | Codex |
