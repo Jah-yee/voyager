@@ -110,12 +110,14 @@ Do not use this SOP when:
    collision to the operator instead of proceeding). Motivating case: the
    #274/#275/#276 duplicate-PR collision.
 
-5. **Prepare branch and identity.** Post the claim comment on the target issue
-   FIRST, per `VOY-1811` §Issue Claim Signal (`voy-claim` marker naming this
-   session's short-id and intended branch), so parallel sessions see the issue
-   as taken before any branch exists. Then confirm `gh auth status` uses
-   `ryosaeba1985` before GitHub-visible writes, and create or reuse the feature
-   branch according to `VOY-1811`'s `<pr-push-remote>` value. Release the claim
+5. **Prepare identity, claim, then branch — in that order.** First confirm
+   `gh auth status` uses `ryosaeba1985`; the claim comment is a public
+   GitHub-visible write and must pass the WUK-2100 identity gate like any
+   other. Then post the claim comment on the target issue per `VOY-1811`
+   §Issue Claim Signal (`voy-claim` marker naming this session's short-id and
+   intended branch), so parallel sessions see the issue as taken before any
+   branch exists. Only then create or reuse the feature branch according to
+   `VOY-1811`'s `<pr-push-remote>` value. Release the claim
    (`voy-claim-release`) if abandoning the issue without an open PR.
 
 6. **Plan the change.** Create the plan artifact required by COR-1617 and the
@@ -212,6 +214,6 @@ The agent routes to `VOY-1833`, verifies the trusted reaction plus
 
 | Date | Change | By |
 |------|--------|----|
-| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 posts the `voy-claim` comment before branch creation and releases it on abandonment, per VOY-1811 §Issue Claim Signal. Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
+| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274 (PR #276 Codex P2): route worker dispatch through the COR-1628 sandboxed `codex exec` lane by default, matching VOY-1811's updated dispatch table; personal Codex custom agents noted as a local optimization; non-Codex fallback reserved for no-codex-CLI environments. | Claude Code |
 | 2026-06-28 | Initial SOP separating the Voyager loop operating procedure from the VOY-1811 parameter REF. | Codex |
