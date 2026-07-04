@@ -1,10 +1,10 @@
 # REF-1811: Multi-Agent Loop Configuration
 
 **Applies to:** VOY project (`iterwheel/voyager`)
-**Last updated:** 2026-06-28
-**Last reviewed:** 2026-06-20
+**Last updated:** 2026-07-04
+**Last reviewed:** 2026-07-04
 **Status:** Active
-**Related:** COR-1500 (TDD Development Workflow), COR-1617 (Multi-Agent Workflow Loop), COR-1618 (Out-of-Band Consent Auto-Pick), COR-1619 (Orchestrator vs Worker Dispatch), COR-1622 (Multi-Agent Loop Project Configuration), VOY-1805 (GitHub Bot Accounts), VOY-1807 (GitHub App Registry), VOY-1810 (Release Process), VOY-1825 (Loop-Convergence Policy), VOY-1833 (Voyager Multi-Agent Loop Operation)
+**Related:** COR-1209 (Session Handoff Prompt), COR-1500 (TDD Development Workflow), COR-1617 (Multi-Agent Workflow Loop), COR-1618 (Out-of-Band Consent Auto-Pick), COR-1619 (Orchestrator vs Worker Dispatch), COR-1622 (Multi-Agent Loop Project Configuration), COR-1628 (Sandboxed Worker CLI Dispatch), VOY-1805 (GitHub Bot Accounts), VOY-1807 (GitHub App Registry), VOY-1810 (Release Process), VOY-1825 (Loop-Convergence Policy), VOY-1833 (Voyager Multi-Agent Loop Operation)
 
 ---
 
@@ -73,18 +73,24 @@ runs one stable document to cite.
 
 | Key | Voyager value | Notes |
 |-----|---------------|-------|
-| `<worker-agent>` | `implementer` | Preferred GREEN-phase implementation worker for substantial changes. Defined as a personal Codex custom agent in `~/.codex/agents/implementer.toml`; see fallback below for clean checkouts. |
-| `<test-writer-worker-agent>` | `test_writer` | Preferred distinct RED-phase test writer. Defined as a personal Codex custom agent in `~/.codex/agents/test_writer.toml`; this opts Voyager into COR-1500's two-worker TDD split. See fallback below for clean checkouts. |
-| `<worker-agent-fallback>` (extension) | `codex worker subagent labelled implementer`; non-Codex fallback: `trinity-glm via droid exec` | Clean-checkout GREEN fallback when the personal `implementer` agent is unavailable. Not a COR-1622 key. |
-| `<test-writer-worker-agent-fallback>` (extension) | `codex worker subagent labelled test_writer`; non-Codex fallback: distinct `trinity-glm via droid exec` session | Clean-checkout RED fallback when the personal `test_writer` agent is unavailable. Not a COR-1622 key. |
+| `<worker-agent>` | `codex exec (COR-1628 lane)` | GREEN-phase implementation worker: sandboxed one-shot CLI dispatch per COR-1628 (invocation contract, task brief, sandbox scope clause, orchestrator verification). Works on clean checkouts — no personal agent files required. Reference validation: alfred #282/#283 (first-try 2/2, triad 9.1–9.5, ~⅕–⅓ orchestrator token cost). |
+| `<test-writer-worker-agent>` | `codex exec (COR-1628 lane, test_writer brief)` | Distinct RED-phase COR-1628 dispatch with a test-writer task brief; this opts Voyager into COR-1500's two-worker TDD split (COR-1507). |
+| `<worker-agent-fallback>` (extension) | non-Codex fallback: `trinity-glm via droid exec` | GREEN fallback when no codex CLI is available. Not a COR-1622 key. |
+| `<test-writer-worker-agent-fallback>` (extension) | non-Codex fallback: distinct `trinity-glm via droid exec` session | RED fallback when no codex CLI is available. Not a COR-1622 key. |
 | `<worker-min-loc>` | `30` | Orchestrator may edit directly at or below 30 lines in one function; larger changes dispatch to the worker lane. |
 
-These two Codex values rely on Codex loading personal custom agents from
-`~/.codex/agents/` and spawning separate sub-agent sessions for the two `name`
-values. When using the fallback rows, the RED-labelled worker may edit only
+The COR-1628 sandboxed lane is the documented worker path. Personal Codex
+custom agents (`~/.codex/agents/implementer.toml`, `~/.codex/agents/test_writer.toml`)
+remain a **local optimization only**: they exist solely on machines where the
+operator has installed them, are unavailable on clean checkouts, and predate
+COR-1628 (bundled since fx-alfred v1.25.0). An operator whose machine has them
+may substitute them for the corresponding COR-1628 dispatch, but no loop run
+may *depend* on their presence.
+
+In every dispatch form, the RED-labelled worker may edit only
 tests/fixtures/test helpers, and the GREEN-labelled worker may edit production
-or supporting files but must not weaken the RED tests. All fallback dispatches
-must still keep RED and GREEN authorship distinct per COR-1500.
+or supporting files but must not weaken the RED tests. All dispatches
+must keep RED and GREEN authorship distinct per COR-1500.
 
 ### R-Count Cap (COR-1617 Phase 8)
 
@@ -144,6 +150,47 @@ exempt — no `@codex review` trigger is needed.
 | `<wakeup-tool>` | Runtime-dependent; see Runtime Profile | Per COR-1622's `<wakeup-tool>` runtime escape-hatch language, `ScheduleWakeup` applies only to Claude Code-style runtimes. Other runtimes substitute their own wake or polling primitive. |
 | `<idle-cap>` | `12` | Default. |
 | `<merge-watch-cap>` | `24` | Default. |
+
+---
+
+## R-Round Fixes for Enumerable-Dimension Findings (COR-1617 Phase 8 Binding)
+
+Voyager adopts the generalized R-round matrix rule from the reference
+instantiation, alfred FXA-2276 (§R-round fixes for enumerable-dimension
+findings, generalized 2026-07-04 via alfred #318).
+
+**Trigger**: a review finding (bot, panel, or human) whose scope condition
+varies along one or more **enumerable dimensions** — any axis whose values form
+a small closed set. Canonical axes: actor × timing window (races: processes,
+threads, reader vs. writer), origin × outcome, output mode × input class,
+platform × capability. If the finding's wording names a category ("when X is
+also Y", "only for Z-mode"), the dimension is enumerable and this rule applies.
+
+The fix round MUST:
+
+1. **Enumerate the full matrix before implementing** — every value of every
+   participating dimension, written out explicitly, not held in the
+   orchestrator's head.
+2. **Fix all cells in that single round.** Patching only the reported cell and
+   pushing is the anti-pattern this rule exists to prevent; adjacent cells are
+   presumed defective until shown otherwise. "Shown otherwise" has exactly two
+   forms: a passing regression test for that cell landed in the same round, or
+   an explicit `n/a` row in the matrix with one-line reasoning why the
+   combination is unreachable.
+3. **Land one regression test per applicable cell** (every cell not marked
+   `n/a`) in the same round.
+
+**Dispatch binding**: when the round is implemented via the COR-1628 sandboxed
+worker lane, the enumerated matrix goes into the task brief (Design guardrails
+block) so the worker implements against the full space, and the orchestrator's
+scope check verifies per-cell tests exist before commit.
+
+**Worked examples** (see alfred FXA-2276 for the full matrices): alfred PR #290
+— a 2×2 reader-strictness × vanish-timing state matrix, drawable at R2, whose
+absence produced the R3→R4→R5 serial one-cell-per-round chain; alfred PR #307 —
+an ID-origin × in-requested-set provenance matrix where the bot surfaced one
+uncovered cell per round across R3/R4/R5 because R3's brief enumerated nothing.
+Both chains collapse into one round when the matrix is enumerated up front.
 
 ---
 
@@ -274,6 +321,22 @@ for CI — these are not pause points. The agent uses `ScheduleWakeup`
 This rule applies for every `follow VOY-1811` invocation regardless of
 the agent's prior session memory. A new session reading this file inherits
 the autonomous-operation default immediately.
+
+---
+
+## Session Handoff (COR-1209 Binding)
+
+When an in-flight loop run must transfer to a new session — context
+exhaustion, a runtime switch (Claude Code → Codex → droid), or an operator
+handing the loop to another agent — the outgoing session MUST produce a
+handoff prompt per COR-1209 (Session Handoff Prompt): freshly fetched
+branch/PR/issue state, the active SOPs, validation commands, and explicit
+do-not-touch exclusions, in one copy-pasteable block.
+
+This binding closes a loop that started here: the incident that motivated
+COR-1209 was a Voyager handoff (issue #227 → a new Codex session picking up
+PRs #230/#231), which alfred #246 turned into the SOP. Voyager runs must not
+regress to the ad-hoc "continue the work" prompts that incident documented.
 
 ---
 
@@ -499,6 +562,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-07-04 | Issue #274: aligned with alfred FXA-2276 — added §R-Round Fixes for Enumerable-Dimension Findings (trigger definition, three MUST steps, COR-1628 task-brief binding, worked-example references to alfred PR #290/#307); switched worker dispatch to the COR-1628 sandboxed `codex exec` lane with personal Codex custom agents demoted to a local optimization (clean-checkout limitation noted); added §Session Handoff (COR-1209 Binding) and COR-1209/COR-1628 to Related. Adoption table untouched. | Claude Code |
 | 2026-06-28 | Added VOY-1833 as the procedural SOP for executing this REF's multi-agent loop bindings. | Codex |
 | 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |
 | 2026-06-28 | Added clean-checkout fallback dispatch guidance for the personal Codex `test_writer` and `implementer` custom agents. | Codex |
