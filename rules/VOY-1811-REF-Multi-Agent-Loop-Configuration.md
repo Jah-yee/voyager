@@ -59,6 +59,69 @@ runs one stable document to cite.
 | `<intake-quality-label>` | `blueprint-ready` | Blueprint readiness label. |
 | `<intake-quality-applier-set>` | `[iterwheel-blueprint[bot], frankyxhl, ryosaeba1985]` | Normal path is bot-applied; human identities are explicit manual overrides. |
 
+### Issue Claim Signal (local extension)
+
+Voyager-local extension, not a COR-1622 key. Consent (rocket +
+`blueprint-ready`) authorizes work but does not record that a session has
+STARTED it. Motivating case: two agent sessions independently executed issue
+#274 and produced competing PRs (#275, closed as superseded, and #276) — same
+issue, same target file, same write identity, zero mutual awareness. The claim
+signal is the mutual-exclusion marker that prevents that collision.
+
+| Key (extension) | Voyager value | Notes |
+|-----------------|---------------|-------|
+| `<claim-comment-format>` | `<!-- voy-claim session=<short-id> branch=<branch-name> -->` followed by a human-readable line ``Claiming — session `<short-id>`, branch `<branch-name>` `` | Posted on the target issue under `<gh-write-identity>` BEFORE Phase 2 (branch creation). `<short-id>` is a session-unique token (e.g. the first 8 chars of the session UUID); it is what distinguishes claimants, since all sessions share the same write identity. |
+| `<claim-expiry>` | `24h without a linked open PR` | A claim is **live** while (a) it is less than 24 hours old, or (b) an OPEN PR from the claimed branch references the issue. A claim older than 24 hours with no linked open PR is **stale** and may be claimed over. An open PR supersedes the claim as the taken-signal; a merged or closed PR ends the claim. |
+| `<claim-release>` | `<!-- voy-claim-release session=<short-id> -->` comment | The claiming session releases its own claim when abandoning the issue. Any `<repo-trusted-reactor-list>` member may post the release marker to override a claim (e.g. a wedged session). A release comment is **valid only when its author is `<gh-write-identity>` or a `<repo-trusted-reactor-list>` member** — release markers pasted by any other author are ignored, so a third party cannot end a claim and steer agents away from (or over) active work. A valid release ends the claim immediately. |
+
+**Phase 1 binding**: candidate selection MUST treat an issue with a live
+unexpired claim by another session as **taken** — skip it and move to the next
+candidate. The check has two parts:
+
+1. Scan the issue comments (`gh issue view <n> --repo <repo> --json comments`
+   — the explicit `--repo` matters: from a fork checkout an unqualified
+   `gh issue view` resolves against the fork, misses the upstream `voy-claim`
+   comments, and defeats the gate) and collect **every valid** `voy-claim`
+   marker without a matching **valid** `voy-claim-release`. Author validation
+   applies symmetrically to both marker types: a `voy-claim` counts only when
+   authored by `<gh-write-identity>` or a `<repo-trusted-reactor-list>`
+   member, exactly like `<claim-release>`'s author rule — otherwise any
+   untrusted commenter on a public issue could paste the marker and make
+   agents treat the issue as taken.
+   Evaluating only the most recent claim is wrong: a losing parallel session
+   may have posted a later claim and crashed without releasing it, and that
+   stale straggler must not hide an earlier claim that is still live.
+2. The issue is **taken** if ANY unreleased claim is live per `<claim-expiry>`.
+   For claims older than the 24h window, liveness may come from the
+   linked-open-PR clause — and PR linkage is NOT visible in the comments scan.
+   For each such claim, run an explicit lookup against the branch named in its
+   marker. Use `--head <branch-name>` as a server-side filter — the plain
+   branch form is supported (only `<owner>:<branch>` is not), and server-side
+   filtering avoids the `--limit` (default 30) pagination trap where a
+   client-side `--jq` filter over an unfiltered list silently misses PRs
+   beyond the first page:
+
+   ```bash
+   gh pr list --repo <repo> --state open --head <branch-name> \
+     --json number,headRefName,headRepositoryOwner
+   ```
+
+   (Verify `.headRepositoryOwner.login` in the output when the fork owner is
+   known.) Any open PR from a claimed branch keeps that claim live regardless
+   of age. Claim-over is allowed only when EVERY unreleased claim is stale —
+   older than 24h AND with no open PR from its branch.
+
+**Phase 2 binding**: the session posts its claim comment BEFORE creating the
+feature branch, and names the branch in the claim so a later session can find
+the in-flight work. Posting alone does not grant ownership: two sessions that
+both pass the Phase 1 check before either claim is visible will both post.
+Immediately after posting, the session MUST re-read the issue comments and
+verify it owns the **winning claim** — the live (unreleased, unexpired) claim
+with the earliest `created_at`, ties broken by lowest comment id. If another
+session's claim wins, this session posts its own `voy-claim-release` and
+treats the issue as taken (skip, or surface the collision for `for #N`). Only
+the winning session proceeds to branch creation.
+
 ### Review Panel (COR-1602 Binding)
 
 | Key | Voyager value | Notes |
@@ -562,6 +625,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings with post-claim ownership verification (earliest-claim-wins tiebreak, codex PR #278 R2 P2), author-validated releases and an explicit open-PR lookup before claim-over (codex R3 P2 ×2); all-unreleased-claims evaluation and fork-aware PR lookup (codex R4 P2 ×2); server-side --head filter to defeat the --limit 30 pagination trap (codex R5 P2); explicit --repo on the comments scan for fork checkouts (codex R6 P2); symmetric author validation on claim markers (codex R8 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274: aligned with alfred FXA-2276 — added §R-Round Fixes for Enumerable-Dimension Findings (trigger definition, three MUST steps, COR-1628 task-brief binding, worked-example references to alfred PR #290/#307); switched worker dispatch to the COR-1628 sandboxed `codex exec` lane with personal Codex custom agents demoted to a local optimization (clean-checkout limitation noted); added §Session Handoff (COR-1209 Binding) and COR-1209/COR-1628 to Related. Adoption table untouched. | Claude Code |
 | 2026-06-28 | Added VOY-1833 as the procedural SOP for executing this REF's multi-agent loop bindings. | Codex |
 | 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |

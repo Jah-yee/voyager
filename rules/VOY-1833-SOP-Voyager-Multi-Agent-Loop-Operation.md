@@ -102,11 +102,45 @@ Do not use this SOP when:
 4. **Select or verify the target issue.** For non-`for #N` invocations, verify
    the trusted rocket reaction and `blueprint-ready` intake quality before
    picking work. For `for #N`, record that the operator named the target issue in
-   live chat.
+   live chat. In every mode, check the issue for a **live claim** per
+   `VOY-1811` §Issue Claim Signal: collect every `voy-claim` marker in the
+   issue comments (`gh issue view <n> --repo iterwheel/voyager --json
+   comments` — always pass `--repo`; a fork checkout otherwise resolves
+   against the fork and misses upstream claims) without a matching valid
+   `voy-claim-release`. Author validation applies to BOTH marker types (valid
+   = authored by the write identity or a trusted reactor; ignore claim AND
+   release markers from anyone else — an untrusted claim marker must not make
+   the issue look taken). Collect all valid claims, not just the most recent,
+   since a crashed session's later claim must not hide an earlier live one. The issue is taken
+   if ANY unreleased claim is live. A claim older than the expiry window may
+   still be live via a linked open PR, which the comments scan cannot see —
+   run the fork-aware lookup from VOY-1811's Phase 1 binding
+   (`gh pr list --repo iterwheel/voyager --state open --head <claimed-branch>
+   --json number,headRefName,headRepositoryOwner` — `--repo` for the same
+   fork-checkout reason as the comments scan, and a server-side `--head`
+   filter so the default `--limit 30` page cannot hide a match; only the
+   `<owner>:<branch>` head form is unsupported) before treating any claim as
+   stale. If another session's claim is live, the issue
+   is taken — skip it (or, for `for #N`, surface the collision to the operator
+   instead of proceeding). Motivating case: the #274/#275/#276 duplicate-PR
+   collision.
 
-5. **Prepare branch and identity.** Confirm `gh auth status` uses
-   `ryosaeba1985` before GitHub-visible writes. Create or reuse the feature
-   branch according to `VOY-1811`'s `<pr-push-remote>` value.
+5. **Prepare identity, claim, then branch — in that order.** First confirm
+   `gh auth status` uses `ryosaeba1985`; the claim comment is a public
+   GitHub-visible write and must pass the WUK-2100 identity gate like any
+   other. Then post the claim comment on the target issue per `VOY-1811`
+   §Issue Claim Signal (`voy-claim` marker naming this session's short-id and
+   intended branch), so parallel sessions see the issue as taken before any
+   branch exists. Immediately after posting, re-read the issue comments and
+   verify this session owns the winning claim per `VOY-1811` §Issue Claim
+   Signal (earliest live claim wins; ties broken by lowest comment id) — two
+   sessions that both passed step 4 before either claim was visible will both
+   have posted. If another session's claim wins, post `voy-claim-release` for
+   this session's claim and treat the issue as taken (return to step 4; for
+   `for #N`, surface the collision to the operator). Only after winning, create
+   or reuse the feature branch according to `VOY-1811`'s `<pr-push-remote>`
+   value. Release the claim (`voy-claim-release`) if abandoning the issue
+   without an open PR.
 
 6. **Plan the change.** Create the plan artifact required by COR-1617 and the
    task type, normally CHG-shaped per `VOY-1811`'s `<spec-format>`. Run the
@@ -202,5 +236,6 @@ The agent routes to `VOY-1833`, verifies the trusted reaction plus
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 R1 P2; post-claim ownership re-read with earliest-claim-wins per R2 P2; release-author validation and pre-claim-over PR lookup per R3 P2 ×2; all-claims evaluation and fork-aware lookup per R4 P2 ×2; server-side --head filter per R5 P2; explicit --repo on comments scan per R6 P2 and on the PR lookup per R7 P2; symmetric claim-author validation per R8 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274 (PR #276 Codex P2): route worker dispatch through the COR-1628 sandboxed `codex exec` lane by default, matching VOY-1811's updated dispatch table; personal Codex custom agents noted as a local optimization; non-Codex fallback reserved for no-codex-CLI environments. | Claude Code |
 | 2026-06-28 | Initial SOP separating the Voyager loop operating procedure from the VOY-1811 parameter REF. | Codex |
