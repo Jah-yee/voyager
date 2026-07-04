@@ -1,7 +1,7 @@
 # SOP-1833: Voyager Multi-Agent Loop Operation
 
 **Applies to:** VOY project (`iterwheel/voyager`)
-**Last updated:** 2026-06-28
+**Last updated:** 2026-07-04
 **Last reviewed:** 2026-06-28
 **Status:** Active
 **Related:** COR-1500 (TDD Development Workflow), COR-1617 (Multi-Agent Workflow Loop), COR-1618 (Out-of-Band Consent Auto-Pick), COR-1619 (Orchestrator vs Worker Dispatch), COR-1622 (Multi-Agent Loop Project Configuration), VOY-1811 (Multi-Agent Loop Configuration), VOY-1822 (Assembly-Driven Implementation Loop), VOY-1825 (Loop-Convergence Policy), VOY-1832 (Codex Review Loop)
@@ -67,9 +67,11 @@ Do not use this SOP when:
 - Confirm GitHub-visible writes use `ryosaeba1985` per WUK-2100.
 - Read `VOY-1811` for current parameter values before dispatching reviewers,
   workers, PR operations, bot polling, or completion gates.
-- If using Codex personal custom agents, ensure `test_writer` and `implementer`
-  exist under `~/.codex/agents/`; otherwise use the fallback rows in `VOY-1811`
-  and keep RED and GREEN authorship distinct.
+- Worker dispatch defaults to the COR-1628 sandboxed `codex exec` lane per
+  `VOY-1811` — no personal agent files required. Operators whose machines have
+  the personal Codex custom agents (`~/.codex/agents/test_writer.toml`,
+  `~/.codex/agents/implementer.toml`) may substitute them as a local
+  optimization. Either way, keep RED and GREEN authorship distinct.
 - If the invocation does not name an issue, enforce the COR-1618 consent and
   intake-quality gates before selecting work.
 
@@ -115,8 +117,11 @@ Do not use this SOP when:
    use the configured RED worker for tests and GREEN worker for implementation.
    The RED worker may edit only tests, fixtures, and test helpers. The GREEN
    worker may edit production or supporting files, but must not weaken the RED
-   tests. If personal Codex agents are unavailable, use the fallback dispatch
-   rows in `VOY-1811`.
+   tests. The default dispatch is two distinct COR-1628 sandboxed `codex exec`
+   runs (test-writer brief, then implementer brief) per `VOY-1811`; operators
+   with the personal Codex custom agents installed may substitute them as a
+   local optimization. Only when no codex CLI is available at all, use the
+   non-Codex fallback rows in `VOY-1811`.
 
 8. **Verify locally.** Run the relevant unit, integration, BDD, lint, format,
    typecheck, security, and project-specific checks before pushing. If the spec
@@ -197,4 +202,5 @@ The agent routes to `VOY-1833`, verifies the trusted reaction plus
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-07-04 | Issue #274 (PR #276 Codex P2): route worker dispatch through the COR-1628 sandboxed `codex exec` lane by default, matching VOY-1811's updated dispatch table; personal Codex custom agents noted as a local optimization; non-Codex fallback reserved for no-codex-CLI environments. | Claude Code |
 | 2026-06-28 | Initial SOP separating the Voyager loop operating procedure from the VOY-1811 parameter REF. | Codex |
