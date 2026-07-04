@@ -59,6 +59,31 @@ runs one stable document to cite.
 | `<intake-quality-label>` | `blueprint-ready` | Blueprint readiness label. |
 | `<intake-quality-applier-set>` | `[iterwheel-blueprint[bot], frankyxhl, ryosaeba1985]` | Normal path is bot-applied; human identities are explicit manual overrides. |
 
+### Issue Claim Signal (local extension)
+
+Voyager-local extension, not a COR-1622 key. Consent (rocket +
+`blueprint-ready`) authorizes work but does not record that a session has
+STARTED it. Motivating case: two agent sessions independently executed issue
+#274 and produced competing PRs (#275, closed as superseded, and #276) — same
+issue, same target file, same write identity, zero mutual awareness. The claim
+signal is the mutual-exclusion marker that prevents that collision.
+
+| Key (extension) | Voyager value | Notes |
+|-----------------|---------------|-------|
+| `<claim-comment-format>` | `<!-- voy-claim session=<short-id> branch=<branch-name> -->` followed by a human-readable line ``Claiming — session `<short-id>`, branch `<branch-name>` `` | Posted on the target issue under `<gh-write-identity>` BEFORE Phase 2 (branch creation). `<short-id>` is a session-unique token (e.g. the first 8 chars of the session UUID); it is what distinguishes claimants, since all sessions share the same write identity. |
+| `<claim-expiry>` | `24h without a linked open PR` | A claim is **live** while (a) it is less than 24 hours old, or (b) an OPEN PR from the claimed branch references the issue. A claim older than 24 hours with no linked open PR is **stale** and may be claimed over. An open PR supersedes the claim as the taken-signal; a merged or closed PR ends the claim. |
+| `<claim-release>` | `<!-- voy-claim-release session=<short-id> -->` comment | The claiming session releases its own claim when abandoning the issue. Any `<repo-trusted-reactor-list>` member may post the release marker to override a claim (e.g. a wedged session). A release comment ends the claim immediately. |
+
+**Phase 1 binding**: candidate selection MUST treat an issue with a live
+unexpired claim by another session as **taken** — skip it and move to the next
+candidate. The check is one `gh issue view <n> --json comments` scan for the
+most recent `voy-claim` marker without a matching `voy-claim-release`,
+evaluated against `<claim-expiry>`.
+
+**Phase 2 binding**: the session posts its claim comment BEFORE creating the
+feature branch, and names the branch in the claim so a later session can find
+the in-flight work.
+
 ### Review Panel (COR-1602 Binding)
 
 | Key | Voyager value | Notes |
@@ -562,6 +587,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
+| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings. Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274: aligned with alfred FXA-2276 — added §R-Round Fixes for Enumerable-Dimension Findings (trigger definition, three MUST steps, COR-1628 task-brief binding, worked-example references to alfred PR #290/#307); switched worker dispatch to the COR-1628 sandboxed `codex exec` lane with personal Codex custom agents demoted to a local optimization (clean-checkout limitation noted); added §Session Handoff (COR-1209 Binding) and COR-1209/COR-1628 to Related. Adoption table untouched. | Claude Code |
 | 2026-06-28 | Added VOY-1833 as the procedural SOP for executing this REF's multi-agent loop bindings. | Codex |
 | 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |
