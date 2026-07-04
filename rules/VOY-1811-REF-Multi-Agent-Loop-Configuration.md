@@ -88,16 +88,18 @@ candidate. The check has two parts:
    For claims older than the 24h window, liveness may come from the
    linked-open-PR clause — and PR linkage is NOT visible in the comments scan.
    For each such claim, run an explicit lookup against the branch named in its
-   marker (fork-aware; `gh pr list --head` does not accept the
-   `<owner>:<branch>` form, so filter on the JSON fields instead):
+   marker. Use `--head <branch-name>` as a server-side filter — the plain
+   branch form is supported (only `<owner>:<branch>` is not), and server-side
+   filtering avoids the `--limit` (default 30) pagination trap where a
+   client-side `--jq` filter over an unfiltered list silently misses PRs
+   beyond the first page:
 
    ```bash
-   gh pr list --repo <repo> --state open \
-     --json number,headRefName,headRepositoryOwner \
-     --jq '.[] | select(.headRefName == "<branch-name>")'
+   gh pr list --repo <repo> --state open --head <branch-name> \
+     --json number,headRefName,headRepositoryOwner
    ```
 
-   (Optionally also match `.headRepositoryOwner.login` when the fork owner is
+   (Verify `.headRepositoryOwner.login` in the output when the fork owner is
    known.) Any open PR from a claimed branch keeps that claim live regardless
    of age. Claim-over is allowed only when EVERY unreleased claim is stale —
    older than 24h AND with no open PR from its branch.
@@ -616,7 +618,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
-| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings with post-claim ownership verification (earliest-claim-wins tiebreak, codex PR #278 R2 P2), author-validated releases and an explicit open-PR lookup before claim-over (codex R3 P2 ×2); all-unreleased-claims evaluation and fork-aware JSON PR lookup (codex R4 P2 ×2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
+| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings with post-claim ownership verification (earliest-claim-wins tiebreak, codex PR #278 R2 P2), author-validated releases and an explicit open-PR lookup before claim-over (codex R3 P2 ×2); all-unreleased-claims evaluation and fork-aware PR lookup (codex R4 P2 ×2); server-side --head filter to defeat the --limit 30 pagination trap (codex R5 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274: aligned with alfred FXA-2276 — added §R-Round Fixes for Enumerable-Dimension Findings (trigger definition, three MUST steps, COR-1628 task-brief binding, worked-example references to alfred PR #290/#307); switched worker dispatch to the COR-1628 sandboxed `codex exec` lane with personal Codex custom agents demoted to a local optimization (clean-checkout limitation noted); added §Session Handoff (COR-1209 Binding) and COR-1209/COR-1628 to Related. Adoption table untouched. | Claude Code |
 | 2026-06-28 | Added VOY-1833 as the procedural SOP for executing this REF's multi-agent loop bindings. | Codex |
 | 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |

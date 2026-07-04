@@ -110,10 +110,12 @@ Do not use this SOP when:
    session's later claim must not hide an earlier live one. The issue is taken
    if ANY unreleased claim is live. A claim older than the expiry window may
    still be live via a linked open PR, which the comments scan cannot see —
-   run the fork-aware JSON lookup from VOY-1811's Phase 1 binding
-   (`gh pr list --state open --json headRefName,headRepositoryOwner` filtered
-   on the claimed branch; `--head <owner>:<branch>` is not supported) before
-   treating any claim as stale. If another session's claim is live, the issue
+   run the fork-aware lookup from VOY-1811's Phase 1 binding
+   (`gh pr list --state open --head <claimed-branch> --json
+   number,headRefName,headRepositoryOwner` — server-side `--head` filter, so
+   the default `--limit 30` page cannot hide a match; only the
+   `<owner>:<branch>` head form is unsupported) before treating any claim as
+   stale. If another session's claim is live, the issue
    is taken — skip it (or, for `for #N`, surface the collision to the operator
    instead of proceeding). Motivating case: the #274/#275/#276 duplicate-PR
    collision.
@@ -229,6 +231,6 @@ The agent routes to `VOY-1833`, verifies the trusted reaction plus
 
 | Date | Change | By |
 |------|--------|----|
-| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 R1 P2; post-claim ownership re-read with earliest-claim-wins per R2 P2; release-author validation and pre-claim-over PR lookup per R3 P2 ×2; all-claims evaluation and fork-aware JSON lookup per R4 P2 ×2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
+| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 R1 P2; post-claim ownership re-read with earliest-claim-wins per R2 P2; release-author validation and pre-claim-over PR lookup per R3 P2 ×2; all-claims evaluation and fork-aware lookup per R4 P2 ×2; server-side --head filter per R5 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274 (PR #276 Codex P2): route worker dispatch through the COR-1628 sandboxed `codex exec` lane by default, matching VOY-1811's updated dispatch table; personal Codex custom agents noted as a local optimization; non-Codex fallback reserved for no-codex-CLI environments. | Claude Code |
 | 2026-06-28 | Initial SOP separating the Voyager loop operating procedure from the VOY-1811 parameter REF. | Codex |
