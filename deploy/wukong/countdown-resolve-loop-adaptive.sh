@@ -41,9 +41,11 @@ while true; do
   set -a
   if ! source "$ENV_FILE" 2>/dev/null; then
     set +a
-    echo "adaptive: cannot source ${ENV_FILE}; failing closed, sleeping ${COUNTDOWN_SLOW_INTERVAL:-3600}s"
+    # Env is untrusted here — use the hardcoded default, not a possibly
+    # half-loaded knob.
+    echo "adaptive: cannot source ${ENV_FILE}; failing closed, sleeping 3600s"
     fast_streak=0
-    sleep "${COUNTDOWN_SLOW_INTERVAL:-3600}"
+    sleep 3600
     continue
   fi
   set +a
@@ -51,6 +53,22 @@ while true; do
   slow="${COUNTDOWN_SLOW_INTERVAL:-3600}"
   fast="${COUNTDOWN_FAST_INTERVAL:-300}"
   streak_max="${COUNTDOWN_FAST_STREAK_MAX:-6}"
+
+  # Malformed knobs (non-numeric, zero, negative) would make `sleep` fail
+  # instantly and turn the while-true loop into a busy loop / log storm.
+  # Validate as integers; fall back to defaults loudly.
+  if [[ "$slow" != <-> || "$slow" -eq 0 ]]; then
+    echo "adaptive: invalid COUNTDOWN_SLOW_INTERVAL='${slow}'; using 3600"
+    slow=3600
+  fi
+  if [[ "$fast" != <-> || "$fast" -eq 0 ]]; then
+    echo "adaptive: invalid COUNTDOWN_FAST_INTERVAL='${fast}'; using 300"
+    fast=300
+  fi
+  if [[ "$streak_max" != <-> ]]; then
+    echo "adaptive: invalid COUNTDOWN_FAST_STREAK_MAX='${streak_max}'; using 6"
+    streak_max=6
+  fi
 
   if [[ "${COUNTDOWN_RESOLVE_LOOP_ENABLED:-false}" != "true" ]]; then
     echo "COUNTDOWN_RESOLVE_LOOP_ENABLED is not true; sleeping ${slow}s"
