@@ -82,7 +82,14 @@ evaluated against `<claim-expiry>`.
 
 **Phase 2 binding**: the session posts its claim comment BEFORE creating the
 feature branch, and names the branch in the claim so a later session can find
-the in-flight work.
+the in-flight work. Posting alone does not grant ownership: two sessions that
+both pass the Phase 1 check before either claim is visible will both post.
+Immediately after posting, the session MUST re-read the issue comments and
+verify it owns the **winning claim** — the live (unreleased, unexpired) claim
+with the earliest `created_at`, ties broken by lowest comment id. If another
+session's claim wins, this session posts its own `voy-claim-release` and
+treats the issue as taken (skip, or surface the collision for `for #N`). Only
+the winning session proceeds to branch creation.
 
 ### Review Panel (COR-1602 Binding)
 
@@ -587,7 +594,7 @@ completion-gate blocker rather than proceeding.
 
 | Date | Change | By |
 |------|--------|----|
-| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings. Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
+| 2026-07-04 | Issue #277: added §Issue Claim Signal (local extension) under the Consent Gate — claim comment format (`voy-claim` marker), 24h/linked-open-PR expiry, `voy-claim-release` override, Phase 1 taken-check and Phase 2 claim-before-branch bindings with post-claim ownership verification (earliest-claim-wins tiebreak, codex PR #278 R2 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274: aligned with alfred FXA-2276 — added §R-Round Fixes for Enumerable-Dimension Findings (trigger definition, three MUST steps, COR-1628 task-brief binding, worked-example references to alfred PR #290/#307); switched worker dispatch to the COR-1628 sandboxed `codex exec` lane with personal Codex custom agents demoted to a local optimization (clean-checkout limitation noted); added §Session Handoff (COR-1209 Binding) and COR-1209/COR-1628 to Related. Adoption table untouched. | Claude Code |
 | 2026-06-28 | Added VOY-1833 as the procedural SOP for executing this REF's multi-agent loop bindings. | Codex |
 | 2026-06-28 | Added explicit worker fallback rows to the dispatch table for clean Codex checkouts and non-Codex runtimes. | Codex |

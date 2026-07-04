@@ -116,9 +116,16 @@ Do not use this SOP when:
    other. Then post the claim comment on the target issue per `VOY-1811`
    §Issue Claim Signal (`voy-claim` marker naming this session's short-id and
    intended branch), so parallel sessions see the issue as taken before any
-   branch exists. Only then create or reuse the feature branch according to
-   `VOY-1811`'s `<pr-push-remote>` value. Release the claim
-   (`voy-claim-release`) if abandoning the issue without an open PR.
+   branch exists. Immediately after posting, re-read the issue comments and
+   verify this session owns the winning claim per `VOY-1811` §Issue Claim
+   Signal (earliest live claim wins; ties broken by lowest comment id) — two
+   sessions that both passed step 4 before either claim was visible will both
+   have posted. If another session's claim wins, post `voy-claim-release` for
+   this session's claim and treat the issue as taken (return to step 4; for
+   `for #N`, surface the collision to the operator). Only after winning, create
+   or reuse the feature branch according to `VOY-1811`'s `<pr-push-remote>`
+   value. Release the claim (`voy-claim-release`) if abandoning the issue
+   without an open PR.
 
 6. **Plan the change.** Create the plan artifact required by COR-1617 and the
    task type, normally CHG-shaped per `VOY-1811`'s `<spec-format>`. Run the
@@ -214,6 +221,6 @@ The agent routes to `VOY-1833`, verifies the trusted reaction plus
 
 | Date | Change | By |
 |------|--------|----|
-| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
+| 2026-07-04 | Issue #277: step 4 gains the live-claim check (skip claimed issues; surface collision for `for #N`); step 5 orders identity check → `voy-claim` comment → branch creation, with release on abandonment, per VOY-1811 §Issue Claim Signal (identity-before-claim ordering per codex PR #278 R1 P2; post-claim ownership re-read with earliest-claim-wins per R2 P2). Motivating case: #274/#275/#276 duplicate-PR collision. | Claude Code |
 | 2026-07-04 | Issue #274 (PR #276 Codex P2): route worker dispatch through the COR-1628 sandboxed `codex exec` lane by default, matching VOY-1811's updated dispatch table; personal Codex custom agents noted as a local optimization; non-Codex fallback reserved for no-codex-CLI environments. | Claude Code |
 | 2026-06-28 | Initial SOP separating the Voyager loop operating procedure from the VOY-1811 parameter REF. | Codex |
