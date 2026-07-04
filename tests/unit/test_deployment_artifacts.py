@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import plistlib
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -10,6 +11,7 @@ SOP_PATH = ROOT / "rules/VOY-1814-SOP-Wukong-Bridge-Launchd-and-Rollback.md"
 COUNTDOWN_PLIST_PATH = ROOT / "deploy/launchd/com.iterwheel.voyager.countdown-resolve-loop.plist"
 COUNTDOWN_ENV_PATH = ROOT / "deploy/wukong/countdown-resolve-loop.env.example"
 COUNTDOWN_REPOS_PATH = ROOT / "deploy/wukong/countdown-resolve-loop.repos.example"
+COUNTDOWN_WRAPPER_PATH = ROOT / "deploy/wukong/countdown-resolve-loop-adaptive.sh"
 COUNTDOWN_SOP_PATH = ROOT / "rules/VOY-1835-SOP-Countdown-Resolve-Loop-Launchd-Deployment.md"
 WUKONG_PROJECT_DIR = "/Users/frank/Projects/voyager"
 WUKONG_LOG_DIR = "/Users/frank/Library/Logs/voyager"
@@ -115,7 +117,8 @@ def test_countdown_resolve_loop_launchd_plist_defines_schedule_contract() -> Non
     assert plist["Label"] == "com.iterwheel.voyager.countdown-resolve-loop"
     assert "WorkingDirectory" not in plist
     assert plist["RunAtLoad"] is True
-    assert plist["StartInterval"] == 3600
+    assert plist["KeepAlive"] is True
+    assert "StartInterval" not in plist
     assert plist["Umask"] == 63
     assert plist["StandardOutPath"] == f"{WUKONG_LOG_DIR}/countdown-resolve-loop.out.log"
     assert plist["StandardErrorPath"] == f"{WUKONG_LOG_DIR}/countdown-resolve-loop.err.log"
@@ -124,12 +127,25 @@ def test_countdown_resolve_loop_launchd_plist_defines_schedule_contract() -> Non
     assert len(args) == 3
     assert args[:2] == ["/bin/zsh", "-lc"]
     command = args[2]
-    assert "source /Users/frank/.voyager/countdown-resolve-loop.env" in command
-    assert '[[ "${COUNTDOWN_RESOLVE_LOOP_ENABLED:-false}" == "true" ]]' in command
-    assert "exec /Users/frank/.voyager/.venv/bin/vyg countdown resolve-loop" in command
-    assert "--repos /Users/frank/.voyager/countdown-resolve-loop.repos" in command
-    assert "--max-resolves ${COUNTDOWN_MAX_RESOLVES:-20}" in command
-    assert "--json" in command
+    assert "exec /Users/frank/.voyager/bin/countdown-resolve-loop-adaptive.sh" in command
+
+
+def test_countdown_adaptive_wrapper_defines_scheduling_contract() -> None:
+    text = COUNTDOWN_WRAPPER_PATH.read_text()
+
+    assert text.startswith("#!/bin/zsh")
+    assert 'source "$ENV_FILE"' in text
+    assert "COUNTDOWN_RESOLVE_LOOP_ENABLED" in text
+    assert 'sleep "$slow"' in text
+    # No bash `exit` statement (comments legitimately say "exiting"/"exits").
+    assert re.search(r"\bexit\b", text) is None
+    assert ":-300" in text
+    assert ":-3600" in text
+    assert ":-6" in text
+    assert '--repos "$REPOS_FILE"' in text
+    assert '--max-resolves "${COUNTDOWN_MAX_RESOLVES:-20}"' in text
+    assert "--json" in text
+    assert "decision_count" in text
 
 
 def test_countdown_resolve_loop_examples_are_secret_safe() -> None:
@@ -142,6 +158,9 @@ def test_countdown_resolve_loop_examples_are_secret_safe() -> None:
     assert "COUNTDOWN_MAX_RESOLVES=20" in env_text
     assert "iterwheel-countdown-bot" in env_text
     assert "iterwheel-countdown-user" not in env_text
+    assert "COUNTDOWN_FAST_INTERVAL" in env_text
+    assert "COUNTDOWN_SLOW_INTERVAL" in env_text
+    assert "COUNTDOWN_FAST_STREAK_MAX" in env_text
     assert "iterwheel/voyager-sandbox" in repos_text
     assert "# iterwheel/voyager" in repos_text
 
@@ -171,6 +190,7 @@ def test_countdown_deploy_sop_covers_dry_run_live_audit_and_rollback() -> None:
         "tail -n 100 -F /Users/frank/Library/Logs/voyager/countdown-resolve-loop.err.log",
         "COUNTDOWN_RESOLVE_LOOP_ENABLED=true",
         "mv -hf /Users/frank/.voyager/.venv.swap-$$ /Users/frank/.voyager/.venv",
+        "countdown-resolve-loop-adaptive.sh",
     )
 
     for snippet in required_snippets:
