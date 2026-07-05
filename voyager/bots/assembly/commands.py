@@ -35,6 +35,9 @@ _COMMAND_RE = re.compile(
 )
 
 
+_KNOWN_FLAGS = frozenset({"--dry-run", "--allow-missing-stack", "--resume"})
+
+
 @dataclass(frozen=True)
 class AssemblyCommand:
     """Parsed Assembly slash-command invocation."""
@@ -56,6 +59,9 @@ def parse_assembly_command(body: str | None) -> AssemblyCommand | None:
     - Case-insensitive matching: ``/Assembly --Dry-Run`` is accepted.
     - Only the *first* matching line wins.  Additional commands in the same
       body are ignored.
+    - Unknown flags (e.g. ``--dry_run`` with an underscore) are rejected,
+      returning ``None``, so that a typo in a safety-critical flag cannot
+      silently trigger a real mutation.
     """
     if not body:
         return None
@@ -67,6 +73,8 @@ def parse_assembly_command(body: str | None) -> AssemblyCommand | None:
         return None
     rest = (match.group("rest") or "").lower()
     flags = {token for token in rest.split() if token.startswith("--")}
+    if flags - _KNOWN_FLAGS:  # reject unknown flags (e.g. --dry_run typo)
+        return None
     return AssemblyCommand(
         command=command,
         dry_run="--dry-run" in flags,
